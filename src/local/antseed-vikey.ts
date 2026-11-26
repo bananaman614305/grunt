@@ -1,4 +1,4 @@
-import { diagnosticFetch } from './diagnostics.js';
+import { observeAttemptDispatch, diagnosticFetch } from './diagnostics.js';
 import { isDeepSeekV41Model } from './free-api.js';
 import { sellerQuota } from './quota-policy.js';
 import type { SellerQuota } from './quota-policy.js';
@@ -43,6 +43,7 @@ export class AntseedVikey implements Source {
       signal.throwIfAborted();
       if (request.imageInput || request.tools.some(tool => tool.type !== 'function')) throw new SourceError('refused', 'Antseed Vikey requires text and function tools');
       if (!await this.freeOffer(signal)) throw new SourceError('not_installed', 'The pinned Antseed Vikey free offer is unavailable');
+      observeAttemptDispatch({ model, account: 'managed', maxOutputTokens: request.maxTokens });
       const response = await diagnosticFetch(this.options.fetcher ?? fetch, this.id, 'chat.completions')(`${this.url}/chat/completions`, {
         method: 'POST', signal, redirect: 'error', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: `${seller}@${model}`, messages: request.messages, tools: request.tools.length ? request.tools : undefined,

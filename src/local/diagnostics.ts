@@ -5,16 +5,19 @@ import { chmod, lstat, mkdir, open, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Client, InValue } from '@libsql/client';
-import { diagnosticMetricSchema, pruneDiagnosticMetrics, readDiagnosticMetrics, recordDiagnosticMetrics } from './diagnostic-metrics.js';
+import { diagnosticMetricSchema, pruneDiagnosticMetrics, readDiagnosticLosses, readDiagnosticMetrics, recordDiagnosticMetrics } from './diagnostic-metrics.js';
 export type { DiagnosticMetrics, DiagnosticMetricBucket } from './diagnostic-metrics.js';
 
 const detailTypes = ['request.output', 'attempt.failure', 'route.eligible', 'account.available'] as const;
-const traceDetailTypes = new Set<string>(detailTypes);
-export const diagnosticTypes = ['request.start', 'request.finish', 'attempt.start', 'attempt.finish', 'route.selection', 'route.skip', 'transport.finish', 'work.start', 'work.finish', 'release.marker', ...detailTypes] as const;
+const observationTypes = ['request.input', 'request.phase', 'attempt.progress', 'attempt.queue', 'attempt.dequeue', 'attempt.dispatch'] as const;
+const traceDetailTypes = new Set<string>([...detailTypes, ...observationTypes]);
+export const diagnosticTypes = ['request.start', 'request.finish', 'attempt.start', 'attempt.finish', 'route.selection', 'route.skip', 'transport.finish', 'work.start', 'work.finish', 'release.marker', ...detailTypes, ...observationTypes] as const;
 export const diagnosticStages = ['task', 'queue', 'setup', 'tool', 'verification', 'collection', 'capture'] as const;
 export const diagnosticWorkDispositions = ['fresh', 'reused', 'deduplicated'] as const;
 export const diagnosticKinds = ['user', 'setup', 'maintenance', 'diagnostic'] as const;
-export const diagnosticReasons = ['not_listed', 'pending_setup', 'cooldown', 'tools_unsupported', 'input_unsupported', 'context_not_approved', 'unavailable', 'sticky', 'weighted', 'explicit', 'fallback', 'local'] as const;
+export const diagnosticReasons = ['not_listed', 'disabled', 'retired', 'trial_in_progress', 'pending_setup', 'cooldown', 'tools_unsupported',
+  'input_unsupported', 'context_not_approved', 'unavailable', 'already_attempted', 'request_refused', 'native_tools_preferred',
+  'idle_route_preferred', 'weighted_draw', 'sticky_binding', 'sticky', 'weighted', 'explicit', 'fallback', 'local'] as const;
 export const diagnosticErrors = ['not_installed', 'logged_out', 'quota', 'timeout', 'upstream', 'refused', 'cancelled'] as const;
 export const diagnosticEndpoints = ['chat.completions', 'models', 'account', 'local.opencode', 'cli'] as const;
 export const diagnosticNetworks = ['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'CERT_HAS_EXPIRED', 'ERR_TLS_CERT_ALTNAME_INVALID', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'] as const;
@@ -27,6 +30,13 @@ export const diagnosticFailureReasons = [
 ] as const;
 // How a successful reply ended, as a fixed set. Any other provider value is recorded as 'other', never as text.
 export const diagnosticFinishReasons = ['stop', 'length', 'tool_calls', 'content_filter', 'function_call', 'other'] as const;
+// Exact wire values from supported protocols. Unexpected values can contain
+// arbitrary provider data and are represented by the normalized 'other'.
+export const providerFinishReasons = ['stop', 'length', 'tool_calls', 'content_filter', 'function_call', 'max_tokens',
+  'end_turn', 'stop_sequence', 'tool_use', 'tool-calls', 'content-filter', 'error', 'unknown', 'other', 'model_context_window_exceeded',
+  'refusal', 'eos', 'eos_token', 'cancelled', 'canceled', 'max_output_tokens'] as const;
+const requestPhases = ['routing', 'checking_routes', 'preparing_handoff'] as const;
+const accountSlots = ['configured', 'anonymous', 'vaulted', 'local_session', 'managed'] as const;
 export interface SafeDiagnosticMetadata {
   httpStatus?: number; transport?: 'http' | 'cli'; httpMethod?: 'GET' | 'POST';
   endpointLabel?: typeof diagnosticEndpoints[number]; networkCode?: typeof diagnosticNetworks[number]; exitCode?: number;
@@ -39,6 +49,11 @@ export interface DiagnosticEvent extends SafeDiagnosticMetadata {
   errorCode?: typeof diagnosticErrors[number]; retryAfterSeconds?: number; inputTokens?: number; outputTokens?: number; free?: boolean;
   // Content-free reply ending on a successful attempt.finish: mapped finish_reason, whether the reply held tool calls, reasoning tokens when reported.
   finishReason?: typeof diagnosticFinishReasons[number]; hadToolCalls?: boolean; reasoningTokens?: number;
+  providerFinishReason?: typeof providerFinishReasons[number];
+  caller?: string; endpoint?: 'chat' | 'messages' | 'responses';
+  promptBytes?: number; responseBytes?: number; maxOutputTokens?: number; lastProgressAt?: number;
+  phase?: typeof requestPhases[number];
+  account?: typeof accountSlots[number];
   reason?: typeof diagnosticReasons[number];
   actor?: 'client' | 'worker'; workerId?: string;
   stage?: typeof diagnosticStages[number]; parentId?: string; runtimeVersion?: string;
@@ -46,7 +61,7 @@ export interface DiagnosticEvent extends SafeDiagnosticMetadata {
   replaySafe?: boolean;
 }
 export type StoredDiagnosticEvent = DiagnosticEvent & { seq: number };
-export interface DiagnosticContext { requestId: string; kind: typeof diagnosticKinds[number]; attemptId?: string; sink?: DiagnosticsStore; requestRecorded?: boolean; local?: boolean; incomplete?: boolean; errorCode?: DiagnosticEvent['errorCode']; actor?: DiagnosticEvent['actor']; workerId?: string }
+export interface DiagnosticContext { requestId: string; kind: typeof diagnosticKinds[number]; attemptId?: string; sink?: DiagnosticsStore; requestRecorded?: boolean; local?: boolean; incomplete?: boolean; responseBytes?: number; errorCode?: DiagnosticEvent['errorCode']; actor?: DiagnosticEvent['actor']; workerId?: string }
 const context = new AsyncLocalStorage<DiagnosticContext>();
 export const currentDiagnosticContext = () => context.getStore();
 export const withDiagnosticContext = <T>(value: DiagnosticContext, fn: () => T): T => context.run(value, fn);
@@ -84,9 +99,47 @@ export function sanitizeDiagnosticEvent(input: unknown): DiagnosticEvent | null 
   if (typeof v.free === 'boolean') result.free = v.free;
   for (const field of ['inputTokens', 'outputTokens', 'reasoningTokens'] as const) if (integer(v[field])) result[field] = v[field];
   if (member(diagnosticFinishReasons, v.finishReason)) result.finishReason = v.finishReason;
+  if (member(providerFinishReasons, v.providerFinishReason)) result.providerFinishReason = v.providerFinishReason;
+  if (member(requestPhases, v.phase)) result.phase = v.phase;
+  if (member(accountSlots, v.account)) result.account = v.account;
+  if (result.type === 'request.start' && typeof v.caller === 'string' && /^[a-z][a-z0-9-]{0,31}$/.test(v.caller)
+    && !secret.test(v.caller) && !/^(sk-|gsk-|nvapi-|xox[baprs]-|eyj)/.test(v.caller)) result.caller = v.caller;
+  if (member(['chat', 'messages', 'responses'] as const, v.endpoint)) result.endpoint = v.endpoint;
+  for (const field of ['promptBytes', 'responseBytes', 'maxOutputTokens'] as const) if (integer(v[field])) result[field] = v[field];
+  if (integer(v.lastProgressAt) && v.lastProgressAt <= 8640000000000000) result.lastProgressAt = v.lastProgressAt;
   if (typeof v.hadToolCalls === 'boolean') result.hadToolCalls = v.hadToolCalls;
   for (const field of ['durationMs', 'retryAfterSeconds'] as const) if (finite(v[field])) result[field] = v[field];
   return result;
+}
+
+export function observeRequestPhase(phase: NonNullable<DiagnosticEvent['phase']>, source?: string) {
+  const current = currentDiagnosticContext();
+  current?.sink?.record({ version: 1, id: randomUUID(), at: Date.now(), type: 'request.phase', phase,
+    requestId: current.requestId, kind: current.kind, ...(source ? { source } : {}) });
+}
+
+export function observeAttemptDispatch({ maxOutputTokens, ...details }: Pick<DiagnosticEvent, 'model' | 'account'> & { maxOutputTokens?: number | undefined }) {
+  const current = currentDiagnosticContext();
+  if (!current?.sink || !current.attemptId) return;
+  current.sink.record({ ...details, version: 1, id: randomUUID(), at: Date.now(), type: 'attempt.dispatch',
+    ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+    requestId: current.requestId, kind: current.kind, attemptId: current.attemptId });
+}
+
+/** The existing queue owns order. Sample it when observing rather than maintaining a second queue. */
+export function observeAttemptQueue(position: () => number | null) {
+  const current = currentDiagnosticContext();
+  if (!current?.sink || !current.attemptId) return;
+  current.sink.setQueuePosition(current.requestId, current.attemptId, position);
+  current.sink.record({ version: 1, id: randomUUID(), at: Date.now(), type: 'attempt.queue',
+    requestId: current.requestId, kind: current.kind, attemptId: current.attemptId });
+}
+
+export function observeAttemptDequeue() {
+  const current = currentDiagnosticContext();
+  if (!current?.sink || !current.attemptId) return;
+  current.sink.record({ version: 1, id: randomUUID(), at: Date.now(), type: 'attempt.dequeue',
+    requestId: current.requestId, kind: current.kind, attemptId: current.attemptId });
 }
 
 // Record the first validated failure or an explicit replay guard at the adapter
@@ -174,8 +227,12 @@ export class DiagnosticsStore {
   private error: DiagnosticHealth['error'];
   private closed = false;
   private pending: DiagnosticEvent[] = [];
+  private writing: DiagnosticEvent[] = [];
   private pendingLoss = 0;
   private draining = false;
+  // Only requests started by this process can be live. A shared journal can
+  // contain unfinished traces from other processes or an earlier daemon.
+  private active = new Map<string, { events: DiagnosticEvent[]; positions: Map<string, () => number | null>; progress: Map<string, number> }>();
   private constructor(private db: Client | undefined, private options: { maxEvents: number; maxAgeMs: number; now: () => number; runtimeVersion?: string }, private streamId: string | null = null, private writerKey?: string) {
     if (!db) this.error = 'storage_unavailable';
   }
@@ -246,9 +303,61 @@ export class DiagnosticsStore {
       ? { actor: current.actor, workerId: current.actor === 'worker' ? current.workerId : undefined } : {};
     // Version identifies this trusted runtime, never a model-supplied event field.
     const event = sanitizeDiagnosticEvent({ ...input, ...actor, runtimeVersion: this.options.runtimeVersion });
-    if (!event || !this.db || this.closed) { this.recordDropped(); return; }
+    if (!event || this.closed) { this.recordDropped(); return; }
+    if (event.type === 'request.start') this.active.set(event.requestId, { events: [], positions: new Map(), progress: new Map() });
+    const active = this.active.get(event.requestId);
+    if (active) {
+      active.events.push(event);
+      if (event.attemptId && ['attempt.dequeue', 'attempt.dispatch', 'attempt.finish'].includes(event.type)) active.positions.delete(event.attemptId);
+      if (event.attemptId && event.type === 'attempt.finish') active.progress.delete(event.attemptId);
+      if (event.type === 'request.finish') this.active.delete(event.requestId);
+    }
+    if (!this.db) { this.recordDropped(); return; }
     if (this.queued >= 1000) { this.recordDropped(); this.error = 'queue_full'; return; }
     this.queued++; this.pending.push(event); this.schedule();
+  }
+  setQueuePosition(requestId: string, attemptId: string, position: () => number | null) {
+    this.active.get(requestId)?.positions.set(attemptId, position);
+  }
+  setAttemptProgress(requestId: string, attemptId: string, at: number) {
+    this.active.get(requestId)?.progress.set(attemptId, at);
+  }
+  async observation(limit: number) {
+    if (!integer(limit)) throw new Error('Invalid observation limit');
+    // Read the journal and the current write queue. A stalled or contended
+    // writer must not hold up live diagnostics or hide a just-completed turn.
+    const at = this.options.now();
+    const inFlight = [...this.active.values()].map(({ events, positions, progress }) => ({
+      events: [...events], positions: new Map([...positions].map(([id, read]) => [id, read()])), progress: new Map(progress)
+    }));
+    const health = this.health();
+    const losses = { persistentDroppedEvents: null as number | null, droppedLateEvents: null as number | null, overflowEvents: null as number | null };
+    if (!this.db || this.closed) return { at, inFlight, recent: [], health, losses, historyAvailable: false };
+    try {
+      const oldest = at - this.options.maxAgeMs;
+      const buffered = [...this.writing, ...this.pending].filter(event => event.at >= oldest);
+      const finishing = new Set(buffered.filter(event => event.type === 'request.finish').map(event => event.requestId));
+      const result = limit ? await this.db.execute({ sql: `
+        WITH recent AS (
+          SELECT request_id FROM diagnostic_events
+          WHERE type='request.finish' AND at>=?
+          ORDER BY at DESC, seq DESC LIMIT ?
+        ), selected AS (
+          SELECT request_id FROM recent UNION SELECT value FROM json_each(?)
+        )
+        SELECT event.data FROM selected JOIN diagnostic_events AS event
+          ON event.request_id=selected.request_id AND event.at>=?
+        ORDER BY event.seq
+      `, args: [oldest, limit, JSON.stringify([...finishing]), oldest] }) : undefined;
+      const recent = (result?.rows ?? []).flatMap(row => {
+        try { const event = sanitizeDiagnosticEvent(JSON.parse(String(row.data))); return event ? [event] : []; }
+        catch { return []; }
+      });
+      const known = new Set(recent.map(event => event.id));
+      if (limit) for (const event of buffered) if (finishing.has(event.requestId) && !known.has(event.id)) recent.push(event);
+      Object.assign(losses, await readDiagnosticLosses(this.db));
+      return { at, inFlight, recent, health, losses, historyAvailable: true };
+    } catch { return { at, inFlight, recent: [], health, losses, historyAvailable: false }; }
   }
   /** Record observation loss without manufacturing an invalid diagnostic event. */
   recordDropped(count = 1) {
@@ -266,6 +375,7 @@ export class DiagnosticsStore {
     try {
       while (this.pending.length || this.pendingLoss) {
         const batch = this.pending.splice(0, 64), loss = this.pendingLoss; this.pendingLoss = 0;
+        this.writing = batch;
         try {
           const tx = await this.db!.transaction('write');
           try {
@@ -298,7 +408,7 @@ export class DiagnosticsStore {
           this.droppedEvents += batch.length + discarded; this.pendingLoss += loss + batch.length + discarded;
           break; // Keep the loss count for the next successful write; never spin on a broken database.
         }
-        finally { this.queued -= batch.length; }
+        finally { this.queued -= batch.length; this.writing = []; }
       }
     } finally { this.draining = false; }
   }
@@ -323,10 +433,9 @@ export class DiagnosticsStore {
     if (!integer(limit) || limit < 1 || limit > 500 || (options.outcome !== undefined && !member(['passed', 'failed', 'cancelled', 'skipped'] as const, options.outcome))) throw new Error('Invalid diagnostic filter');
     const where = ['seq>?', 'at>=?'], args: InValue[] = [after, this.options.now() - this.options.maxAgeMs];
     for (const [key, value] of [['source', options.source], ['request_id', options.requestId], ['outcome', options.outcome]] as const) if (value !== undefined) { where.push(key + '=?'); args.push(value); }
-    if (options.includeDetails === false) {
-      where.push('type NOT IN (' + detailTypes.map(() => '?').join(',') + ')');
-      args.push(...detailTypes);
-    }
+    const excluded = options.includeDetails === false ? [...observationTypes, ...detailTypes] : observationTypes;
+    where.push('type NOT IN (' + excluded.map(() => '?').join(',') + ')');
+    args.push(...excluded);
     args.push(limit);
     const events = await this.rows('SELECT seq,data FROM diagnostic_events WHERE ' + where.join(' AND ') + ' ORDER BY seq ASC LIMIT ?', args);
     return { events, nextCursor: events.length ? String(events.at(-1)!.seq) : options.after ?? null, streamId: this.streamId };
@@ -368,6 +477,6 @@ export class DiagnosticsStore {
     if (this.closed) return;
     await this.flush();
     if (this.pendingLoss) await this.flush(); // One loss-only persistence attempt, never an unbounded retry.
-    this.closed = true; this.db?.close();
+    this.closed = true; this.active.clear(); this.db?.close();
   }
 }

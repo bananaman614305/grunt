@@ -3,7 +3,7 @@ import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { readDataSharingConsent } from './data-sharing.js';
-import { diagnosticFetch } from './diagnostics.js';
+import { diagnosticFetch, observeAttemptDispatch } from './diagnostics.js';
 import type { FreeApiGrant } from './free-api.js';
 import { validateProviderGrant } from './provider-grant.js';
 import { calendarQuotaDelay } from './quota-policy.js';
@@ -82,6 +82,7 @@ export class Kenari implements Source {
     if (!free) throw new SourceError('refused', 'Kenari is missing the advertised free ERNIE route');
 
     let retryAfter: number | undefined;
+    observeAttemptDispatch({ model: KENARI_FREE_MODEL, account: 'vaulted', maxOutputTokens: request.maxTokens });
     const send = diagnosticFetch(this.fetcher, this.id, 'chat.completions');
     const client = new Gateway(`${grant.base_url}/v1`, grant.token, async (url, init) => {
       const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;

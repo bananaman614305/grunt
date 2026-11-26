@@ -1,4 +1,4 @@
-import { recordAttemptFailure, recordTransport } from './diagnostics.js';
+import { observeAttemptDispatch, recordAttemptFailure, recordTransport } from './diagnostics.js';
 import type { SafeDiagnosticMetadata } from './diagnostics.js';
 import { configRoot } from '../brand.js';
 import { spawn } from 'node:child_process';
@@ -239,6 +239,7 @@ export class MistralVibe implements Source {
         VIBE_SESSION_LOGGING: '{"enabled":false,"generate_titles":false}' };
       // Vibe counts assistant history entries, including intermediate entries
       // before the finished answer. Keep the run bounded and all native tools off.
+      observeAttemptDispatch({ model: MISTRAL_VIBE_WIRE_MODEL, account: 'local_session', maxOutputTokens: cap });
       const result = await runMistralVibeProcess(this.options.binary ?? paths.binary, ['--model', MISTRAL_VIBE_MODEL, '--disabled-tools', '*', '--prompt-file', promptFile,
         '--output', 'json', '--output-dir', output, '--max-turns', '2', '--time-limit', String(Math.max(1, Math.ceil((this.options.timeout ?? 180000) / 1000)))], { cwd: paths.work, env, signal });
       signal.throwIfAborted();

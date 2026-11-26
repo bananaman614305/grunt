@@ -274,13 +274,13 @@ it.each([false, true])('records a content-free ending for a normal text stop and
   const f = fixture({ ...route(reflectionBeam), infer: () => endingReply('stop', { content: 'Done, no call needed.' }, { completion_tokens_details: { reasoning_tokens: 3 } }, reflectionBeam ? KILO_BEAM : KILO_PARTICLE) });
   const reply = await f.source.complete({ ...request(), tools: [tool] }, new AbortController().signal);
   expect(reply.text).toBe('Done, no call needed.'); expect(reply.calls).toBeUndefined();
-  expect(endingOf(reply)).toEqual({ finish: 'stop', toolCalls: false, reasoningTokens: 3 });
+  expect(endingOf(reply)).toEqual({ finish: 'stop', providerFinish: 'stop', toolCalls: false, reasoningTokens: 3 });
   expect(guardToolCalls(reply, {})).toBe(reply);
   expect(f.posts()).toHaveLength(1);
 });
 it('records a tool-call ending with its parsed call, and an unknown finish as other', async () => {
   const f = fixture({ infer: () => endingReply('tool_calls', { content: null, tool_calls: [call] }) });
-  expect(endingOf(await f.source.complete({ ...request(), tools: [tool] }, new AbortController().signal))).toEqual({ finish: 'tool_calls', toolCalls: true });
+  expect(endingOf(await f.source.complete({ ...request(), tools: [tool] }, new AbortController().signal))).toEqual({ finish: 'tool_calls', providerFinish: 'tool_calls', toolCalls: true });
   const g = fixture({ infer: () => endingReply('PRIVATE_NEW_REASON', { content: 'ok' }) });
   expect(endingOf(await g.source.complete(request(), new AbortController().signal))).toEqual({ finish: 'other', toolCalls: false });
 });

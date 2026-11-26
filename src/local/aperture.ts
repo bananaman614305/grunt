@@ -1,11 +1,11 @@
 import { configRoot } from '../brand.js';
 import { readDataSharingConsent } from './data-sharing.js';
-import { diagnosticFetch } from './diagnostics.js';
+import { observeAttemptDispatch, diagnosticFetch } from './diagnostics.js';
 import type { FreeApiGrant } from './free-api.js';
 import { calendarQuotaDelay } from './quota-policy.js';
 import { nousQuotaDelay, readQuotaError } from './quota-timing.js';
 import { readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
-import { lengthLimited, truncatedCompletion, SourceError } from './source.js';
+import { lengthLimited, truncatedCompletion, withObservedEnding, SourceError } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 
 export const APERTURE_ID = 'aperture-ai';
@@ -100,6 +100,7 @@ export class Aperture implements Source {
     if (!grant) throw new SourceError('refused', 'Aperture Free account and exact zero-price route could not be verified');
     const signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(180000)]);
     try {
+      observeAttemptDispatch({ model: APERTURE_MODEL, account: 'vaulted', maxOutputTokens: request.maxTokens });
       const response = await diagnosticFetch(this.options.fetcher ?? fetch, this.id, 'chat.completions')(`${grant.base_url}/api/v1/chat/completions`, {
         method: 'POST', redirect: 'error', signal,
         headers: { Authorization: `Bearer ${grant.token}`, 'Content-Type': 'application/json', 'User-Agent': 'grunt' },
@@ -111,13 +112,14 @@ export class Aperture implements Source {
       if (body.model !== APERTURE_MODEL || !Array.isArray(body.choices) || body.choices.length !== 1) throw new Error('Unexpected completion');
       const choice = object(body.choices[0]), message = object(choice.message), usage = object(body.usage);
       if (message.refusal) throw new SourceError('refused', 'Aperture request refused');
-      if (lengthLimited(choice.finish_reason)) return truncatedCompletion(message?.content, usage);
+      if (lengthLimited(choice.finish_reason)) return truncatedCompletion(message?.content, usage, choice.finish_reason);
       const calls = message.tool_calls;
       if (!['stop', 'tool_calls'].includes(String(choice.finish_reason))
         || calls !== undefined && !validCalls(calls) || typeof message.content !== 'string' && !(validCalls(calls) && calls.length)
         || !message.content && !(validCalls(calls) && calls.length)) throw new Error('Invalid completion');
-      return { text: typeof message.content === 'string' ? message.content : '', ...(validCalls(calls) && calls.length ? { calls } : {}),
-        ...(count(usage.prompt_tokens) ? { inputTokens: usage.prompt_tokens } : {}), ...(count(usage.completion_tokens) ? { outputTokens: usage.completion_tokens } : {}) };
+      return withObservedEnding({ text: typeof message.content === 'string' ? message.content : '', ...(validCalls(calls) && calls.length ? { calls } : {}),
+        ...(count(usage.prompt_tokens) ? { inputTokens: usage.prompt_tokens } : {}), ...(count(usage.completion_tokens) ? { outputTokens: usage.completion_tokens } : {}) },
+        choice.finish_reason, usage, validCalls(calls) && calls.length > 0);
     } catch (error) {
       caller.throwIfAborted();
       if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Aperture source closed');

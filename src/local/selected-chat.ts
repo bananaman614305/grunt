@@ -1,4 +1,4 @@
-import { lengthLimited, truncatedCompletion, SourceError } from './source.js';
+import { lengthLimited, truncatedCompletion, withObservedEnding, SourceError } from './source.js';
 import type { Completion, ModelRequest, ToolCall } from './source.js';
 
 export const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -21,7 +21,7 @@ export function selectedReply(id: string, payload: unknown, request: ModelReques
   if (!exactModel(body.model) || message.refusal || (message.tool_calls != null && !Array.isArray(message.tool_calls))) {
     throw new SourceError('upstream', `${id} returned an unexpected model or completion`);
   }
-  if (lengthLimited(choice.finish_reason)) return truncatedCompletion(message?.content, usage);
+  if (lengthLimited(choice.finish_reason)) return truncatedCompletion(message?.content, usage, choice.finish_reason);
   const functions = new Set(request.tools.map(tool => object(tool.function).name));
   const ids = new Set(request.messages.flatMap(message => message.tool_calls?.map(call => call.id) ?? []));
   const calls: ToolCall[] = [];
@@ -39,5 +39,6 @@ export function selectedReply(id: string, payload: unknown, request: ModelReques
   const text = typeof message.content === 'string' ? message.content : '';
   if (!text && !calls.length) throw new SourceError('upstream', `${id} returned an empty completion`);
   const inputTokens = tokens(usage.prompt_tokens), outputTokens = tokens(usage.completion_tokens);
-  return { text, ...(calls.length ? { calls } : {}), ...(inputTokens === undefined ? {} : { inputTokens }), ...(outputTokens === undefined ? {} : { outputTokens }) };
+  return withObservedEnding({ text, ...(calls.length ? { calls } : {}), ...(inputTokens === undefined ? {} : { inputTokens }), ...(outputTokens === undefined ? {} : { outputTokens }) },
+        choice.finish_reason, usage, calls.length > 0);
 }

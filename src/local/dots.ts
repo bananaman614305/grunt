@@ -1,3 +1,4 @@
+import { observeAttemptDispatch } from './diagnostics.js';
 import { gruntEnv } from '../brand.js';
 import { userTurns } from './harness.js';
 import { readDotsLink } from './dots-link.js';
@@ -44,6 +45,7 @@ export class Dots implements Source {
       const latest = messages.findLastIndex(m => m.role === 'user');
       if (latest < 0) messages.push({ role: 'user', content: prompt + '\n\n' + DOTS_INSTRUCTION });
       else messages[latest] = { role: 'user', content: prompt + '\n\n' + DOTS_INSTRUCTION };
+      observeAttemptDispatch({ account: 'managed' });
       const queued = await this.call(link, '/dots/requests', signal, 'POST', { messages, timeout });
       id = queued.id;
       if (typeof id !== 'string' || !/^[a-f0-9-]{36}$/.test(id)) throw new SourceError('upstream', 'Dots relay returned an invalid request');

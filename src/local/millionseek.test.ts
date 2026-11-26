@@ -89,9 +89,9 @@ it('accepts every tool of a recorded Claude Code request', async () => {
 it('records a content-free ending, and a tool_calls ending without a call is an invalid sample for the shared gate', async () => {
   await recordDataSharingConsent(directory, ['millionseek']);
   const stopped = await source(transport({ completion: { ...answer(), usage: { prompt_tokens: 20, completion_tokens: 2, completion_tokens_details: { reasoning_tokens: 1 } } } })).complete(req(), AbortSignal.timeout(1000));
-  expect(endingOf(stopped)).toEqual({ finish: 'stop', toolCalls: false, reasoningTokens: 1 });
+  expect(endingOf(stopped)).toEqual({ finish: 'stop', providerFinish: 'stop', toolCalls: false, reasoningTokens: 1 });
   expect(guardToolCalls(stopped, {})).toBe(stopped);
   const claimed = await source(transport({ completion: { ...answer(), choices: [{ message: { content: 'I will call it' }, finish_reason: 'tool_calls' }] } })).complete(req(), AbortSignal.timeout(1000));
-  expect(endingOf(claimed)).toEqual({ finish: 'tool_calls', toolCalls: false });
+  expect(endingOf(claimed)).toEqual({ finish: 'tool_calls', providerFinish: 'tool_calls', toolCalls: false });
   expect(() => guardToolCalls(claimed, {})).toThrow(expect.objectContaining({ code: 'upstream', diagnostics: { failureReason: 'response_tools', httpStatus: 200 } }));
 });

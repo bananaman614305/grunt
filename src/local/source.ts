@@ -3,8 +3,8 @@ import { knownAdapters } from '../registry.js';
 import { providerQuotaPolicy, scheduledQuotaRefill } from './quota-policy.js';
 import type { SellerQuota } from './quota-policy.js';
 import { randomUUID } from 'node:crypto';
-import { currentDiagnosticContext, diagnosticFinishReasons, withDiagnosticContext } from './diagnostics.js';
-import type { DiagnosticsStore, SafeDiagnosticMetadata, DiagnosticContext } from './diagnostics.js';
+import { currentDiagnosticContext, diagnosticFinishReasons, providerFinishReasons, withDiagnosticContext } from './diagnostics.js';
+import type { DiagnosticsStore, SafeDiagnosticMetadata, DiagnosticContext, DiagnosticEvent } from './diagnostics.js';
 import type { RoutingHistory } from './routing-history.js';
 import { localRequestRefusal } from './routing-history.js';
 import { MetadataFlights } from './metadata-flight.js';
@@ -21,6 +21,9 @@ export function replayTimeout(message: string, safe: boolean) {
   error.replay = safe ? 'safe' : 'unsafe';
   return error;
 }
+// Keep observation-only timeouts separate from failure signatures used by routing.
+const outputDeadlineFailures = new WeakSet<SourceError>();
+export const isOutputDeadlineFailure = (error: unknown) => error instanceof SourceError && outputDeadlineFailures.has(error);
 export function preventReplay(error: unknown, message: string): SourceError {
   const failure = error instanceof SourceError ? error : new SourceError('upstream', message);
   failure.replay = 'unsafe';
@@ -57,11 +60,11 @@ export function lengthLimited(reason: unknown) {
 }
 
 // An unfinished tool call cannot be executed. Keep visible text and measured usage.
-export function truncatedCompletion(content: unknown, usage?: { prompt_tokens?: unknown; completion_tokens?: unknown }): Completion {
+export function truncatedCompletion(content: unknown, usage?: { prompt_tokens?: unknown; completion_tokens?: unknown }, finish: unknown = 'length', attestation?: Pick<Completion, 'servedModel' | 'free'>): Completion {
   const input = usage?.prompt_tokens, output = usage?.completion_tokens;
-  return withEnding({ text: typeof content === 'string' ? content : '', finishReason: 'length',
+  return withEnding({ ...attestation, text: typeof content === 'string' ? content : '', finishReason: 'length',
     ...(typeof input === 'number' && Number.isSafeInteger(input) && input >= 0 ? { inputTokens: input } : {}),
-    ...(typeof output === 'number' && Number.isSafeInteger(output) && output >= 0 ? { outputTokens: output } : {}) }, completionEnding('length', usage, false));
+    ...(typeof output === 'number' && Number.isSafeInteger(output) && output >= 0 ? { outputTokens: output } : {}) }, completionEnding(finish, usage, false));
 }
 
 // Arguments of a call the client will execute must be one JSON object. Blank arguments are the
@@ -100,23 +103,35 @@ export function guardToolCalls(result: Completion, request: Pick<ModelRequest, '
   throw new SourceError('upstream', 'Source returned a tool call with unparseable arguments', undefined, undefined, { failureReason: 'response_tools', httpStatus: 200 });
 }
 
-// Content-free facts about how a reply ended, for local diagnostics only. `finish` is the provider's finish_reason
-// mapped to a fixed set (anything unrecognised is 'other', never the raw string); `toolCalls` says whether the reply
-// carried parsed calls. Nothing here is sent to a client, the registry or the fleet collector.
-export interface CompletionEnding { finish?: typeof diagnosticFinishReasons[number]; toolCalls?: boolean; reasoningTokens?: number }
+// Content-free reply metadata. The guard uses normalized `finish` when the
+// adapter exposes client-owned tool calls through it. Diagnostics also retain
+// the exact allowlisted provider value, including protocol-specific reasons.
+export interface CompletionEnding { finish?: typeof diagnosticFinishReasons[number]; providerFinish?: typeof providerFinishReasons[number]; toolCalls?: boolean; reasoningTokens?: number }
 // Kept beside the reply, not on it, so the Completion shape every client and test sees is unchanged.
 const endings = new WeakMap<Completion, CompletionEnding>();
 export function withEnding<T extends Completion>(reply: T, ending: CompletionEnding): T { endings.set(reply, ending); return reply; }
 export const endingOf = (reply: Completion): CompletionEnding | undefined => endings.get(reply);
+export function withObservedEnding<T extends Completion>(reply: T, finish: unknown, usage: unknown, toolCalls: boolean) {
+  const { finish: _normalized, ...observed } = completionEnding(finish, usage, toolCalls);
+  return withEnding(reply, observed);
+}
 export function completionEnding(finish: unknown, usage: unknown, toolCalls: boolean): CompletionEnding {
   const known = typeof finish === 'string' ? (diagnosticFinishReasons as readonly string[]).includes(finish) ? finish as typeof diagnosticFinishReasons[number]
     : finish === 'max_tokens' ? 'length' : 'other' : finish === undefined || finish === null ? undefined : 'other';
   const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
   const u = record(usage), details = record(u.completion_tokens_details ?? u.output_tokens_details), reasoning = details.reasoning_tokens;
-  return { ...(known ? { finish: known } : {}), toolCalls,
+  const providerFinish = providerFinishReasons.find(reason => reason === finish);
+  return { ...(known ? { finish: known } : {}), ...(providerFinish ? { providerFinish } : {}), toolCalls,
     ...(typeof reasoning === 'number' && Number.isSafeInteger(reasoning) && reasoning >= 0 ? { reasoningTokens: reasoning } : {}) };
 }
 export interface Completion { servedModel?: string; free?: boolean; text: string; calls?: ToolCall[]; finishReason?: 'stop' | 'length' | 'tool_calls' | 'content_filter' | 'function_call'; inputTokens?: number; outputTokens?: number; diagnostics?: SafeDiagnosticMetadata }
+export function observeRequestInput(request: ModelRequest) {
+  const current = currentDiagnosticContext();
+  current?.sink?.record({ version: 1, id: randomUUID(), at: Date.now(), type: 'request.input',
+    requestId: current.requestId, kind: current.kind, model: request.model,
+    promptBytes: request.messages.reduce((total, message) => total + Buffer.byteLength(message.content), 0),
+    ...(request.maxTokens === undefined ? {} : { maxOutputTokens: request.maxTokens }) });
+}
 // Names the adapter that produced each completion; setup checks it against the requested adapter.
 export const answeredBy = new WeakMap<Completion, string>();
 export interface QuotaWindow { startedAt: number; resetAt: number }
@@ -219,17 +234,18 @@ export class Sources {
         const context = currentDiagnosticContext();
         context?.sink?.record({ version: 1, id: randomUUID(), at, requestId: context.requestId, kind: context.kind, type: 'route.eligible', source });
       },
-      observe: (source, reason, skipped) => {
-        const context = currentDiagnosticContext();
-        if (context) this.diagnostics?.record({ version: 1, id: randomUUID(), at: Date.now(), requestId: context.requestId, kind: context.kind,
-          type: skipped ? 'route.skip' : 'route.selection', source, reason, ...(skipped ? { outcome: 'skipped' } : {}) });
-      } });
+      observe: this.observeRoute });
   }
+  private observeRoute = (source: string, reason?: DiagnosticEvent['reason'], skipped = false) => {
+    const context = currentDiagnosticContext();
+    context?.sink?.record({ version: 1, id: randomUUID(), at: Date.now(), requestId: context.requestId, kind: context.kind,
+      type: skipped ? 'route.skip' : 'route.selection', source, ...(reason ? { reason } : {}), ...(skipped ? { outcome: 'skipped' } : {}) });
+  };
   // One routed call to one source, with the first-output deadline. A failure
   // (not a cancellation) is logged and reported to the source.
   private attempt = async (source: Source, request: ModelRequest, signal: AbortSignal): Promise<Completion> => {
     if (this.retired(source.id)) throw new SourceError('not_installed', `${source.id} routing is retired`);
-    const timed: Source = { id: source.id, available: () => source.available(), complete: (r, s) => this.firstOutput(source, r, s) };
+    const timed: Source = { id: source.id, available: () => source.available(), complete: (r, s, output) => this.firstOutput(source, r, s, output) };
     try {
       const result = await this.observation.complete(timed, request, signal);
       signal.throwIfAborted();
@@ -244,7 +260,7 @@ export class Sources {
       throw error;
     }
   };
-  private firstOutput(source: Source, request: ModelRequest, caller: AbortSignal): Promise<Completion> {
+  private firstOutput(source: Source, request: ModelRequest, caller: AbortSignal, output?: () => void): Promise<Completion> {
     const watchdog = source.reportsOutput || source.reportsProgress || source.inferenceOnly && request.model !== source.id;
     const promptCancellation = source.inferenceOnly || source.reportsProgress;
     if (!watchdog && !promptCancellation) return source.complete(request, caller);
@@ -264,12 +280,14 @@ export class Sources {
       timer = setTimeout(() => {
         finished = true;
         const error = replayTimeout(`${source.id} produced no ${outputStarted ? 'further ' : ''}output within ${limit / 1000} seconds`, !nativeWork);
+        outputDeadlineFailures.add(error);
         deadline.abort(error);
         rejectCutoff(error);
       }, limit);
     };
     const progress = () => {
       if (finished) return;
+      output?.();
       outputStarted = true;
       clearTimeout(timer); timer = undefined;
       if (source.reportsProgress) arm();
@@ -329,13 +347,33 @@ export class Sources {
   setRegistryScores(score: (id: string) => number | null | undefined) { for (const router of [this.router, this.chainRouter]) router?.useRegistryScores(score); }
   flushRoutingHistory() { return this.observation.flushRoutingHistory(); }
   diagnosticStore() { return this.diagnostics; }
+  observationConfig() {
+    return {
+      routing: this.router ? 'weighted_sticky' : 'ordered_chain',
+      defaultFirstOutputMs: this.firstOutputMs,
+      configuredSources: this.sources.map(source => ({
+        id: source.id, firstOutputMs: source.reportsOutput || source.reportsProgress || source.inferenceOnly ? source.firstOutputMs ?? this.firstOutputMs : null,
+        idleMs: source.reportsProgress ? source.idleMs ?? source.firstOutputMs ?? this.firstOutputMs : null
+      }))
+    };
+  }
+  observationRoutes() {
+    const router = this.registeredRouter, snapshot = this.status(false);
+    return snapshot.sources.map(row => {
+      const cooldown = router?.cooldown(row.id, false);
+      return { ...row, retired: router?.retired(row.id) ?? false, trialInProgress: router?.trialBusy(row.id) ?? false,
+        cooldown: cooldown && cooldown.until > snapshot.updatedAt
+          ? { until: Number.isFinite(cooldown.until) ? cooldown.until : null, reason: cooldown.code ?? null }
+          : row.retryAt !== undefined ? { until: row.retryAt, reason: row.errorCode ?? null } : null };
+    });
+  }
   setMaintenance(reader: () => Record<string, MaintenanceEntry>) { this.maintenance = reader; }
-  status(): PoolSnapshot {
+  status(clearRecovered = true): PoolSnapshot {
     const router = this.registeredRouter;
     const snapshot = this.observation.snapshot({ ids: this.sources.map(source => source.id), disabled: this.disabledModels,
       retired: id => this.retired(id), pending: this.pending, verifying: this.verifying, preparing: this.preparing,
       ...(this.router ? { listed: (id: string) => this.unrouted(id) || this.router!.listed(id) } : {}),
-      ...(router ? { cooldown: (id: string) => router.cooldown(id) } : {}),
+      ...(router ? { cooldown: (id: string) => router.cooldown(id, clearRecovered) } : {}),
       model: id => {
         const adapter = this.routing?.registry().adapters.find(adapter => adapter.id === id);
         // A rotation is a configured set, not an assertion about which model
@@ -364,7 +402,17 @@ export class Sources {
   // Maintenance uses the configured source directly. It cannot silently pass
   // because a different provider answered, nor start provisioning or repair.
   async check(id: string, caller: AbortSignal): Promise<MaintenanceResult> {
-    return withDiagnosticContext({ requestId: randomUUID(), kind: 'maintenance', ...(this.diagnostics ? { sink: this.diagnostics } : {}) }, () => this.checkSource(id, caller));
+    const store = this.diagnostics, requestId = randomUUID(), started = Date.now();
+    const base = { version: 1 as const, requestId, kind: 'maintenance' as const, model: id };
+    return withDiagnosticContext({ requestId, kind: base.kind, ...(store ? { sink: store } : {}) }, async () => {
+      store?.record({ ...base, id: randomUUID(), at: started, type: 'request.start' });
+      let result: MaintenanceResult | undefined;
+      try { return result = await this.checkSource(id, caller); }
+      finally {
+        store?.record({ ...base, id: randomUUID(), at: Date.now(), type: 'request.finish', source: id,
+          outcome: caller.aborted ? 'cancelled' : result?.outcome === 'deferred' ? 'skipped' : result?.outcome ?? 'failed' });
+      }
+    });
   }
   private async checkSource(id: string, caller: AbortSignal): Promise<MaintenanceResult> {
     caller.throwIfAborted();
@@ -484,7 +532,10 @@ export class Sources {
     const context: DiagnosticContext = { ...actor, requestId: parent?.requestId ?? randomUUID(), kind: this.verifying.has(request.model) ? 'setup' : parent?.kind ?? 'user', ...(this.diagnostics ? { sink: this.diagnostics } : {}) };
     return withDiagnosticContext(context, async () => {
       const started = Date.now(), startedMono = performance.now(), base = { version: 1 as const, requestId: context.requestId, kind: context.kind };
-      if (!parent?.requestRecorded) this.diagnostics?.record({ ...base, id: randomUUID(), at: started, type: 'request.start' });
+      if (!parent?.requestRecorded) {
+        this.diagnostics?.record({ ...base, id: randomUUID(), at: started, type: 'request.start' });
+        observeRequestInput(request);
+      }
       try {
         const result = await this.route(request, signal);
         const source = answeredBy.get(result);
@@ -493,7 +544,7 @@ export class Sources {
           this.diagnostics?.record({ ...base, id: randomUUID(), at: Date.now(), type: 'request.output', source });
         }
         if (!parent?.requestRecorded) this.diagnostics?.record({ ...base, id: randomUUID(), at: Date.now(), type: 'request.finish', outcome: signal.aborted ? 'cancelled' : 'passed', durationMs: Math.max(0, performance.now() - startedMono),
-          ...(source ? { source } : {}), ...(result.finishReason === 'length' ? { failureReason: 'length' as const } : {}),
+          ...(source ? { source } : {}), responseBytes: Buffer.byteLength(result.text), ...(result.finishReason === 'length' ? { failureReason: 'length' as const } : {}),
           ...(result.inputTokens === undefined ? {} : { inputTokens: result.inputTokens }), ...(result.outputTokens === undefined ? {} : { outputTokens: result.outputTokens }) });
         return result;
       } catch (error) {
@@ -513,9 +564,15 @@ export class Sources {
       const unsupported = unsupportedToolTypes(request);
       if (unsupported.length) throw new RequestError(`Unsupported tool type${unsupported.length > 1 ? 's' : ''}: ${unsupported.join(', ')}. Grunt accepts function tools only; remove the hosted tool from the client (for Codex, set web_search = "disabled").`);
     }
-    if (this.disabledModels.has(request.model)) throw new SourceError('refused', `${request.model} routing is disabled`);
+    if (this.disabledModels.has(request.model)) {
+      this.observeRoute(request.model, 'disabled', true);
+      throw new SourceError('refused', `${request.model} routing is disabled`);
+    }
     if (this.pending.has(request.model)) {
-      if (!this.verifying.has(request.model)) throw new SourceError('not_installed', `${request.model} setup is still in progress`);
+      if (!this.verifying.has(request.model)) {
+        this.observeRoute(request.model, 'pending_setup', true);
+        throw new SourceError('not_installed', `${request.model} setup is still in progress`);
+      }
       const source = this.sources.find(source => source.id === request.model);
       if (!source) throw new SourceError('not_installed', `No source for model ${this.safeModel(request.model)}`);
       if (this.router && !this.router.listed(source.id)) throw new SourceError('not_installed', `${request.model} is not in the current provider registry`);
@@ -546,7 +603,7 @@ export class Sources {
     const automatic = request.model === 'grunt' || request.model === 'milo' || !known;
     if (automatic && !['grunt', 'milo'].includes(request.model)) console.error('grunt model mapping: unrecognized model -> grunt');
     const toolsRequired = automatic && needsFunctionTools(request);
-    const candidates = automatic ? pool.filter(s => !toolsRequired || toolCapable(s)) : pool.filter(s => s.id === request.model);
+    const candidates = automatic ? pool : pool.filter(s => s.id === request.model);
     let last = routedFailure ?? new SourceError('not_installed', toolsRequired ? NO_TOOL_SOURCE : `No source for model ${this.safeModel(request.model)}`);
     // A routed pool may report quota for general exhaustion without a retry
     // hint. A concrete hint or an actual quota failure can guide the client.
@@ -554,16 +611,18 @@ export class Sources {
     let attempted = false;
     for (const source of candidates) {
       signal.throwIfAborted();
-      if (this.pending.has(source.id) || this.retired(source.id) || this.registeredRouter?.trialBusy(source.id)
-        || this.chainRouter?.listed(source.id) && !this.chainRouter.supportsInput(source.id, request.imageInput)
-        || this.chainRouter && knownAdapters.has(source.id) && !this.dispatchEligible(source.id)) continue;
+      const blocked = toolsRequired && !toolCapable(source) ? 'tools_unsupported' : this.pending.has(source.id) ? 'pending_setup'
+        : this.retired(source.id) ? 'retired' : this.registeredRouter?.trialBusy(source.id) ? 'trial_in_progress'
+        : this.chainRouter?.listed(source.id) && !this.chainRouter.supportsInput(source.id, request.imageInput) ? 'input_unsupported'
+        : this.chainRouter && knownAdapters.has(source.id) && !this.dispatchEligible(source.id)
+          ? !this.chainRouter.listed(source.id) ? 'not_listed' : this.disabledModels.has(source.id) ? 'disabled' : 'cooldown' : undefined;
+      if (blocked) { this.observeRoute(source.id, blocked, true); continue; }
       if (source.acceptsRequest && !source.acceptsRequest(request)) {
+        this.observeRoute(source.id, 'context_not_approved', true);
         if (!automatic) throw new SourceError('refused', `${source.id} requires approved request context`);
         continue;
       }
-      const context = currentDiagnosticContext();
-      if (context) this.diagnostics?.record({ version: 1, id: randomUUID(), at: Date.now(), requestId: context.requestId, kind: context.kind, type: 'route.selection', source: source.id,
-        ...(!automatic ? { reason: 'explicit' as const } : attempted || pool !== this.sources ? { reason: 'fallback' as const } : {}) });
+      this.observeRoute(source.id, !automatic ? 'explicit' : attempted || pool !== this.sources ? 'fallback' : undefined);
       attempted = true;
       let completion: Completion;
       const release = this.registeredRouter?.claimTrial(source.id) ?? (() => {});
@@ -622,10 +681,11 @@ export class Gateway implements Source {
     if (!response.ok) throw new SourceError(response.status === 401 || response.status === 403 ? 'logged_out' : response.status === 429 ? 'quota' : 'upstream', `grunt gateway returned HTTP ${response.status}`);
     const body = await response.json() as { choices?: { finish_reason?: unknown; message?: { content?: string | null; tool_calls?: ToolCall[] } }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
     const message = body.choices?.[0]?.message;
-    if (lengthLimited(body.choices?.[0]?.finish_reason)) return truncatedCompletion(message?.content, body.usage);
+    if (lengthLimited(body.choices?.[0]?.finish_reason)) return truncatedCompletion(message?.content, body.usage, body.choices?.[0]?.finish_reason);
     if (!message || (typeof message.content !== 'string' && !message.tool_calls?.length)) throw new SourceError('upstream', 'grunt gateway returned an invalid completion');
-    return { text: message.content ?? '', ...(message.tool_calls ? { calls: message.tool_calls } : {}),
-      ...(body.usage?.prompt_tokens === undefined ? {} : { inputTokens: body.usage.prompt_tokens }), ...(body.usage?.completion_tokens === undefined ? {} : { outputTokens: body.usage.completion_tokens }) };
+    return withObservedEnding({ text: message.content ?? '', ...(message.tool_calls ? { calls: message.tool_calls } : {}),
+      ...(body.usage?.prompt_tokens === undefined ? {} : { inputTokens: body.usage.prompt_tokens }), ...(body.usage?.completion_tokens === undefined ? {} : { outputTokens: body.usage.completion_tokens }) },
+    body.choices?.[0]?.finish_reason, body.usage, !!message.tool_calls?.length);
   }
 }
 import { StickyRouter } from './routing.js';

@@ -18,11 +18,12 @@ const request: ModelRequest = { model: 'grunt', messages: [{ role: 'user', conte
 const call = { id: 'call_1', type: 'function' as const, function: { name: 'probe', arguments: '{}' } };
 const source = (reply: () => Completion): Source => ({ id: 'kilo', available: async () => true, complete: async () => reply() });
 
-it('maps finish reasons to a fixed set and keeps no raw provider string', () => {
-  expect(completionEnding('stop', {}, false)).toEqual({ finish: 'stop', toolCalls: false });
-  expect(completionEnding('tool_calls', {}, true)).toEqual({ finish: 'tool_calls', toolCalls: true });
-  expect(completionEnding('max_tokens', {}, false).finish).toBe('length');
-  for (const raw of ['PRIVATE_SECRET_REASON', 'eos', 7, {}, '']) expect(completionEnding(raw, {}, false)).toEqual({ finish: 'other', toolCalls: false });
+it('retains exact known provider reasons and redacts arbitrary values', () => {
+  expect(completionEnding('stop', {}, false)).toEqual({ finish: 'stop', providerFinish: 'stop', toolCalls: false });
+  expect(completionEnding('tool_calls', {}, true)).toEqual({ finish: 'tool_calls', providerFinish: 'tool_calls', toolCalls: true });
+  expect(completionEnding('max_tokens', {}, false)).toEqual({ finish: 'length', providerFinish: 'max_tokens', toolCalls: false });
+  expect(completionEnding('eos', {}, false)).toEqual({ finish: 'other', providerFinish: 'eos', toolCalls: false });
+  for (const raw of ['PRIVATE_SECRET_REASON', 7, {}, '']) expect(completionEnding(raw, {}, false)).toEqual({ finish: 'other', toolCalls: false });
   expect(completionEnding(null, {}, false)).toEqual({ toolCalls: false });
   expect(completionEnding('stop', { completion_tokens_details: { reasoning_tokens: 42 } }, false).reasoningTokens).toBe(42);
   expect(completionEnding('stop', { completion_tokens_details: { reasoning_tokens: -1 } }, false)).not.toHaveProperty('reasoningTokens');

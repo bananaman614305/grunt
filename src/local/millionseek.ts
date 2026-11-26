@@ -1,7 +1,7 @@
 import { compileToolSchemas } from './tool-schema.js';
 import { configRoot } from '../brand.js';
 import { readDataSharingConsent } from './data-sharing.js';
-import { diagnosticFetch, diagnosticNetworks } from './diagnostics.js';
+import { observeAttemptDispatch, diagnosticFetch, diagnosticNetworks } from './diagnostics.js';
 import type { SafeDiagnosticMetadata } from './diagnostics.js';
 import type { FreeApiGrant } from './free-api.js';
 import { FreebuffTools } from './freebuff-tools.js';
@@ -122,6 +122,7 @@ export class MillionSeek implements Source {
     if (Buffer.byteLength(payload) > 4 * 1024 * 1024) throw new SourceError('refused', '100milionseek request exceeds its documented body limit');
     let streamFailure: SafeDiagnosticMetadata['failureReason'];
     try {
+      observeAttemptDispatch({ model: MILLIONSEEK_MODEL, account: 'vaulted', maxOutputTokens: maxTokens });
       const response = await diagnosticFetch(this.options.fetcher ?? fetch, this.id, 'chat.completions')(`${grant.base_url}/v1/chat/completions`, { method: 'POST', redirect: 'error', signal,
         headers: { Authorization: `Bearer ${grant.token}`, 'Content-Type': 'application/json', Accept: 'text/event-stream, application/json' }, body: payload });
       if (!response.ok) {
@@ -150,7 +151,7 @@ export class MillionSeek implements Source {
         const choice = object(body.choices[0]), message = object(choice.message);
         if (message.refusal) throw new SourceError('refused', '100milionseek refused the request');
         usable(usage);
-        if (lengthLimited(choice.finish_reason)) return truncatedCompletion(message.content, usage);
+        if (lengthLimited(choice.finish_reason)) return truncatedCompletion(message.content, usage, choice.finish_reason);
         if (!['stop', 'tool_calls'].includes(String(choice.finish_reason))
           || !(message.content === undefined || message.content === null || typeof message.content === 'string')) throw new Error('Invalid completion');
         let calls: ToolCall[] | undefined;
