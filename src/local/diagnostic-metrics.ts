@@ -104,6 +104,16 @@ export async function pruneDiagnosticMetrics(tx: Transaction, now: number) {
   }
 }
 
+function diagnosticLosses(metadata: ReadonlyMap<string, string>) {
+  return { persistentDroppedEvents: Number(metadata.get('dropped_events') ?? 0),
+    droppedLateEvents: Number(metadata.get('dropped_late_events') ?? 0), overflowEvents: Number(metadata.get('overflow_events') ?? 0) };
+}
+
+export async function readDiagnosticLosses(db: Client) {
+  const result = await db.execute("SELECT key,value FROM diagnostic_metric_meta WHERE key IN ('dropped_events','dropped_late_events','overflow_events')");
+  return diagnosticLosses(new Map(result.rows.map(row => [String(row.key), String(row.value)])));
+}
+
 export async function readDiagnosticMetrics(db: Client | undefined, streamId: string | null, options: { since?: number; until?: number }, now: number): Promise<DiagnosticMetrics> {
   const until = options.until ?? now, since = options.since ?? until - 86400000;
   if (!Number.isSafeInteger(since) || !Number.isSafeInteger(until) || since < 0 || since > until || until > now) throw new Error('Invalid diagnostic metrics window');
@@ -117,9 +127,7 @@ export async function readDiagnosticMetrics(db: Client | undefined, streamId: st
   const metadata = new Map((await db.execute('SELECT key,value FROM diagnostic_metric_meta')).rows.map(row => [String(row.key), String(row.value)]));
   result.coverage.startedAt = metadata.has('started_at') ? Number(metadata.get('started_at')) : null;
   result.coverage.deduplicationFloor = Number(metadata.get('deduplication_floor') ?? 0);
-  result.coverage.droppedLateEvents = Number(metadata.get('dropped_late_events') ?? 0);
-  result.coverage.overflowEvents = Number(metadata.get('overflow_events') ?? 0);
-  result.coverage.persistentDroppedEvents = Number(metadata.get('dropped_events') ?? 0);
+  Object.assign(result.coverage, diagnosticLosses(metadata));
   result.coverage.droppedEvents = result.coverage.persistentDroppedEvents;
   const first = (await db.execute('SELECT min(hour) AS hour FROM diagnostic_metric_hours')).rows[0]?.hour;
   result.coverage.retainedFrom = first === null || first === undefined ? null : Number(first);

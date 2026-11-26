@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { diagnosticFetch } from './diagnostics.js';
+import { observeAttemptDispatch, diagnosticFetch } from './diagnostics.js';
 import type { ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -8,8 +8,8 @@ import { userTurns } from './harness.js';
 import { executable } from './multiplexer.js';
 import { loopback } from './freellmapi.js';
 import { ManagedOpenCodeProcess } from './managed-opencode-process.js';
-import { lengthLimited, preventReplay, replayTimeout, SourceError } from './source.js';
-import type { Completion, ModelRequest, Source } from './source.js';
+import { lengthLimited, preventReplay, replayTimeout, withObservedEnding, SourceError } from './source.js';
+import type { ModelRequest, Source } from './source.js';
 
 export const DEFAULT_OPENCODE_MODELS = ['deepseek-v4.1-flash-free', 'glm-5.3-flash-free', 'big-pickle'] as const;
 const MODEL_QUOTA_COOLDOWN_MS = 60000;
@@ -47,7 +47,7 @@ function sumTokens(counts: readonly unknown[]): number | undefined {
   return Number.isSafeInteger(total) ? total : undefined;
 }
 
-function replyUsage(parts: readonly ReplyPart[], messageTokens?: TokenCounts): Pick<Completion, 'inputTokens' | 'outputTokens'> {
+function replyUsage(parts: readonly ReplyPart[], messageTokens?: TokenCounts) {
   const steps = parts.filter(part => part.type === 'step-finish');
   // OpenCode's message summary can repeat just the final step's usage.
   const reports = steps.length ? steps.map(step => step.tokens) : [messageTokens];
@@ -59,7 +59,8 @@ function replyUsage(parts: readonly ReplyPart[], messageTokens?: TokenCounts): P
   });
   const inputTokens = sumTokens(measured.map(tokens => sumTokens([tokens?.input, tokens?.cache?.read ?? 0, tokens?.cache?.write ?? 0])));
   const outputTokens = sumTokens(measured.map(tokens => sumTokens([tokens?.output, tokens?.reasoning ?? 0])));
-  return { ...(inputTokens === undefined ? {} : { inputTokens }), ...(outputTokens === undefined ? {} : { outputTokens }) };
+  const reasoningTokens = sumTokens(measured.map(tokens => tokens?.reasoning));
+  return { reasoningTokens, usage: { ...(inputTokens === undefined ? {} : { inputTokens }), ...(outputTokens === undefined ? {} : { outputTokens }) } };
 }
 
 export class OpenCode implements Source {
@@ -320,6 +321,7 @@ export class OpenCode implements Source {
       })().catch(error => { guardFailed = true; throw error; });
       turnSignal.throwIfAborted();
       dispatched = true;
+      observeAttemptDispatch({ model: modelID, account: 'local_session' });
       const reply = await Promise.race([watching, call(`/session/${session}/message`, {
         ...(attempt.messageID ? { messageID: attempt.messageID } : {}),
         model: { providerID: 'opencode', modelID }, parts: [{ ...(attempt.partID ? { id: attempt.partID } : {}), type: 'text', text: prompt }]
@@ -343,7 +345,9 @@ export class OpenCode implements Source {
       this.sessions.set(key(turns), session);
       this.sessionModels.set(session, modelID);
       if (typeof reply.info?.parentID === 'string') this.sessionParents.set(session, reply.info.parentID);
-      return { text, ...(truncated ? { finishReason: 'length' as const } : {}), ...replyUsage(parts, reply.info?.tokens) };
+      const { usage, reasoningTokens } = replyUsage(parts, reply.info?.tokens);
+      return withObservedEnding({ text, ...(truncated ? { finishReason: 'length' as const } : {}), ...usage }, finish,
+        { completion_tokens_details: { reasoning_tokens: reasoningTokens } }, parts.some(part => part.type === 'tool'));
     } catch (error) {
       if ((signal.aborted || guardFailed) && session && base) await this.fetcher(`${base}/session/${session}/abort`, { method: 'POST', headers, redirect: 'error', signal: AbortSignal.timeout(2000) }).catch(() => {});
       if (signal.aborted) {

@@ -4,7 +4,7 @@ import { readDataSharingConsent } from './data-sharing.js';
 import { providerGrantDirectory, readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
 import { FreebuffTools } from './freebuff-tools.js';
 import { completionEnding, withEnding, lengthLimited, truncatedCompletion, needsFunctionTools, SourceError } from './source.js';
-import { diagnosticFetch, recordAttemptFailure } from './diagnostics.js';
+import { diagnosticFetch, observeAttemptDispatch, recordAttemptFailure } from './diagnostics.js';
 import type { SafeDiagnosticMetadata } from './diagnostics.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 
@@ -215,6 +215,7 @@ export class Kilo implements Source {
   }
   private async ask(model: string, body: string, origin: string, grant: { token: string } | undefined, request: ModelRequest, messages: ModelRequest['messages'],
     validators: Map<string, ValidateFunction>, limit: number | undefined, signal: AbortSignal): Promise<Completion> {
+    observeAttemptDispatch({ model, account: grant ? 'vaulted' : 'anonymous', ...(limit === undefined ? {} : { maxOutputTokens: limit }) });
     const response = await abortable(diagnosticFetch(this.options.fetcher ?? fetch, this.id, 'chat.completions')(`${origin}/chat/completions`, { method: 'POST', redirect: 'error', signal,
       headers: { 'Content-Type': 'application/json', ...(grant ? { Authorization: `Bearer ${grant.token}` } : {}) }, body }), signal); status(response);
     const fail = (code: 'upstream' | 'refused', message: string, reason: NonNullable<SafeDiagnosticMetadata['failureReason']>) =>
@@ -243,7 +244,7 @@ export class Kilo implements Source {
     const text = typeof message.content === 'string' ? message.content : '';
     if (lengthLimited(choice.finish_reason)) {
       if (request.model !== this.id && !text.trim()) throw unusable('Kilo stopped at the output limit without usable output', 'length');
-      return { ...truncatedCompletion(text, usage), servedModel: model, free: true };
+      return truncatedCompletion(text, usage, choice.finish_reason, { servedModel: model, free: true });
     }
     const calls: ToolCall[] = [], ids = new Set<string>();
     if (message.tool_calls !== undefined) {

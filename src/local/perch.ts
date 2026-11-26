@@ -1,3 +1,4 @@
+import { observeAttemptDispatch } from './diagnostics.js';
 import { configRoot } from '../brand.js';
 import { constants } from 'node:fs';
 import { access, lstat, mkdir, mkdtemp, open, readdir, rename, rm, writeFile } from 'node:fs/promises';
@@ -7,7 +8,7 @@ import { dirname, join, resolve } from 'node:path';
 import { compileToolSchemas } from './tool-schema.js';
 import { readDataSharingConsent } from './data-sharing.js';
 import { FreebuffTools } from './freebuff-tools.js';
-import { preventReplay, replayTimeout, SourceError, requestRefusal } from './source.js';
+import { completionEnding, preventReplay, replayTimeout, SourceError, requestRefusal, withEnding } from './source.js';
 import type { Completion, ModelRequest, Source } from './source.js';
 import { openPerchACP, runPerchCommand, runPerchMemorySettings, verifyPerchCoreFiles } from './perch-process.js';
 import type { PerchProcessOptions, PerchProcesses } from './perch-process.js';
@@ -313,6 +314,7 @@ export class Perch implements Source {
       session = await openSession(this.directory, workspace, signal, this.processes);
       if (!session.identity || session.identity.email !== r.email) throw eligibilityError();
       inferenceStarted = true;
+      observeAttemptDispatch({ account: 'local_session' });
       const result = object(await session.acp.request('session/prompt', { sessionId: session.sessionId, prompt: [{ type: 'text', text: prompt }] }));
       signal.throwIfAborted();
       if (result.stopReason !== 'end_turn' && result.stopReason !== 'max_tokens') throw new SourceError('upstream', 'Perch did not return a complete response');
@@ -330,14 +332,14 @@ export class Perch implements Source {
         }
       }
       const usage = snapshotUsage(await readSnapshot(workspace.request, session.sessionId, signal), limit);
-      if (result.stopReason === 'max_tokens') return { text: '', finishReason: 'length', ...usage };
+      if (result.stopReason === 'max_tokens') return withEnding({ text: '', finishReason: 'length', ...usage }, completionEnding(result.stopReason, undefined, false));
       // The CLI has no hard upstream output-token option. This validates returned
       // usage after generation; monthly allowance can already have been consumed.
       // No repair generation is attempted, so the caller budget is cumulative.
       try {
         const completion = bridge.parse(text);
         if (!completion.text.trim() && !completion.calls?.length) throw new Error('Empty answer');
-        return { ...completion, ...usage };
+        return withEnding({ ...completion, ...usage }, completionEnding(result.stopReason, undefined, !!completion.calls?.length));
       } catch { throw new SourceError('upstream', 'Perch returned an invalid caller tool envelope'); }
     } catch (error) {
       if (!caller.aborted && !this.shutdown.signal.aborted && !signal.aborted && error instanceof SourceError && (error.code === 'logged_out' || (inferenceStarted && error.code === 'refused'))) await rm(perchPaths(this.directory).receipt, { force: true }).catch(() => {});

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { completionEnding, withEnding, lengthLimited, truncatedCompletion, SourceError } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 import { nousQuotaDelay, quotaObject, quotaRetryAfter, readQuotaError } from './quota-timing.js';
-import { diagnosticFetch } from './diagnostics.js';
+import { observeAttemptDispatch, diagnosticFetch } from './diagnostics.js';
 
 // Low-level pinned clients. Production wrappers add provider-specific access
 // receipts, quota checks and data-sharing consent before enabling a route.
@@ -84,6 +84,7 @@ export class FreeApi implements Source {
     const signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(this.options.timeout ?? 180000)]);
     let response: Response;
     try {
+      observeAttemptDispatch({ model: this.spec.model, account: 'configured', maxOutputTokens: request.maxTokens });
       response = await diagnosticFetch(this.options.fetcher ?? fetch, this.id, 'chat.completions')(`${grant.base_url}${this.spec.prefix}/chat/completions`, {
         method: 'POST', redirect: 'error', signal,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${grant.token}` },
@@ -121,7 +122,7 @@ export class FreeApi implements Source {
       const choice = body.choices?.[0], message = choice?.message;
       const finishReason = this.id === 'zro' ? finishReasons.find(reason => reason === choice?.finish_reason) : undefined;
       if (message?.refusal) throw new SourceError('refused', `${this.id} refused the request`);
-      if (lengthLimited(choice?.finish_reason)) return truncatedCompletion(message?.content, body.usage);
+      if (lengthLimited(choice?.finish_reason)) return truncatedCompletion(message?.content, body.usage, choice?.finish_reason);
       const calls = message?.tool_calls;
       if (!message || (typeof message.content !== 'string' && !(validCalls(calls) && calls.length)) || (calls !== undefined && !validCalls(calls))) throw new SourceError('upstream', `${this.id} returned an invalid completion`);
       const inputTokens = tokens(body.usage?.prompt_tokens), outputTokens = tokens(body.usage?.completion_tokens);

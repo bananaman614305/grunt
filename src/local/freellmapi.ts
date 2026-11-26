@@ -1,5 +1,5 @@
-import { diagnosticFetch } from './diagnostics.js';
-import { lengthLimited, truncatedCompletion, SourceError } from './source.js';
+import { observeAttemptDispatch, diagnosticFetch } from './diagnostics.js';
+import { lengthLimited, truncatedCompletion, withObservedEnding, SourceError } from './source.js';
 import type { ModelRequest, Source, ToolCall } from './source.js';
 import { KILO_PARTICLE } from './kilo.js';
 
@@ -49,6 +49,7 @@ export class FreeLLMAPI implements Source {
     const signal = AbortSignal.any([caller, AbortSignal.timeout(600000)]);
     let response: Response;
     try {
+      observeAttemptDispatch({ model: this.options.model ?? 'auto', account: 'managed', maxOutputTokens: request.maxTokens });
       response = await diagnosticFetch(this.fetcher, this.id, 'chat.completions')(`${this.url}/chat/completions`, {
         method: 'POST', redirect: 'error', signal,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
@@ -65,8 +66,9 @@ export class FreeLLMAPI implements Source {
     const result = await response.json() as { choices?: { finish_reason?: unknown; message?: { content?: string | null; tool_calls?: ToolCall[]; refusal?: string } }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
     const message = result.choices?.[0]?.message;
     if (message?.refusal) throw new SourceError('refused', 'FreeLLMAPI provider refused the request');
-    if (lengthLimited(result.choices?.[0]?.finish_reason)) return truncatedCompletion(message?.content, result.usage);
+    if (lengthLimited(result.choices?.[0]?.finish_reason)) return truncatedCompletion(message?.content, result.usage, result.choices?.[0]?.finish_reason);
     if (!message || (typeof message.content !== 'string' && !message.tool_calls?.length)) throw new SourceError('upstream', 'FreeLLMAPI returned an invalid completion');
-    return { text: message.content ?? '', ...(message.tool_calls ? { calls: message.tool_calls } : {}), ...(typeof result.usage?.prompt_tokens === 'number' && Number.isSafeInteger(result.usage.prompt_tokens) && result.usage.prompt_tokens >= 0 ? { inputTokens: result.usage.prompt_tokens } : {}), ...(typeof result.usage?.completion_tokens === 'number' && Number.isSafeInteger(result.usage.completion_tokens) && result.usage.completion_tokens >= 0 ? { outputTokens: result.usage.completion_tokens } : {}) };
+    return withObservedEnding({ text: message.content ?? '', ...(message.tool_calls ? { calls: message.tool_calls } : {}), ...(typeof result.usage?.prompt_tokens === 'number' && Number.isSafeInteger(result.usage.prompt_tokens) && result.usage.prompt_tokens >= 0 ? { inputTokens: result.usage.prompt_tokens } : {}), ...(typeof result.usage?.completion_tokens === 'number' && Number.isSafeInteger(result.usage.completion_tokens) && result.usage.completion_tokens >= 0 ? { outputTokens: result.usage.completion_tokens } : {}) },
+        result.choices?.[0]?.finish_reason, result.usage, !!message.tool_calls?.length);
   }
 }

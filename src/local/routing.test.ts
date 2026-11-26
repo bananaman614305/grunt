@@ -390,12 +390,15 @@ it('includes vetted Kilo in weighted default routing and falls through after its
   expect(await sources.complete(input, AbortSignal.timeout(1000))).toEqual({ text: 'opencode done' });
 });
 it('labels a first draw weighted and a later turn sticky', async () => {
-  const reasons: string[] = [];
+  const decisions: { reason: string; skipped: boolean }[] = [];
   const a = source('opencode'), b = source('kilo');
-  const router = new StickyRouter([a, b], { registry: () => launchRegistry, random: () => 0, observe: (_id, reason) => { reasons.push(reason); } });
+  const router = new StickyRouter([a, b], { registry: () => launchRegistry, random: () => 0, observe: (_id, reason, skipped = false) => { decisions.push({ reason, skipped }); } });
   await router.complete(request, AbortSignal.timeout(1000));
   await router.complete({ ...request, messages: [...request.messages, { role: 'assistant', content: 'ok' }] }, AbortSignal.timeout(1000));
-  expect(reasons).toEqual(['weighted', 'sticky']);
+  expect(decisions).toEqual([
+    { reason: 'weighted_draw', skipped: true }, { reason: 'weighted', skipped: false },
+    { reason: 'sticky_binding', skipped: true }, { reason: 'sticky', skipped: false }
+  ]);
 });
 // Harness subagent notifications arrive as new user-role messages. They report
 // on the same task, so the orchestrator keeps its task, source and checkpoint.

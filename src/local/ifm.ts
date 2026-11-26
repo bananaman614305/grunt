@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { compileToolSchemas } from './tool-schema.js';
 import { configRoot } from '../brand.js';
 import { readDataSharingConsent } from './data-sharing.js';
-import { diagnosticFetch, diagnosticNetworks } from './diagnostics.js';
+import { diagnosticFetch, diagnosticNetworks, observeAttemptDispatch, observeAttemptQueue } from './diagnostics.js';
 import type { SafeDiagnosticMetadata } from './diagnostics.js';
 import { readPromotionalStream } from './promotional-api.js';
 import type { FreeApiGrant } from './free-api.js';
@@ -181,11 +181,14 @@ export class Ifm implements Source {
   // At most IFM_GUARD_REQUESTS request starts per IFM_GUARD_WINDOW_MS, so a burst from parallel subagents queues
   // for a moment here instead of drawing a 429 from the guard. In-flight requests are not limited.
   private async admit(signal: AbortSignal) {
+    let queued = false;
     for (;;) {
       signal.throwIfAborted();
       const now = Date.now();
       this.starts = this.starts.filter(at => now - at < IFM_GUARD_WINDOW_MS);
       if (this.starts.length < IFM_GUARD_REQUESTS) { this.starts.push(now); return; }
+      // This time-based gate has no FIFO order to report.
+      if (!queued) { observeAttemptQueue(() => null); queued = true; }
       const wait = IFM_GUARD_WINDOW_MS - (now - this.starts[0]!) + 5;
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, wait);
@@ -227,6 +230,7 @@ export class Ifm implements Source {
     };
     try {
       await this.admit(signal);
+      observeAttemptDispatch({ model: IFM_MODEL, account: 'vaulted', maxOutputTokens: request.maxTokens });
       const response = await diagnosticFetch(this.options.fetcher ?? fetch, this.id, 'chat.completions')(`${grant.base_url}/v1/chat/completions`, { method: 'POST', redirect: 'error', signal,
         headers: { Authorization: `Bearer ${grant.token}`, 'Content-Type': 'application/json' }, body: payload });
       if (!response.ok) {
@@ -265,7 +269,7 @@ export class Ifm implements Source {
         if (message.refusal) throw new SourceError('refused', 'IFM refused the request');
         // IFM's documents call the field reasoning_content; live responses named it reasoning. Keep whichever arrives.
         reasoning = typeof message.reasoning_content === 'string' ? message.reasoning_content : typeof message.reasoning === 'string' ? message.reasoning : undefined;
-        if (lengthLimited(choice.finish_reason)) reply = truncatedCompletion(message.content, usage);
+        if (lengthLimited(choice.finish_reason)) reply = truncatedCompletion(message.content, usage, choice.finish_reason);
         else {
           if (!['stop', 'tool_calls'].includes(String(choice.finish_reason)) || !(message.content === undefined || message.content === null || typeof message.content === 'string')) throw new Error('Invalid completion');
           if (message.tool_calls !== undefined && message.tool_calls !== null && !Array.isArray(message.tool_calls)) throw new Error('Invalid tools');

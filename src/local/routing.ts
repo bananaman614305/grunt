@@ -10,7 +10,7 @@ import type { Adapter, Registry } from '../registry.js';
 import { knownAdapters } from '../registry.js';
 import { SourceStatus } from './source-status.js';
 import { SourceAvailability } from './source-availability.js';
-import { currentDiagnosticContext, withDiagnosticContext } from './diagnostics.js';
+import { currentDiagnosticContext, observeRequestPhase, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticEvent } from './diagnostics.js';
 import type { RoutingWorkload } from './routing-history.js';
 import { RETIRE_AFTER_FAILURES, localRequestRefusal, routingWorkload, slowUpstreamFailure, upstreamRetryHint, withRoutingWorkload } from './routing-history.js';
@@ -111,10 +111,11 @@ export class StickyRouter {
   needsHealthCheck(id: string) { return this.bars.get(id) === Infinity; }
   healthy(id: string) { if (this.bars.get(id) === Infinity) { this.bars.delete(id); this.barFailures.delete(id); } }
   verified(id: string) { this.bars.delete(id); this.barFailures.delete(id); this.barAt.delete(id); this.observation.clearRoutingBackoff(id); }
-  cooldown(id: string) {
+  cooldown(id: string, clearRecovered = true) {
     let until = this.bars.get(id), code = this.barFailures.get(id);
     if (until !== undefined && Number.isFinite(until) && (this.observation.routingRecoveryAt(id) ?? 0) > (this.barAt.get(id) ?? Infinity)) {
-      this.bars.delete(id); this.barFailures.delete(id); this.barAt.delete(id); until = undefined; code = undefined;
+      if (clearRecovered) { this.bars.delete(id); this.barFailures.delete(id); this.barAt.delete(id); }
+      until = undefined; code = undefined;
     }
     const observedQuota = this.observation.quotaRetryAt(id);
     if (observedQuota !== undefined && (until === undefined || observedQuota >= until)) {
@@ -287,24 +288,29 @@ export class StickyRouter {
     let yieldedMetadata = false, idleWaitEnds: number | undefined;
     const observation = this.observation;
     const skip = (source: string, reason: NonNullable<DiagnosticEvent['reason']>) => this.options.observe?.(source, reason, true);
-    const dispatchBlocked = (id: string) => {
+    const dispatchBlockReason = (id: string): DiagnosticEvent['reason'] => {
       const adapter = this.options.registry().adapters.find(a => a.id === id
-        && this.registered(a.id) && a.modalities.includes('text') && (!request.imageInput || a.modalities.includes('image')));
-      return !adapter || scoutRetired(adapter, this.now()) || this.retired(id) || this.trialBusy(id)
-        || this.options.disabled?.has(id) || this.options.pending?.has(id);
+        && this.registered(a.id));
+      if (!adapter) return 'not_listed';
+      if (!adapter.modalities.includes('text') || request.imageInput && !adapter.modalities.includes('image')) return 'input_unsupported';
+      if (scoutRetired(adapter, this.now()) || this.retired(id)) return 'retired';
+      if (this.trialBusy(id)) return 'trial_in_progress';
+      if (this.options.disabled?.has(id)) return 'disabled';
+      if (this.options.pending?.has(id)) return 'pending_setup';
     };
     // Subscribe per request so a shared availability probe can identify
     // eligible backups while the current attempt is still running.
     const stopObserving = context?.sink && observeEligible ? observation.observePositiveAvailability((id, at) => {
       const source = checking.get(id);
-      if (!source || signal.aborted || attempted.has(id) || dispatchBlocked(id)
+      if (!source || signal.aborted || attempted.has(id) || dispatchBlockReason(id)
         || (this.cooldown(id)?.until ?? 0) > at || source.acceptsRequest && !source.acceptsRequest(request)) return;
       reportEligible(id, at);
     }) : undefined;
     try {
       for (;;) {
         signal.throwIfAborted();
-        const adapters = this.options.registry().adapters.filter(a => this.registered(a.id) && a.modalities.includes('text') && (!request.imageInput || a.modalities.includes('image')));
+        const registered = this.options.registry().adapters.filter(a => this.registered(a.id));
+        const adapters = registered.filter(a => a.modalities.includes('text') && (!request.imageInput || a.modalities.includes('image')));
         const eligible: Candidate[] = [];
         const unknown: Source[] = [];
         const retryTimes: number[] = [];
@@ -317,17 +323,19 @@ export class StickyRouter {
           const adapter = adapters.find(a => a.id === source.id);
           if (explicit && source.id !== request.model) continue;
           if (!adapter || this.options.disabled?.has(source.id) || scoutRetired(adapter, this.now())) {
-            skip(source.id, 'not_listed');
+            skip(source.id, this.options.disabled?.has(source.id) ? 'disabled'
+              : adapter ? 'retired' : registered.some(a => a.id === source.id) ? 'input_unsupported' : 'not_listed');
             continue;
           }
           if (source.acceptsRequest && !source.acceptsRequest(request)) {
-            if (source.id === request.model) throw new SourceError('refused', `${source.id} requires approved request context`);
             skip(source.id, 'context_not_approved');
+            if (source.id === request.model) throw new SourceError('refused', `${source.id} requires approved request context`);
             continue;
           }
           if (this.options.pending?.has(source.id)) { transient = true; skip(source.id, 'pending_setup'); continue; }
           if (toolsRequired && !toolCapable(source)) { skip(source.id, 'tools_unsupported'); continue; }
-          if (this.retired(source.id) || this.trialBusy(source.id)) { if (this.trialBusy(source.id)) transient = true; skip(source.id, 'cooldown'); continue; }
+          if (this.retired(source.id)) { skip(source.id, 'retired'); continue; }
+          if (this.trialBusy(source.id)) { transient = true; skip(source.id, 'trial_in_progress'); continue; }
           const until = this.cooldown(source.id)?.until;
           if (until !== undefined && until > this.now()) {
             if (Number.isFinite(until)) { retryTimes.push(until); transient = true; }
@@ -337,6 +345,7 @@ export class StickyRouter {
           if (attempted.has(source.id)) {
             // This call cannot repeat this source. The next call can try it now, unless it refused the request itself.
             if (!refused.has(source.id)) { retryTimes.push(this.now()); transient = true; }
+            skip(source.id, refused.has(source.id) ? 'request_refused' : 'already_attempted');
             continue;
           }
           const available = this.availability.peek(source.id);
@@ -367,11 +376,12 @@ export class StickyRouter {
         // quota), without waiting for network or a slow unrelated provider.
         if (eligible.length && startedChecks && !yieldedMetadata) {
           yieldedMetadata = true;
+          observeRequestPhase('checking_routes');
           await metadataTurn(undefined, { signal });
           continue;
         }
         if (!eligible.length) {
-          if (unknown.length && this.availability.hasPending()) { await this.availability.changed(signal); continue; }
+          if (unknown.length && this.availability.hasPending()) { observeRequestPhase('checking_routes'); await this.availability.changed(signal); continue; }
           // No source lists image input at all: that is the request's shape, not quota, so say so as an invalid request.
           const imageRefused = request.imageInput === true && !this.sources.some(source => (!explicit || source.id === request.model) && !this.options.unrouted?.has(source.id) && this.imageListed(source.id));
           const failure = imageRefused ? new RequestError('This conversation contains an image, but no source on this route accepts image input; remove the image or continue in text')
@@ -386,10 +396,11 @@ export class StickyRouter {
         // bound task keeps its source: it is mid-session, and leaving costs a handoff for no known failure.
         const native = NATIVE_TOOL_SOURCES_FIRST && toolsRequired && !boundMain && eligible.some(candidate => !bridgedTools(candidate.source));
         const draw = native ? eligible.filter(candidate => !bridgedTools(candidate.source)) : eligible;
+        if (native) for (const candidate of eligible) if (bridgedTools(candidate.source)) skip(candidate.source.id, 'native_tools_preferred');
         // Only bridged sources are ready, but a native one is still being checked: wait for that check (deadline
         // bounded) instead of drawing a bridged source on a cold cache.
         if (NATIVE_TOOL_SOURCES_FIRST && toolsRequired && !boundMain && !native && unknown.some(source => toolCapable(source) && !bridgedTools(source)) && this.availability.hasPending()) {
-          await this.availability.changed(signal); continue;
+          observeRequestPhase('checking_routes'); await this.availability.changed(signal); continue;
         }
         const idle = draw.filter(candidate => !this.busy(candidate.source.id));
         // Main requests may overlap a read-only/maintenance observation. They
@@ -404,9 +415,10 @@ export class StickyRouter {
         if (!boundMain && !idle.length && joining.length && this.availability.hasPending()) {
           idleWaitEnds ??= Date.now() + (task.source === undefined ? FIRST_DRAW_IDLE_WAIT_MS : Infinity);
           const left = idleWaitEnds - Date.now();
-          if (left > 0) { await this.availability.changed(signal, Number.isFinite(left) ? left : undefined); continue; }
+          if (left > 0) { observeRequestPhase('checking_routes'); await this.availability.changed(signal, Number.isFinite(left) ? left : undefined); continue; }
         }
         const ready = boundMain || !idle.length ? draw : idle;
+        if (ready === idle) for (const candidate of draw) if (!idle.includes(candidate)) skip(candidate.source.id, 'idle_route_preferred');
         let selected = ready.find(candidate => candidate.source.id === task.source);
         let performanceSwitch = false;
         if (selected && !attempted.size) {
@@ -419,6 +431,7 @@ export class StickyRouter {
           let draw = (this.options.random ?? Math.random)() * ready.reduce((total, a) => total + a.weight, 0);
           selected = ready.find(a => (draw -= a.weight) < 0) ?? ready.at(-1)!;
         }
+        for (const candidate of ready) if (candidate !== selected) skip(candidate.source.id, bound ? 'sticky_binding' : 'weighted_draw');
         // Claim the source now, in the same tick as the draw: handoff below awaits, and concurrent tasks must
         // not draw the same idle source meanwhile. Released when this attempt ends or the selection is dropped.
         const unreserve = this.reserve(selected.source.id);
@@ -427,7 +440,9 @@ export class StickyRouter {
         try {
           // A provider with a request scope guard may only receive the client-approved
           // payload. Handoff would append an unchecked local diff and prior output.
-          const input = switched && !explicit && !selected.source.acceptsRequest ? await this.handoff({ ...request, cwd }, task, signal) : { ...request, cwd };
+          const handoff = switched && !explicit && !selected.source.acceptsRequest;
+          if (handoff) observeRequestPhase('preparing_handoff', selected.source.id);
+          const input = handoff ? await this.handoff({ ...request, cwd }, task, signal) : { ...request, cwd };
           // Availability and handoff can yield while maintenance records a newer cooldown.
           if ((this.cooldown(selected.source.id)?.until ?? 0) > this.now()) {
             skip(selected.source.id, 'cooldown');
@@ -435,7 +450,8 @@ export class StickyRouter {
           }
           signal.throwIfAborted();
           // Keep this check and attempt dispatch synchronous.
-          if (dispatchBlocked(selected.source.id) || performanceSwitch && this.busy(selected.source.id, 1)) continue;
+          const blocked = dispatchBlockReason(selected.source.id) ?? (performanceSwitch && this.busy(selected.source.id, 1) ? 'idle_route_preferred' : undefined);
+          if (blocked) { skip(selected.source.id, blocked); continue; }
           release = this.claimTrial(selected.source.id);
           task.source = selected.source.id;
           task.switched = switched;

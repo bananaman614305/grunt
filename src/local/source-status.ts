@@ -1,5 +1,5 @@
 import type { Completion, ErrorCode, ModelRequest, QuotaWindow, Source } from './source.js';
-import { SourceError, endingOf, guardToolCalls } from './source.js';
+import { SourceError, endingOf, guardToolCalls, isOutputDeadlineFailure } from './source.js';
 import type { providerQuotaPolicy, SellerQuota } from './quota-policy.js';
 import type { MaintenanceEntry } from './maintenance.js';
 import { randomUUID } from 'node:crypto';
@@ -316,38 +316,53 @@ export class SourceStatus {
     const parent = currentDiagnosticContext() ?? { requestId: randomUUID(), kind: 'diagnostic' as const };
     const attemptId = randomUUID(), started = this.now(), startedMono = performance.now();
     const base = { version: 1 as const, requestId: parent.requestId, kind: parent.kind, attemptId, source: source.id };
-    this.diagnostics.record({ ...base, id: randomUUID(), at: started, type: 'attempt.start' });
+    this.diagnostics.record({ ...base, id: randomUUID(), at: started, type: 'attempt.start',
+      ...(request.maxTokens === undefined ? {} : { maxOutputTokens: request.maxTokens }) });
     return withDiagnosticContext({ ...parent, attemptId, sink: this.diagnostics! }, async () => {
+      let lastProgressAt: number | undefined, settled = false;
+      const output = () => {
+        if (settled || signal.aborted) return;
+        const at = this.now();
+        if (lastProgressAt === undefined) this.diagnostics!.record({ ...base, id: randomUUID(), at, type: 'attempt.progress' });
+        lastProgressAt = at;
+        this.diagnostics!.setAttemptProgress(base.requestId, attemptId, at);
+      };
       try {
-        const result = await this.observedComplete(source, request, signal, guard), ending = endingOf(result);
+        const result = await this.observedComplete(source, request, signal, guard, output), ending = endingOf(result);
         this.diagnostics!.record({ ...sanitizeSafeDiagnosticMetadata(result.diagnostics), ...base, id: randomUUID(), at: this.now(), type: 'attempt.finish',
           outcome: signal.aborted ? 'cancelled' : 'passed', durationMs: Math.max(0, performance.now() - startedMono),
+          responseBytes: Buffer.byteLength(result.text),
+          ...(lastProgressAt === undefined ? {} : { lastProgressAt }),
           ...(result.servedModel ? { model: result.servedModel } : {}),
           ...(typeof result.free === 'boolean' ? { free: result.free } : {}),
           ...(result.finishReason === 'length' ? { failureReason: 'length' } : {}),
           ...(result.inputTokens === undefined ? {} : { inputTokens: result.inputTokens }),
           ...(result.outputTokens === undefined ? {} : { outputTokens: result.outputTokens }),
           ...(ending?.finish ? { finishReason: ending.finish } : {}),
+          ...(ending?.providerFinish ? { providerFinishReason: ending.providerFinish } : {}),
           ...(ending?.toolCalls === undefined ? {} : { hadToolCalls: ending.toolCalls }),
           ...(ending?.reasoningTokens === undefined ? {} : { reasoningTokens: ending.reasoningTokens }) });
         return result;
       } catch (error) {
         const value = error && typeof error === 'object' ? error as { diagnostics?: object; retryAfter?: unknown } : {};
+        const metadata = isOutputDeadlineFailure(error) ? { failureReason: 'deadline' as const } : sanitizeSafeDiagnosticMetadata(value.diagnostics);
         if (!signal.aborted && error instanceof SourceError && error.replay !== undefined) {
-          recordAttemptFailure(source.id, error.diagnostics, error.replay === 'safe');
+          recordAttemptFailure(source.id, metadata, error.replay === 'safe');
         }
-        this.diagnostics!.record({ ...sanitizeSafeDiagnosticMetadata(value.diagnostics), ...base, id: randomUUID(), at: this.now(), type: 'attempt.finish',
+        this.diagnostics!.record({ ...metadata, ...base, id: randomUUID(), at: this.now(), type: 'attempt.finish',
           outcome: signal.aborted ? 'cancelled' : 'failed', errorCode: signal.aborted ? 'cancelled' : failureCode(error),
+          ...(lastProgressAt === undefined ? {} : { lastProgressAt }),
           durationMs: Math.max(0, performance.now() - startedMono), ...(typeof value.retryAfter === 'number' ? { retryAfterSeconds: value.retryAfter } : {}) });
         throw error;
-      }
+      } finally { settled = true; }
     });
   }
-  private async observedComplete(source: Source, request: ModelRequest, signal: AbortSignal, guard?: ObservationGuard): Promise<Completion> {
+  private async observedComplete(source: Source, request: ModelRequest, signal: AbortSignal, guard?: ObservationGuard, output?: () => void): Promise<Completion> {
     const entry = this.entry(source.id), started = this.now();
     entry.active++;
     try {
-      const result = guardToolCalls(await source.complete(request, signal), request);
+      const reply = output ? await source.complete(request, signal, output) : await source.complete(request, signal);
+      const result = guardToolCalls(reply, request);
       // A provider may finish after the caller cancelled. That is not evidence
       // of an admitted successful response, and must not resurrect readiness.
       if (!signal.aborted && (!guard || entry.revision === guard.revision)) {
@@ -389,7 +404,8 @@ export class SourceStatus {
   }): PoolSnapshot {
     const now = this.now();
     const sources = [...new Set([...options.ids, ...options.disabled])].map((id): SourceSnapshot => {
-      const entry = this.entry(id), model = options.model?.(id);
+      const entry: Observation = this.observations.get(id) ?? { state: 'unknown', active: 0, revision: 0 };
+      const model = options.model?.(id);
       const row: SourceSnapshot = { id, state: entry.state, active: entry.active,
         ...(model ? { model, modelKind: 'registry' } : {}), ...(entry.failure ? { errorCode: entry.failure } : {}), ...(entry.lastReplyMs !== undefined ? { lastReplyMs: entry.lastReplyMs } : {}),
         ...(entry.lastSuccessAt !== undefined ? { lastSuccessAt: entry.lastSuccessAt } : {}) };

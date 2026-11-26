@@ -1,6 +1,6 @@
 import { configRoot } from '../brand.js';
 import { readDataSharingConsent } from './data-sharing.js';
-import { diagnosticFetch, recordTransport } from './diagnostics.js';
+import { observeAttemptDispatch, diagnosticFetch, recordTransport } from './diagnostics.js';
 import type { SafeDiagnosticMetadata } from './diagnostics.js';
 import { readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
 import type { FreeApiGrant } from './free-api.js';
@@ -98,6 +98,7 @@ export class PromotionalApi implements Source {
     const signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(180000)]);
     let completionFailure: FailureReason | undefined;
     try {
+      observeAttemptDispatch({ model: this.spec.model, account: 'vaulted', maxOutputTokens: request.maxTokens });
       const response = await diagnosticFetch(this.options.fetcher ?? fetch, this.id, 'chat.completions')(`${grant.base_url}/v1/chat/completions`, {
         method: 'POST', redirect: 'error', signal,
         headers: { Authorization: `Bearer ${grant.token}`, 'Content-Type': 'application/json', 'User-Agent': 'grunt' },
@@ -118,7 +119,7 @@ export class PromotionalApi implements Source {
       if (body.model !== this.spec.model) throw new Error('Unexpected model');
       const choice = object(Array.isArray(body.choices) ? body.choices[0] : null), message = object(choice.message);
       if (message.refusal) throw new SourceError('refused', 'Promotional request refused');
-      if (lengthLimited(choice.finish_reason)) return truncatedCompletion(message?.content, object(body.usage));
+      if (lengthLimited(choice.finish_reason)) return truncatedCompletion(message?.content, object(body.usage), choice.finish_reason);
       const calls = message.tool_calls;
       if (calls !== undefined && !validCalls(calls) || typeof message.content !== 'string' && !(validCalls(calls) && calls.length)) throw new Error('Invalid completion');
       return completion(typeof message.content === 'string' ? message.content : '', validCalls(calls) ? calls : [], object(body.usage), choice.finish_reason);
@@ -243,6 +244,6 @@ export async function readPromotionalStream(response: Response, model: string, s
     signal.throwIfAborted();
     // The observer may reject usage it cannot accept; it never changes the reply.
     observe?.result?.(usage);
-    return truncated ? truncatedCompletion(text, usage) : completion(text, result, usage, finishReason);
+    return truncated ? truncatedCompletion(text, usage, finishReason) : completion(text, result, usage, finishReason);
   } finally { signal.removeEventListener('abort', abort); await reader.cancel().catch(cleanupFailed); observed('stream_cleanup', () => reader.releaseLock()); }
 }

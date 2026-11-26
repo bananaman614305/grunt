@@ -1,4 +1,4 @@
-import { currentDiagnosticContext, diagnosticFetch } from './diagnostics.js';
+import { observeAttemptDispatch, currentDiagnosticContext, diagnosticFetch } from './diagnostics.js';
 import { constants } from 'node:fs';
 import { lstat, mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
@@ -8,7 +8,7 @@ import { readDataSharingConsent } from './data-sharing.js';
 import { providerGrantDirectory } from './provider-grant.js';
 import { FreebuffTools } from './freebuff-tools.js';
 import { MetadataFlights } from './metadata-flight.js';
-import { lengthLimited, truncatedCompletion, SourceError, requestRefusal } from './source.js';
+import { lengthLimited, truncatedCompletion, withObservedEnding, SourceError, requestRefusal } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 
 export const BEATAPI_MODEL = 'deepseek-v4.1-flash-free';
@@ -218,6 +218,7 @@ export class BeatAPI implements Source {
       const model = grant.version === 2 ? grant.models[this.nextModel] : BEATAPI_MODEL;
       signal.throwIfAborted();
       awaitingInferenceResponse = true;
+      observeAttemptDispatch({ model: model, account: 'vaulted', maxOutputTokens: request.maxTokens });
       const response = await abortable(diagnosticFetch(this.options.fetcher ?? fetch, 'beatapi', 'chat.completions')(`${grant.base_url}/v1/chat/completions`, { method: 'POST', redirect: 'error', signal,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${grant.token}` }, body: JSON.stringify({ model, messages,
           ...(request.tools.length ? { tools: request.tools } : {}), stream: false, max_tokens: request.maxTokens }) }), signal);
@@ -250,8 +251,9 @@ export class BeatAPI implements Source {
       if (!truncated && !message.content && !calls.length) throw new SourceError('upstream', 'BeatAPI returned an empty completion');
       this.next = this.now() + FREE_REQUEST_COOLDOWN_MS;
       this.nextModel = grant.version === 2 && model === BEATAPI_MODEL ? 1 : 0;
-      if (truncated) return truncatedCompletion(message.content, usage);
-      return { text: typeof message.content === 'string' ? message.content : '', ...(calls.length ? { calls } : {}), inputTokens: usage.prompt_tokens as number, outputTokens: usage.completion_tokens as number };
+      if (truncated) return truncatedCompletion(message.content, usage, choice.finish_reason);
+      return withObservedEnding({ text: typeof message.content === 'string' ? message.content : '', ...(calls.length ? { calls } : {}), inputTokens: usage.prompt_tokens as number, outputTokens: usage.completion_tokens as number },
+        choice.finish_reason, usage, calls.length > 0);
     } catch (error) {
       // A transport failure can still leave an inference completing upstream.
       if (awaitingInferenceResponse) this.next = this.now() + FREE_REQUEST_COOLDOWN_MS;

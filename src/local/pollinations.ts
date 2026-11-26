@@ -1,4 +1,4 @@
-import { diagnosticFetch } from './diagnostics.js';
+import { observeAttemptDispatch, diagnosticFetch } from './diagnostics.js';
 import type { SafeDiagnosticMetadata } from './diagnostics.js';
 import { configRoot } from '../brand.js';
 import { constants } from 'node:fs';
@@ -227,6 +227,7 @@ export class Pollinations implements Source {
         signal.throwIfAborted();
         const grant = await this.grant();
         await this.verifyAccess(grant, signal);
+        observeAttemptDispatch({ model: POLLINATIONS_MODEL, account: 'vaulted', maxOutputTokens: request.maxTokens });
         const response = await diagnosticFetch(this.options.fetcher ?? fetch, 'pollinations', 'chat.completions')(`${grant.base_url}/v1/chat/completions`, {
           method: 'POST', redirect: 'error', signal,
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${grant.token}` },

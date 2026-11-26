@@ -1,3 +1,4 @@
+import { observeAttemptDispatch } from './diagnostics.js';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
@@ -69,6 +70,7 @@ export class Codex {
     try {
       // Exec options precede resume so workspace-write applies to both commands.
       const args = ['exec', '--json', '--sandbox', 'workspace-write', ...(this.options.model ? ['-m', this.options.model] : []), ...(session ? ['resume', session] : []), '-'];
+      observeAttemptDispatch({ account: 'local_session', ...(this.options.model ? { model: this.options.model } : {}) });
       const output = await this.run(args, cwd, signal, prompt);
       let thread: string | undefined, text = '';
       for (const line of output.split('\n')) {

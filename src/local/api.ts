@@ -7,10 +7,12 @@ import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { housekeeping, userText } from './harness.js';
-import { RequestError, SourceError, answeredBy } from './source.js';
+import { RequestError, SourceError, answeredBy, observeRequestInput } from './source.js';
 import type { Completion, Message, ModelRequest, Tool, ToolCall, Sources } from './source.js';
 import { currentDiagnosticContext, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticContext } from './diagnostics.js';
+import { OBSERVATION_PATH, observationLimit, observeDaemon } from './observe.js';
+import type { ObservationRuntime } from './observe.js';
 type Obj = Record<string, unknown>;
 const object = (v: unknown): Obj => v && typeof v === 'object' && !Array.isArray(v) ? v as Obj : {};
 const array = (v: unknown): unknown[] => Array.isArray(v) ? v : [];
@@ -233,16 +235,30 @@ const removedWorkers = (c: Context) => {
   c.header('Cache-Control', 'no-store');
   return c.json({ ok: false, code: 'unavailable', error: { type: 'removed', message: 'Grunt subworkers were removed. Use your coding harness\'s own subagents; update or stop the installed grunt_delegate/grunt_spawn tools.' } }, 410);
 };
-export function createLocalApp(sources: Sources, options: { cwd?: string; port?: number; log?: (cwd: string) => void; dotsEnv?: NodeJS.ProcessEnv } = {}) {
+const inferenceEndpoints = new Map<string, 'chat' | 'messages' | 'responses'>([
+  ['/v1/chat/completions', 'chat'], ['/v1/messages', 'messages'], ['/v1/responses', 'responses']
+]);
+const callerAgents = [['claude-code', /\bclaude-cli\b|\bclaude-code\b/i], ['codex', /\bcodex(?:[-_][\w-]+)?\b/i],
+  ['opencode', /\bopencode\b/i], ['beeline', /\bbeeline\b/i], ['pi', /\bpi-coding-agent\b/i]] as const;
+
+export function createLocalApp(sources: Sources, options: { cwd?: string; port?: number; log?: (cwd: string) => void; dotsEnv?: NodeJS.ProcessEnv; observation?: () => ObservationRuntime } = {}) {
   const app = new Hono();
+  const startedAt = Date.now();
   app.use('*', async (c, next) => {
     const port = options.port ?? 8788;
     const host = c.req.header('host') ?? new URL(c.req.url).host;
     if (![ `127.0.0.1:${port}`, `localhost:${port}` ].includes(host) || (c.req.raw.headers.has('origin') && c.req.path !== '/dots/pair')) return c.json({ error: { message: 'Forbidden local request' } }, 403);
-    const tracked = c.req.method === 'POST' && ['/v1/chat/completions', '/v1/messages', '/v1/responses'].includes(c.req.path);
+    const endpoint = c.req.method === 'POST' ? inferenceEndpoints.get(c.req.path) : undefined;
+    const tracked = endpoint !== undefined;
     const store = sources.diagnosticStore(), requestId = randomUUID(), started = Date.now(), startedMono = performance.now();
     const context: DiagnosticContext = { requestId, kind: 'user', actor: 'client', requestRecorded: true, ...(store ? { sink: store } : {}) };
-    if (tracked) { c.header('X-Grunt-Request-Id', requestId); store?.record({ version: 1, id: randomUUID(), at: started, requestId, kind: 'user', actor: 'client', type: 'request.start' }); }
+    if (tracked) {
+      c.header('X-Grunt-Request-Id', requestId);
+      const caller = c.req.header('x-grunt-caller')?.toLowerCase()
+        ?? callerAgents.find(([, pattern]) => pattern.test(c.req.header('user-agent') ?? ''))?.[0];
+      store?.record({ version: 1, id: randomUUID(), at: started, requestId, kind: 'user', actor: 'client', type: 'request.start', endpoint,
+        ...(caller === undefined ? {} : { caller }) });
+    }
     let status: number | undefined;
     const run = async () => {
       try {
@@ -255,6 +271,7 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
           store?.record({ version: 1, id: randomUUID(), at: Date.now(), requestId, kind: context.kind, type: 'request.finish', httpStatus,
             durationMs: Math.max(0, performance.now() - startedMono), outcome: c.req.raw.signal.aborted ? 'cancelled' : httpStatus >= 400 ? 'failed' : 'passed',
             ...(source ? { source } : {}), ...(context.local ? { reason: 'local' } : {}), ...(context.errorCode ? { errorCode: context.errorCode } : {}),
+            ...(context.responseBytes === undefined ? {} : { responseBytes: context.responseBytes }),
             ...(context.incomplete ? { failureReason: 'length' } : {}) });
         }
       }
@@ -265,6 +282,13 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
   app.get('/v1/status', c => {
     c.header('Cache-Control', 'no-store');
     return c.json(sources.status());
+  });
+  app.get(OBSERVATION_PATH, async c => {
+    c.header('Cache-Control', 'no-store');
+    let limit: number;
+    try { limit = observationLimit(c.req.query('limit')); }
+    catch { return c.json({ error: 'Observation limit must be a nonnegative integer' }, 400); }
+    return c.json(await observeDaemon(sources, limit, options.observation?.() ?? { port: options.port ?? 8788, startedAt }));
   });
   // Grunt subworkers were removed. Older installed Pi extensions and MCP servers get a clear
   // error shaped like their old failure response (code 'unavailable') instead of a bare 404.
@@ -313,6 +337,7 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
         includeUsage = api === 'chat' && object(body.stream_options).include_usage === true;
       }
       catch (e) { return c.json({ ...(api === 'messages' ? { type: 'error' } : {}), error: { type: 'invalid_request_error', message: e instanceof Error ? e.message : 'Invalid request' } }, 400); }
+      observeRequestInput(request);
       if (c.req.header('x-grunt-context') === 'public') request.publicContext = true;
       const local = housekeeping(request);
       if (local !== undefined) { const context = currentDiagnosticContext(); if (context) context.local = true; }
@@ -331,6 +356,8 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
         if (request.cwdSource === 'scratch') await mkdir(request.cwd, { recursive: true });
         const completion = await complete(signal);
         signal.throwIfAborted();
+        const context = currentDiagnosticContext();
+        if (context) context.responseBytes = Buffer.byteLength(completion.text);
         const source = answeredBy.get(completion);
         if (source) c.header('X-Grunt-Source', source);
         if (sources.preparing.size) c.header('X-Grunt-Preparing', [...sources.preparing].join(','));

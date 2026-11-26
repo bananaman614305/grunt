@@ -1,9 +1,10 @@
 import { configRoot } from '../brand.js';
+import { diagnosticFetch, observeAttemptDispatch } from './diagnostics.js';
 import { constants } from 'node:fs';
 import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { lengthLimited, truncatedCompletion, SourceError } from './source.js';
+import { lengthLimited, truncatedCompletion, withObservedEnding, SourceError } from './source.js';
 import type { ModelRequest, Source, ToolCall } from './source.js';
 
 export const NVIDIA_DEEPSEEK = 'deepseek-ai/deepseek-v4.1-flash';
@@ -61,7 +62,8 @@ export class Nvidia implements Source {
     try {
       // This grant is bound to integrate.api.nvidia.com. There is no local
       // aggregator or secondary provider that could answer or spend paid quota.
-      response = await this.fetcher(`${grant.base_url}/v1/chat/completions`, {
+      observeAttemptDispatch({ model: NVIDIA_DEEPSEEK, account: 'vaulted', maxOutputTokens: request.maxTokens });
+      response = await diagnosticFetch(this.fetcher, this.id, 'chat.completions')(`${grant.base_url}/v1/chat/completions`, {
         method: 'POST', redirect: 'error', signal,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${grant.token}` },
         body: JSON.stringify({ model: NVIDIA_DEEPSEEK, messages: request.messages, tools: request.tools.length ? request.tools : undefined,
@@ -83,9 +85,10 @@ export class Nvidia implements Source {
       const result = await response.json() as { choices?: { finish_reason?: unknown; message?: { content?: string | null; tool_calls?: ToolCall[]; refusal?: string } }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };
       const message = result.choices?.[0]?.message;
       if (message?.refusal) throw new SourceError('refused', 'NVIDIA refused the request');
-      if (lengthLimited(result.choices?.[0]?.finish_reason)) return truncatedCompletion(message?.content, result.usage);
+      if (lengthLimited(result.choices?.[0]?.finish_reason)) return truncatedCompletion(message?.content, result.usage, result.choices?.[0]?.finish_reason);
       if (!message || (typeof message.content !== 'string' && !message.tool_calls?.length)) throw new SourceError('upstream', 'NVIDIA returned an invalid completion');
-      return { text: message.content ?? '', ...(message.tool_calls ? { calls: message.tool_calls } : {}), inputTokens: result.usage?.prompt_tokens ?? 0, outputTokens: result.usage?.completion_tokens ?? 0 };
+      return withObservedEnding({ text: message.content ?? '', ...(message.tool_calls ? { calls: message.tool_calls } : {}), inputTokens: result.usage?.prompt_tokens ?? 0, outputTokens: result.usage?.completion_tokens ?? 0 },
+        result.choices?.[0]?.finish_reason, result.usage, !!message.tool_calls?.length);
     } catch (error) {
       caller.throwIfAborted();
       if (error instanceof SourceError) throw error;

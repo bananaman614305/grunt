@@ -375,7 +375,7 @@ it('records a content-free ending for a streamed reply and still refuses an unkn
     { choices: [], usage: { prompt_tokens: 3, completion_tokens: 4, completion_tokens_details: { reasoning_tokens: 2 } } }
   ]), { headers: { 'Content-Type': 'text/event-stream' } });
   const stopped = await readPromotionalStream(stream('stop'), PROMOTIONAL_PROVIDERS.openference.model, AbortSignal.timeout(2000));
-  expect(endingOf(stopped)).toEqual({ finish: 'stop', toolCalls: false, reasoningTokens: 2 });
+  expect(endingOf(stopped)).toEqual({ finish: 'stop', providerFinish: 'stop', toolCalls: false, reasoningTokens: 2 });
   expect(stopped).toEqual({ text: 'Hello', inputTokens: 3, outputTokens: 4 });
   await expect(readPromotionalStream(stream('PRIVATE_REASON'), PROMOTIONAL_PROVIDERS.openference.model, AbortSignal.timeout(2000))).rejects.toBeDefined();
 });

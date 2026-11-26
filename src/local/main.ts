@@ -7,6 +7,8 @@ import { pathToFileURL } from 'node:url';
 import { basename, join } from 'node:path';
 import { serve } from '@hono/node-server';
 import { createLocalApp } from './api.js';
+import { OBSERVATION_PATH } from './observe.js';
+import type { ObservationRuntime } from './observe.js';
 import { positive } from './freebuff.js';
 import { SourceError, Sources } from './source.js';
 import { FreeLLMAPI } from './freellmapi.js';
@@ -151,6 +153,7 @@ export function configure(env = process.env, registry: () => Registry = () => bu
   return Object.assign(sources, { adopt });
 }
 export function start(env = process.env) {
+  const startedAt = Date.now();
   let registry = structuredClone(bundledRegistry);
   let anonymousKilo = false;
   const sources = configure(env, () => registry, () => anonymousKilo);
@@ -272,10 +275,23 @@ export function start(env = process.env) {
     if (renewed.length) console.error(`Data sharing on: ${renewed.join(', ')}. Off: ${DATA_SHARING_OPT_OUT}`);
   }).catch(() => console.error('Data-sharing approvals could not be renewed; rerun usegrunt setup'));
   const ready = Promise.all([sync.load(), diagnosticReady, routingHistory.ready, consent]).then(refreshSession);
+  let readiness: NonNullable<ObservationRuntime['readiness']> = 'starting';
+  void ready.then(() => { readiness = 'ready'; }, () => { readiness = 'failed'; });
   void ready.then(() => sync.start()).catch(() => console.error('Registry sync could not start; using the bundled list'));
   void ready.then(() => maintenance.start()).catch(() => console.error('Daily maintenance could not start; run usegrunt setup to repair local configuration'));
-  const app = createLocalApp(sources, { port, dotsEnv: env, log: cwd => console.error(`grunt working directory: ${cwd}`) });
-  const server = serve({ fetch: async request => { await ready; await refreshSession(); return app.fetch(request); }, hostname: HOST, port }, () => console.error(`grunt model API: http://${HOST}:${port}/v1`));
+  const redactedSettings = ['FREELLMAPI_KEY', 'FREELLMAPI_URL', 'OPENCODE_URL', 'CONFIG_DIR']
+    .filter(name => gruntEnv(name, env) !== undefined);
+  if (env.GRUNT_REGISTRY_URL) redactedSettings.push('REGISTRY_URL');
+  const app = createLocalApp(sources, { port, dotsEnv: env, log: cwd => console.error(`grunt working directory: ${cwd}`),
+    observation: () => ({ version: runtimeVersion, startedAt, port, readiness, config: {
+      fleetReporting: reportFleet, adoptionReporting: adoptionConsent, backgroundAccountAcquisition: acquireAccounts,
+      registry: env.GRUNT_REGISTRY_URL ? 'custom' : 'bundled_and_public', redactedSettings
+    } }) });
+  const server = serve({ fetch: async request => {
+    // Observation remains available during startup and while session refresh is stalled.
+    if (request.method !== 'GET' || new URL(request.url).pathname !== OBSERVATION_PATH) { await ready; await refreshSession(); }
+    return app.fetch(request);
+  }, hostname: HOST, port }, () => console.error(`grunt model API: http://${HOST}:${port}/v1`));
   let closing = false;
   const close = async () => { if (closing) return; closing = true; await Promise.all([maintenance.close(), sync.close(), recovery.close()]); await sources.close(); await routingHistory.close(); await diagnosticReady; await diagnostics?.close(); server.close(); };
   process.once('SIGINT', close); process.once('SIGTERM', close);
@@ -294,6 +310,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
     const { HARNESSES } = await import('./harnesses.js');
     try { await statusCommand(process.argv.slice(3), { harnesses: HARNESSES }); }
     catch (error) { console.error(error instanceof Error ? error.message : 'Could not read grunt status'); process.exitCode = 1; }
+  } else if (process.argv[2] === 'observe') {
+    try { const { observeCommand } = await import('./observe-cli.js'); await observeCommand(process.argv.slice(3)); }
+    catch (error) { console.error(error instanceof Error ? error.message : 'Could not observe the local Grunt daemon'); process.exitCode = 1; }
   } else if (process.argv[2] === 'efficiency') {
     try { const { efficiencyCommand } = await import('./efficiency-cli.js'); await efficiencyCommand(process.argv.slice(3)); }
     catch { console.error('Grunt efficiency command failed; check arguments and local measurement availability.'); process.exitCode = 1; }
@@ -309,7 +328,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
     console.error('Grunt subworkers were removed. Use your coding harness\'s own subagents (Claude Code, Codex and OpenCode have them built in). Retained worker artifacts, if any, are no longer managed by Grunt.');
     process.exitCode = 1;
   } else if (['--help', '-h'].includes(process.argv[2] ?? '')) {
-    console.log('Usage: usegrunt [setup | update | add <provider> | status [--watch] [--json] [--port <port>] | efficiency metrics [--port <port>] [--since <epoch-ms>] [--until <epoch-ms>] | execution-host <serve|tick|status> --config <private-policy.json>]\n\nRun setup to connect free sources, update to refresh the installed daemon, status --watch to view the pool.');
+    console.log('Usage: usegrunt [setup | update | add <provider> | status [--watch] [--json] [--port <port>] | observe [--limit <N>] [--json] [--port <port>] | efficiency metrics [--port <port>] [--since <epoch-ms>] [--until <epoch-ms>] | execution-host <serve|tick|status> --config <private-policy.json>]\n\nRun setup to connect free sources, update to refresh the installed daemon, status --watch to view the pool.\nRun observe --help for request, attempt, and daemon diagnostics.');
   } else if (process.argv[2] === 'dots' && process.argv[3] === 'link') {
     const { dotsLink } = await import('./dots-link.js');
     try { await dotsLink(process.argv[4]); }

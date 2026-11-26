@@ -12,6 +12,7 @@ import { userTurns } from './harness.js';
 import { preventReplay, replayTimeout, SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
 import { FreebuffTools } from './freebuff-tools.js';
+import { observeAttemptDequeue, observeAttemptDispatch, observeAttemptQueue } from './diagnostics.js';
 
 export function positive(value: string | undefined, fallback: number) {
   const number = value === undefined ? fallback : Number(value);
@@ -41,7 +42,12 @@ class Pool {
       const waiter = { resolve: () => { signal.removeEventListener('abort', abort); resolve(); }, reject };
       const abort = () => { this.queue = this.queue.filter(w => w !== waiter); reject(new SourceError('timeout', 'Freebuff request cancelled while queued')); };
       this.queue.push(waiter); signal.addEventListener('abort', abort, { once: true });
+      observeAttemptQueue(() => {
+        const index = this.queue.indexOf(waiter);
+        return index < 0 ? null : index + 1;
+      });
     });
+    observeAttemptDequeue();
   }
   release() { const waiter = this.queue.shift(); if (waiter) waiter.resolve(); else this.active--; }
 }
@@ -177,6 +183,7 @@ export class Freebuff implements Source {
       let sendFailure: unknown;
       signal.throwIfAborted();
       beforeNativeWork?.();
+      observeAttemptDispatch({ account: 'local_session' });
       dispatched = true;
       void this.mux.send(id, prompt).then(() => { sendComplete = true; }, error => { sendFailure = error; sendComplete = true; });
       let malformedSince: number | undefined;
