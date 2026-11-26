@@ -45,6 +45,7 @@ export type DeclarativeAdapter = Adapter & {
   model: string;
   signup: string;
   hints: string;
+  expires: string;
   declarative: DeclarativeOpenAiConfig;
 };
 // A provider listed in the registry before Grunt ships an adapter for it. Every
@@ -179,7 +180,7 @@ export const ADAPTER_RULES = {
   models: `only opencode may list models: 1 to ${MODELS_MAX} distinct non-blank strings, without model`,
   fit: `must be one of ${FITS.join(', ')}`,
   status: `must be one of ${STATUSES.join(', ')}`,
-  expires: 'must be a YYYY-MM-DD day',
+  expires: 'must be a YYYY-MM-DD day; required for a declarative adapter',
   hints: `must be non-blank text of at most ${HINTS_MAX} characters; required for a declarative adapter`,
   declarative: `required JSON object when install is ${DECLARATIVE_OPENAI_INSTALL}, forbidden otherwise`
 } as const satisfies Record<typeof ADAPTER_FIELDS[number], string>;
@@ -254,6 +255,7 @@ export function adapterErrors(value: unknown): RegistryError[] {
     check(a.models === undefined, 'models');
     check(safePublicHttpsUrl(a.signup), 'signup');
     check(hintsValid(a.hints), 'hints');
+    check(dayValid(a.expires), 'expires');
     errors.push(...declarativeErrors(a.declarative));
   } else {
     check(a.declarative === undefined, 'declarative');

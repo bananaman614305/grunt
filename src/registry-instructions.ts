@@ -100,7 +100,7 @@ ${table(ADAPTER_FIELDS, ADAPTER_RULES, ADAPTER_REQUIRED)}
 
 ## Declarative adapter fields (\`declarative\`)
 
-For ephemeral OpenAI-compatible free API promos that need no custom TypeScript adapter, set \`install\` to \`${DECLARATIVE_OPENAI_INSTALL}\`, \`kind\` to \`model\`, \`modalities\` to \`["text"]\`, and provide \`model\`, \`signup\`, \`hints\`, and \`declarative\`:
+For ephemeral OpenAI-compatible free API promos that need no custom TypeScript adapter, set \`install\` to \`${DECLARATIVE_OPENAI_INSTALL}\`, \`kind\` to \`model\`, \`modalities\` to \`["text"]\`, and provide \`model\`, \`signup\`, \`hints\`, \`expires\`, and \`declarative\`:
 
 ${table(DECLARATIVE_FIELDS, DECLARATIVE_RULES, DECLARATIVE_REQUIRED)}
 

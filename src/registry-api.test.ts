@@ -500,6 +500,11 @@ it('publishes, updates, reverts, and strictly validates declarative adapters thr
   expect(missingHints.status).toBe(422);
   expect((await missingHints.json() as { errors: { field: string }[] }).errors.map(error => error.field)).toContain('hints');
 
+  const { expires: _expires, ...noExpires } = EXAMPLE_DECLARATIVE_ADAPTER;
+  const missingExpires = await api.request('PUT', '/v1/registry/entries/no-expires', { ...noExpires, id: 'no-expires' }, tokens.owner);
+  expect(missingExpires.status).toBe(422);
+  expect((await missingExpires.json() as { errors: { field: string }[] }).errors.map(error => error.field)).toContain('expires');
+
   // Revert removes the declarative adapter cleanly.
   expect((await api.request('PUT', `/v1/registry/reverts/${result.write}`, undefined, tokens.owner)).status).toBe(200);
   expect((await api.registry()).adapters.some(adapter => adapter.id === EXAMPLE_DECLARATIVE_ADAPTER.id)).toBe(false);

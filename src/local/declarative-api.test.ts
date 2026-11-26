@@ -1,4 +1,4 @@
-import { createServer } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -10,8 +10,11 @@ import { approveDataSharing, declarativeDataSharingPolicy, recordDataSharingCons
 import {
   DECLARATIVE_STORE_LABEL,
   DeclarativeApi,
+  createPublicHttpsFetcher,
   declarativeSquireStore,
+  declarativeTransport,
   isCatalogOfferZeroPrice,
+  isPublicResolvedAddress,
   isUsageZeroCost,
   setupDeclarativeApi
 } from './declarative-api.js';
@@ -85,7 +88,7 @@ async function startSyntheticServer(handler: (req: IncomingMessage, res: ServerR
       : url.pathname;
     return nativeFetch(`http://127.0.0.1:${port}${targetPath}${url.search}`, init);
   };
-  return { fetcher, seen };
+  return { fetcher, seen, port };
 }
 
 const sampleTool: Tool = {
@@ -341,7 +344,7 @@ it('hot-adds a declarative adapter into an automatic pool without restart, route
   await approve(promo);
   await writeDeclarativeProviderGrant(promo.id, { base_url: PROMO_ORIGIN, token: 'synthetic-hotadd-key' }, directory);
 
-  const { fetcher } = await startSyntheticServer((_req, res) => {
+  const { port } = await startSyntheticServer((_req, res) => {
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify({
       model: PROMO_MODEL,
@@ -349,7 +352,12 @@ it('hot-adds a declarative adapter into an automatic pool without restart, route
       usage: { prompt_tokens: 10, completion_tokens: 5 }
     }));
   });
-  vi.stubGlobal('fetch', fetcher);
+  vi.spyOn(declarativeTransport, 'lookup').mockResolvedValue([{ address: '93.184.216.34', family: 4 }] as never);
+  vi.spyOn(declarativeTransport, 'request').mockImplementation(((options: Record<string, unknown>, cb: (res: IncomingMessage) => void) => {
+    expect(options.hostname).toBe('93.184.216.34');
+    expect(options.servername).toBe(PROMO_HOST);
+    return httpRequest({ hostname: '127.0.0.1', port, path: String(options.path), method: String(options.method), headers: options.headers as Record<string, string> }, cb);
+  }) as never);
 
   let current: Registry = { ...bundledRegistry, adapters: [bundledRegistry.adapters.find(a => a.id === 'kilo')!] };
   const automatic = configure({ GRUNT_CONFIG_DIR: directory }, () => current);
@@ -419,7 +427,7 @@ it('sets up a declarative adapter via Squire using registry signup, hints, and d
   });
   expect(consent.approved).toEqual([promo.id]);
 
-  const { fetcher } = await startSyntheticServer((req, res) => {
+  const { fetcher, port } = await startSyntheticServer((req, res) => {
     res.setHeader('Content-Type', 'application/json');
     if (req.url === '/v1/models') {
       res.end(JSON.stringify({ data: [{ id: PROMO_MODEL, is_free: true, context_length: 131072 }] }));
@@ -428,7 +436,12 @@ it('sets up a declarative adapter via Squire using registry signup, hints, and d
     res.statusCode = 404;
     res.end();
   });
-  vi.stubGlobal('fetch', fetcher);
+  vi.spyOn(declarativeTransport, 'lookup').mockResolvedValue([{ address: '93.184.216.34', family: 4 }] as never);
+  vi.spyOn(declarativeTransport, 'request').mockImplementation(((options: Record<string, unknown>, cb: (res: IncomingMessage) => void) => {
+    expect(options.hostname).toBe('93.184.216.34');
+    expect(options.servername).toBe(PROMO_HOST);
+    return httpRequest({ hostname: '127.0.0.1', port, path: String(options.path), method: String(options.method), headers: options.headers as Record<string, string> }, cb);
+  }) as never);
 
   let signedUp = false;
   const squire = {
@@ -483,4 +496,131 @@ it('sets up a declarative adapter via Squire using registry signup, hints, and d
   const sources = new Sources([new DeclarativeApi(promo.id, { directory, registry: () => registry, fetcher, now: () => NOW })], { registry: () => registry, now: () => NOW });
   expect(await sources.sources[0]!.available()).toBe(true);
   await sources.close();
+});
+
+it.each([
+  ['loopback IPv4', [{ address: '127.0.0.1', family: 4 }]],
+  ['RFC1918 10/8', [{ address: '10.0.0.42', family: 4 }]],
+  ['RFC1918 172.16/12', [{ address: '172.16.5.4', family: 4 }]],
+  ['RFC1918 192.168/16', [{ address: '192.168.1.10', family: 4 }]],
+  ['link-local metadata', [{ address: '169.254.169.254', family: 4 }]],
+  ['loopback IPv6', [{ address: '::1', family: 6 }]],
+  ['IPv4-mapped loopback', [{ address: '::ffff:127.0.0.1', family: 6 }]],
+  ['link-local IPv6', [{ address: 'fe80::1', family: 6 }]],
+  ['mixed public and private DNS records', [{ address: '93.184.216.34', family: 4 }, { address: '127.0.0.1', family: 4 }]],
+  ['empty DNS answer', []]
+])('enforces public resolved IPs at connection time for catalog and completion requests: %s', async (_label, records) => {
+  expect(isPublicResolvedAddress('93.184.216.34')).toBe(true);
+  expect(isPublicResolvedAddress('127.0.0.1')).toBe(false);
+  expect(isPublicResolvedAddress('::ffff:127.0.0.1')).toBe(false);
+
+  const lookup = vi.fn(async () => records) as unknown as typeof declarativeTransport.lookup;
+  const request = vi.fn() as unknown as typeof declarativeTransport.request;
+  const adapter = promoAdapter();
+  await approve(adapter);
+
+  const catalogSource = new DeclarativeApi(adapter.id, {
+    directory, adapter: () => adapter, lookup, httpsRequest: request, now: () => NOW,
+    loadGrant: async () => ({ base_url: PROMO_ORIGIN, token: 'synthetic-key' })
+  });
+  expect(await catalogSource.available()).toBe(false);
+  await expect(catalogSource.complete(sampleRequest(), AbortSignal.timeout(2000)))
+    .rejects.toMatchObject({ code: 'refused', message: expect.stringContaining('not a public IP') });
+  expect(request).not.toHaveBeenCalled();
+
+  const completionOnly = promoAdapter({ declarative: { ...promoAdapter().declarative, zeroPriceCheck: 'none' } });
+  const completionSource = new DeclarativeApi(completionOnly.id, {
+    directory, adapter: () => completionOnly, lookup, httpsRequest: request, now: () => NOW,
+    loadGrant: async () => ({ base_url: PROMO_ORIGIN, token: 'synthetic-key' })
+  });
+  await expect(completionSource.complete(sampleRequest(), AbortSignal.timeout(2000)))
+    .rejects.toMatchObject({ code: 'refused', message: expect.stringContaining('not a public IP') });
+  expect(request).not.toHaveBeenCalled();
+  await Promise.all([catalogSource.close(), completionSource.close()]);
+});
+
+it('pins the verified public IP and preserves TLS servername on outbound connections and rejects redirects', async () => {
+  const { port } = await startSyntheticServer((req, res) => {
+    if (req.url === '/redirect') {
+      res.statusCode = 302;
+      res.setHeader('Location', 'https://127.0.0.1/secret');
+      res.end();
+      return;
+    }
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ ok: true }));
+  });
+  const lookup = vi.fn(async () => [{ address: '93.184.216.34', family: 4 }]) as unknown as typeof declarativeTransport.lookup;
+  const seenOptions: Record<string, unknown>[] = [];
+  const request = ((options: Record<string, unknown>, cb: (res: IncomingMessage) => void) => {
+    seenOptions.push(options);
+    return httpRequest({ hostname: '127.0.0.1', port, path: String(options.path), method: String(options.method), headers: options.headers as Record<string, string> }, cb);
+  }) as unknown as typeof declarativeTransport.request;
+  const publicFetch = createPublicHttpsFetcher({ lookup, request });
+
+  const ok = await publicFetch(`${PROMO_ORIGIN}/v1/models`, { headers: { Authorization: 'Bearer synthetic' } });
+  expect(ok.status).toBe(200);
+  expect(await ok.json()).toEqual({ ok: true });
+  expect(seenOptions[0]).toMatchObject({ hostname: '93.184.216.34', servername: PROMO_HOST, family: 4, port: 443 });
+  expect((seenOptions[0]!.headers as Record<string, string>).host).toBe(PROMO_HOST);
+
+  await expect(publicFetch(`${PROMO_ORIGIN}/redirect`)).rejects.toMatchObject({ code: 'refused', message: expect.stringContaining('redirect') });
+});
+
+it('rejects a registry update that mutates the adapter mid-preflight (TOCTOU)', async () => {
+  let current = promoAdapter();
+  await approve(current);
+  const fetcher = vi.fn<typeof fetch>(async url => {
+    if (String(url).endsWith('/v1/models')) {
+      // Simulate a registry sync replacing the model / baseUrl / policy while /models is in flight.
+      current = promoAdapter({
+        model: 'paid-model-swapped',
+        declarative: { ...current.declarative, baseUrl: 'https://other.example', policyVersion: '2026-12-02' }
+      });
+      return Response.json({ data: [{ id: PROMO_MODEL, is_free: true, context_length: 131072 }] });
+    }
+    return Response.json({ model: 'paid-model-swapped', choices: [{ finish_reason: 'stop', message: { content: 'must not dispatch' } }] });
+  });
+  const source = new DeclarativeApi(current.id, {
+    directory, adapter: () => current, fetcher, now: () => NOW,
+    loadGrant: async () => ({ base_url: PROMO_ORIGIN, token: 'synthetic-key' })
+  });
+
+  await expect(source.complete(sampleRequest(), AbortSignal.timeout(2000))).rejects.toMatchObject({ code: 'refused' });
+  expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/chat/completions'))).toHaveLength(0);
+  await source.close();
+});
+
+it('rejects nonzero monetary fields in catalog offers even alongside a free flag, and on every SSE stream event', async () => {
+  for (const paidOffer of [
+    { id: PROMO_MODEL, is_free: true, input_price: 0.25, context_length: 131072 },
+    { id: PROMO_MODEL, free: true, fee: '0.01', context_length: 131072 },
+    { id: PROMO_MODEL, is_free: true, billing: { prompt_usd: 0.001 }, context_length: 131072 },
+    { id: PROMO_MODEL, is_free: true, rates: { output: 0.5 }, context_length: 131072 },
+    { id: PROMO_MODEL, pricing: { prompt: '0', completion: '0', extra_fee: '0.0001' }, context_length: 131072 }
+  ]) {
+    expect(isCatalogOfferZeroPrice(paidOffer, 65536, NOW)).toBe(false);
+  }
+
+  // Earlier stream event reports nonzero cost; final stream event overwrites usage with zero cost.
+  const streamAdapter = promoAdapter({
+    declarative: { ...promoAdapter().declarative, zeroPriceCheck: 'none', stream: true }
+  });
+  await approve(streamAdapter);
+  const { fetcher } = await startSyntheticServer((_req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    const chunks = [
+      { model: PROMO_MODEL, choices: [{ index: 0, delta: { content: 'Hi' }, finish_reason: null }], usage: { prompt_tokens: 5, total_cost: 0.005 } },
+      { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] },
+      { choices: [], usage: { prompt_tokens: 5, completion_tokens: 1, total_cost: 0 } }
+    ];
+    res.end(chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n');
+  });
+  const source = new DeclarativeApi(streamAdapter.id, {
+    directory, adapter: () => streamAdapter, fetcher, now: () => NOW,
+    loadGrant: async () => ({ base_url: PROMO_ORIGIN, token: 'synthetic-key' })
+  });
+  await expect(source.complete(sampleRequest(), AbortSignal.timeout(3000)))
+    .rejects.toMatchObject({ code: 'refused', message: expect.stringContaining('non-zero usage cost') });
+  await source.close();
 });

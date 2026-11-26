@@ -233,7 +233,7 @@ For an ephemeral OpenAI-compatible free API promo that requires no custom
 TypeScript adapter or npm release, the scout can publish a declarative entry
 directly to `adapters` with `install: "declarative:openai"`, `kind: "model"`,
 `modalities: ["text"]`, a pinned `model`, public HTTPS `signup`, page-by-page
-`hints`, optional `expires` (`YYYY-MM-DD`), and a strictly validated
+`hints`, required `expires` (`YYYY-MM-DD`), and a strictly validated
 `declarative` object:
 
 | Field | Required | Rule |

@@ -1,8 +1,15 @@
+import { lookup as dnsLookup } from 'node:dns/promises';
+import { request as httpsRequest } from 'node:https';
+import { isIP } from 'node:net';
+import { isDeepStrictEqual } from 'node:util';
+import ipaddr from 'ipaddr.js';
 import { configRoot } from '../brand.js';
 import {
+  DAY_PATTERN,
   ID_PATTERN,
   disabledAdapters,
   isDeclarativeAdapter,
+  isPublicDnsHostname,
   knownAdapters,
   safeApiPath,
   safePublicHttpsOrigin
@@ -37,13 +44,136 @@ export const DECLARATIVE_STORE_LABEL = 'Grunt Free';
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MODELS_MAX_BYTES = 2 * 1024 * 1024;
 const COMPLETION_MAX_BYTES = 4 * 1024 * 1024;
-const COST_KEY_PATTERN = /(?:^|_)(?:cost|price|charge|charged|usd|cents|billed)(?:$|_)/i;
+const SQUIRE_EGRESS_HOST = 'trusty-squire-api.fly.dev';
+const MONETARY_KEY_PATTERN = /(?:^|[_-])(?:cost|price|pricing|fee|fees|rate|rates|charge|charged|charges|usd|cents|billed|billing|credit|credits|multiplier|per_1m|per_1k|per_token|per_million)(?:$|[_-])/i;
 const PRICING_METADATA_KEYS = new Set(['unit', 'currency']);
 const PRICING_PRIMARY_KEYS = new Set(['prompt', 'completion', 'input', 'output', 'request', 'token', 'input_token', 'output_token']);
+const NULL_BODY_STATUSES = new Set([101, 204, 205, 304]);
 
 type FailureReason = NonNullable<SafeDiagnosticMetadata['failureReason']>;
 const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const count = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+
+export function isPublicResolvedAddress(address: string): boolean {
+  if (!isIP(address)) return false;
+  try { return ipaddr.process(address).range() === 'unicast'; } catch { return false; }
+}
+
+// Connection-time DNS lookup and pinned-IP HTTPS transport used by default so
+// DNS rebinding or private A/AAAA records can never reach internal targets.
+export const declarativeTransport = {
+  lookup: dnsLookup,
+  request: httpsRequest
+};
+
+export function createPublicHttpsFetcher(options: {
+  lookup?: typeof dnsLookup;
+  request?: typeof httpsRequest;
+} = {}): typeof fetch {
+  return async (input, init) => {
+    const signal = init?.signal ?? undefined;
+    signal?.throwIfAborted();
+    const rawUrl = typeof input === 'string' || input instanceof URL ? String(input) : input.url;
+    let url: URL;
+    try { url = new URL(rawUrl); } catch { throw new SourceError('refused', 'Invalid declarative request URL'); }
+    const host = url.hostname.toLowerCase();
+    if (url.protocol !== 'https:' || url.username || url.password || url.port || url.hash
+      || (!isPublicDnsHostname(host) && host !== SQUIRE_EGRESS_HOST)) {
+      throw new SourceError('refused', 'Declarative request target must be a public HTTPS host');
+    }
+    const resolveHost = options.lookup ?? declarativeTransport.lookup;
+    const addresses = await resolveHost(host, { all: true, verbatim: true });
+    signal?.throwIfAborted();
+    if (!addresses.length || addresses.some(record => !isPublicResolvedAddress(record.address))) {
+      throw new SourceError('refused', 'Resolved host address is not a public IP');
+    }
+    const pinned = addresses[0]!;
+    const headers: Record<string, string> = {};
+    new Headers(init?.headers).forEach((value, key) => { headers[key] = value; });
+    headers.host = url.host;
+    let bodyBuffer: Buffer | undefined;
+    if (typeof init?.body === 'string') bodyBuffer = Buffer.from(init.body, 'utf8');
+    else if (init?.body instanceof Uint8Array) bodyBuffer = Buffer.from(init.body);
+    else if (init?.body instanceof ArrayBuffer) bodyBuffer = Buffer.from(init.body);
+    if (bodyBuffer !== undefined && !('content-length' in headers)) {
+      headers['content-length'] = String(bodyBuffer.length);
+    }
+
+    const makeRequest = options.request ?? declarativeTransport.request;
+    return await new Promise<Response>((resolve, reject) => {
+      let settled = false;
+      const fail = (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        reject(error);
+      };
+      const req = makeRequest({
+        hostname: pinned.address,
+        port: 443,
+        path: url.pathname + url.search,
+        method: init?.method ?? 'GET',
+        servername: host,
+        family: isIP(pinned.address),
+        headers,
+        ...(signal ? { signal } : {})
+      }, res => {
+        const status = res.statusCode ?? 500;
+        if (status >= 300 && status < 400 && res.headers.location) {
+          res.destroy();
+          req.destroy();
+          fail(new SourceError('refused', 'Unexpected redirect from declarative endpoint'));
+          return;
+        }
+        const responseHeaders = new Headers();
+        for (const [key, value] of Object.entries(res.headers)) {
+          if (value === undefined) continue;
+          if (Array.isArray(value)) for (const item of value) responseHeaders.append(key, item);
+          else responseHeaders.set(key, value);
+        }
+        if (NULL_BODY_STATUSES.has(status)) {
+          res.resume();
+          if (!settled) { settled = true; resolve(new Response(null, { status, headers: responseHeaders })); }
+          return;
+        }
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            let closed = false;
+            const onData = (chunk: Buffer | string) => {
+              if (closed) return;
+              const bytes = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+              try { controller.enqueue(bytes); } catch { closed = true; res.destroy(); }
+            };
+            const onEnd = () => {
+              if (closed) return;
+              closed = true;
+              try { controller.close(); } catch { /* Already closed. */ }
+            };
+            const onError = (error: Error) => {
+              if (closed) return;
+              closed = true;
+              try { controller.error(error); } catch { /* Already closed. */ }
+            };
+            res.on('data', onData);
+            res.once('end', onEnd);
+            res.once('error', onError);
+            res.once('aborted', () => onError(new Error('Upstream response aborted')));
+          },
+          cancel() {
+            res.destroy();
+            req.destroy();
+          }
+        });
+        if (!settled) {
+          settled = true;
+          resolve(new Response(stream, { status, headers: responseHeaders }));
+        }
+      });
+      req.once('error', fail);
+      if (bodyBuffer !== undefined) req.end(bodyBuffer);
+      else req.end();
+    });
+  };
+}
 
 export function isZeroPriceValue(value: unknown): boolean {
   return value === 0 || typeof value === 'string' && /^0(?:\.0+)?$/.test(value.trim());
@@ -51,32 +181,46 @@ export function isZeroPriceValue(value: unknown): boolean {
 
 export function declarativeRetired(adapter: Pick<Adapter, 'status' | 'expires'>, now = Date.now()): boolean {
   return adapter.status === 'inactive' || adapter.status === 'expiring'
-    || adapter.expires !== undefined && now >= Date.parse(adapter.expires) + DAY_MS;
+    || adapter.expires === undefined || !DAY_PATTERN.test(adapter.expires) || !Number.isFinite(Date.parse(adapter.expires))
+    || now >= Date.parse(adapter.expires) + DAY_MS;
 }
 
-// Refuse any response usage/body payload that reports a non-zero monetary cost.
-export function isUsageZeroCost(record: Record<string, unknown>): boolean {
-  for (const [key, value] of Object.entries(record)) {
-    if (value === undefined || value === null) continue;
-    if (COST_KEY_PATTERN.test(key)) {
-      if (typeof value === 'object' && !Array.isArray(value)) {
-        if (!isUsageZeroCost(value as Record<string, unknown>)) return false;
-      } else if (!isZeroPriceValue(value)) {
-        return false;
-      }
+// Recursively reject any nonzero monetary field in catalog offers, completions,
+// or stream events, even when accompanied by a `free` / `is_free` flag.
+export function hasNonZeroMonetaryField(value: unknown, insideMonetary = false, depth = 0): boolean {
+  if (depth > 8) return true;
+  if (value === undefined || value === null) return false;
+  if (Array.isArray(value)) {
+    return value.some(item => hasNonZeroMonetaryField(item, insideMonetary, depth + 1));
+  }
+  if (typeof value !== 'object') {
+    return insideMonetary && !isZeroPriceValue(value);
+  }
+  for (const [key, fieldValue] of Object.entries(value as Record<string, unknown>)) {
+    if (fieldValue === undefined || fieldValue === null) continue;
+    const monetary = insideMonetary || MONETARY_KEY_PATTERN.test(key);
+    if (typeof fieldValue === 'object') {
+      if (hasNonZeroMonetaryField(fieldValue, monetary, depth + 1)) return true;
+      continue;
+    }
+    if (monetary) {
+      if (PRICING_METADATA_KEYS.has(key) && typeof fieldValue === 'string') continue;
+      if (!isZeroPriceValue(fieldValue)) return true;
     }
   }
-  return true;
+  return false;
+}
+
+// Refuse any response usage/body/stream payload that reports a non-zero monetary cost.
+export function isUsageZeroCost(record: Record<string, unknown>): boolean {
+  return !hasNonZeroMonetaryField(record);
 }
 
 // Verify a single /models catalog entry carries positive zero-price proof and no paid pricing fields.
 export function isCatalogOfferZeroPrice(offer: Record<string, unknown>, minContextLength?: number, now = Date.now()): boolean {
   if (offer.is_free !== undefined && offer.is_free !== true) return false;
   if (offer.free !== undefined && offer.free !== true) return false;
-  if (offer.quota_multiplier !== undefined && !isZeroPriceValue(offer.quota_multiplier)) return false;
-  if (offer.model_price !== undefined && !isZeroPriceValue(offer.model_price)) return false;
-  if (offer.price !== undefined && !isZeroPriceValue(offer.price)) return false;
-  if (offer.cost !== undefined && !isZeroPriceValue(offer.cost)) return false;
+  if (hasNonZeroMonetaryField(offer)) return false;
   if (typeof offer.expiration_date === 'string') {
     const parsed = Date.parse(offer.expiration_date);
     if (!Number.isFinite(parsed) || now >= parsed) return false;
@@ -98,16 +242,35 @@ export function isCatalogOfferZeroPrice(offer: Record<string, unknown>, minConte
     const pricing = offer.pricing as Record<string, unknown>;
     let seenZeroPriceField = false;
     for (const [key, value] of Object.entries(pricing)) {
-      if (value === undefined) continue;
+      if (value === undefined || value === null) continue;
       if (PRICING_METADATA_KEYS.has(key) && typeof value === 'string') continue;
+      if (typeof value === 'object') continue;
       if (!isZeroPriceValue(value)) return false;
-      if (PRICING_PRIMARY_KEYS.has(key) || COST_KEY_PATTERN.test(key) || typeof value === 'number' || typeof value === 'string') {
+      if (PRICING_PRIMARY_KEYS.has(key) || MONETARY_KEY_PATTERN.test(key) || typeof value === 'number' || typeof value === 'string') {
         seenZeroPriceField = true;
       }
     }
     if (seenZeroPriceField) positiveProof = true;
   }
   return positiveProof;
+}
+
+function declarativeFingerprint(adapter: DeclarativeAdapter) {
+  return {
+    id: adapter.id,
+    kind: adapter.kind,
+    modalities: adapter.modalities,
+    install: adapter.install,
+    model: adapter.model,
+    signup: adapter.signup,
+    status: adapter.status,
+    expires: adapter.expires,
+    declarative: adapter.declarative
+  };
+}
+
+function sameDeclarativeEntry(a: DeclarativeAdapter, b: DeclarativeAdapter): boolean {
+  return isDeepStrictEqual(declarativeFingerprint(a), declarativeFingerprint(b));
 }
 
 export function declarativeSquireStore(adapter: DeclarativeAdapter) {
@@ -179,15 +342,19 @@ export interface DeclarativeApiOptions {
   registry?: () => Registry;
   adapter?: () => DeclarativeAdapter | undefined;
   fetcher?: typeof fetch;
+  lookup?: typeof dnsLookup;
+  httpsRequest?: typeof httpsRequest;
   now?: () => number;
   loadGrant?: () => Promise<FreeApiGrant>;
   timeout?: number;
 }
 
 // Generic OpenAI-compatible free-API source driven solely by validated registry
-// data. Enforces HTTPS origin pinning, Squire grant host checks, data-sharing
-// receipts, optional live /models zero-price verification, exact pinned model
-// attestation, zero-cost usage checks, native function tools, and expiry cutoff.
+// data. Enforces HTTPS origin pinning, connection-time public IP resolution,
+// Squire grant host checks, data-sharing receipts, optional live /models
+// zero-price verification, TOCTOU entry pinning, exact pinned model attestation,
+// zero-cost checks across completions and every SSE event, native function
+// tools, and mandatory expiry cutoff.
 export class DeclarativeApi implements Source {
   readonly inferenceOnly = true;
   readonly supportsFunctionTools = true;
@@ -207,12 +374,20 @@ export class DeclarativeApi implements Source {
     return (this.options.now ?? Date.now)();
   }
 
+  private transport(): typeof fetch {
+    return this.options.fetcher ?? createPublicHttpsFetcher({
+      ...(this.options.lookup ? { lookup: this.options.lookup } : {}),
+      ...(this.options.httpsRequest ? { request: this.options.httpsRequest } : {})
+    });
+  }
+
   private entry(): DeclarativeAdapter | undefined {
     const candidate = this.options.adapter?.() ?? this.options.registry?.().adapters.find(adapter => adapter.id === this.id);
     if (!isDeclarativeAdapter(candidate) || candidate.id !== this.id) return undefined;
+    if (typeof candidate.expires !== 'string' || !DAY_PATTERN.test(candidate.expires) || !Number.isFinite(Date.parse(candidate.expires))) return undefined;
     if (!safePublicHttpsOrigin(candidate.declarative.baseUrl) || !safeApiPath(candidate.declarative.apiPath)) return undefined;
     if (candidate.declarative.zeroPriceCheck === 'models_catalog' && !safeApiPath(candidate.declarative.modelsEndpoint)) return undefined;
-    return candidate;
+    return structuredClone(candidate);
   }
 
   private async responseFailure(response: Response, endpoint: 'models' | 'chat.completions'): Promise<never> {
@@ -240,7 +415,7 @@ export class DeclarativeApi implements Source {
       const modelsPath = adapter.declarative.modelsEndpoint;
       if (!safeApiPath(modelsPath)) return undefined;
       const signal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(5000), ...(caller ? [caller] : [])]);
-      const response = await diagnosticFetch(this.options.fetcher ?? fetch, this.id, 'models')(`${grant.base_url}${modelsPath}`, {
+      const response = await diagnosticFetch(this.transport(), this.id, 'models')(`${grant.base_url}${modelsPath}`, {
         method: 'GET',
         redirect: 'error',
         signal,
@@ -254,10 +429,11 @@ export class DeclarativeApi implements Source {
       if (!isCatalogOfferZeroPrice(offers[0]!, adapter.declarative.minContextLength, this.now)) return undefined;
     }
 
-    // Recheck expiry/retirement after preflight I/O so an expired offer never dispatches.
+    // Recheck expiry, retirement, and entry identity after preflight I/O so a
+    // registry update mid-verification can never dispatch an unchecked entry.
     const latest = this.entry();
-    if (!latest || declarativeRetired(latest, this.now)) return undefined;
-    return { adapter: latest, grant };
+    if (!latest || declarativeRetired(latest, this.now) || !sameDeclarativeEntry(adapter, latest)) return undefined;
+    return { adapter, grant };
   }
 
   async available(signal?: AbortSignal): Promise<boolean> {
@@ -278,13 +454,13 @@ export class DeclarativeApi implements Source {
       throw requestRefusal(`${this.id} supports function tools only`, 'request_tools');
     }
 
-    const adapter = this.entry();
-    if (!adapter) throw new SourceError('refused', `${this.id} is not in the current adapter registry`);
-    if (declarativeRetired(adapter, this.now)) {
+    const initial = this.entry();
+    if (!initial) throw new SourceError('refused', `${this.id} is not in the current adapter registry`);
+    if (declarativeRetired(initial, this.now)) {
       throw new SourceError('refused', `${this.id} declarative free offer expired or retired; select another free route`);
     }
     const directory = this.options.directory ?? configRoot();
-    const policy = declarativeDataSharingPolicy(adapter);
+    const policy = declarativeDataSharingPolicy(initial);
     if (!(await readDataSharingConsent(directory, [this.id], [policy])).includes(this.id)) {
       throw new SourceError('refused', `${this.id} data sharing is not approved; rerun usegrunt setup`);
     }
@@ -298,10 +474,11 @@ export class DeclarativeApi implements Source {
     }
     caller.throwIfAborted();
     if (this.shutdown.signal.aborted) throw new SourceError('cancelled', `${this.id} source closed`);
-    if (declarativeRetired(adapter, this.now)) {
+    const latest = this.entry();
+    if (!latest || declarativeRetired(latest, this.now)) {
       throw new SourceError('refused', `${this.id} declarative free offer expired or retired; select another free route`);
     }
-    if (!verified) {
+    if (!verified || !sameDeclarativeEntry(verified.adapter, latest)) {
       throw new SourceError('refused', `${this.id} declarative free offer could not be verified`);
     }
 
@@ -310,7 +487,7 @@ export class DeclarativeApi implements Source {
     let completionFailure: FailureReason | undefined;
     try {
       observeAttemptDispatch({ model: current.model, account: 'vaulted', maxOutputTokens: request.maxTokens });
-      const response = await diagnosticFetch(this.options.fetcher ?? fetch, this.id, 'chat.completions')(`${grant.base_url}${current.declarative.apiPath}`, {
+      const response = await diagnosticFetch(this.transport(), this.id, 'chat.completions')(`${grant.base_url}${current.declarative.apiPath}`, {
         method: 'POST',
         redirect: 'error',
         signal,
@@ -339,6 +516,11 @@ export class DeclarativeApi implements Source {
               source: this.id, outcome: 'failed', transport: 'http', httpMethod: 'POST',
               endpointLabel: 'chat.completions', httpStatus: response.status, failureReason: 'stream_cleanup'
             });
+          },
+          event: chunk => {
+            if (!isUsageZeroCost(chunk)) {
+              throw new SourceError('refused', `${this.id} reported a non-zero usage cost`);
+            }
           },
           result: usage => {
             if (!isUsageZeroCost(usage)) {
