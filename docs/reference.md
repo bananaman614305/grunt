@@ -580,9 +580,15 @@ the user's machine without routing prompts, source code or tool results through
 - BeatAPI, Pollinations, Runcrate and Zro bind their free-account verification
   receipts to a SHA-256 fingerprint of the verified credential and never copy raw
   direct keys into provider receipt files. Direct Runcrate local-vault keys are
-  verified against Runcrate's pinned billing endpoints (`www.runcrate.ai/api/v1/billing/balance`,
-  `auto-recharge`, and `payment-methods`) plus `/v1/models` before writing a receipt;
-  unverified vault keys are never certified and setup falls back cleanly to Squire.
+  verified against Runcrate's vault-pinned billing origin
+  (`https://www.runcrate.ai/api/v1/billing/balance`, `auto-recharge`, and
+  `payment-methods`, per Runcrate's OpenAPI 3.1 `ApiKeyAuth` spec) plus
+  `https://api.runcrate.ai/v1/models` before writing a receipt; unverified vault
+  keys are never certified and setup falls back cleanly to Squire. Squire-backed
+  Runcrate egress grants (initial or refreshed) verify those same billing
+  endpoints through Trusty Squire's `use_credential` proxy without exporting or
+  forwarding the raw key, plus `/v1/models` on the egress grant, before writing
+  a receipt or probing inference.
   Removing a key with `usegrunt vault remove <provider>` immediately revokes direct
   access, and replacing a key invalidates the prior vault receipt until fresh
   verification succeeds. Existing and refreshed Squire egress grants remain supported

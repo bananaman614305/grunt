@@ -36,12 +36,15 @@ import {
   credentialFingerprint,
   deleteVaultEntry,
   listVaultEntries,
+  providerAllowedRequestOrigins,
   readVaultEntry,
   readVaultEnvGrant,
   readVaultGrant,
   redactVaultSecrets,
   validateDirectOrigin,
   validateProviderEndpoint,
+  validateProviderRequestUrl,
+  validateVerificationOrigin,
   vaultEnvKeyName,
   vaultLockPath,
   vaultPath,
@@ -355,6 +358,20 @@ it('enforces strict per-provider HTTPS host pinning and rejects untrusted URLs',
   }
 
   expect(() => validatePinnedProviderGrant('pollinations', { base_url: 'https://evil.invalid', token: 'sk-secret' })).toThrow();
+
+  // Runcrate separates its inference origin (api.runcrate.ai) from its vault-pinned verification origin (www.runcrate.ai).
+  expect(providerAllowedRequestOrigins('runcrate')).toEqual([RUNCRATE_ORIGIN, RUNCRATE_BILLING_ORIGIN]);
+  expect(() => validateDirectOrigin('runcrate', RUNCRATE_BILLING_ORIGIN)).toThrow('Untrusted direct HTTPS origin');
+  expect(validateVerificationOrigin('runcrate', RUNCRATE_BILLING_ORIGIN)).toBe(RUNCRATE_BILLING_ORIGIN);
+  expect(() => validateVerificationOrigin('runcrate', RUNCRATE_ORIGIN)).toThrow('Untrusted verification HTTPS origin');
+  expect(() => validateVerificationOrigin('runcrate', 'https://evil.runcrate.ai')).toThrow('Untrusted verification HTTPS origin');
+  expect(() => validateVerificationOrigin('beatapi', 'https://www.runcrate.ai')).toThrow('Untrusted verification HTTPS origin');
+  expect(validateProviderRequestUrl('runcrate', `${RUNCRATE_BILLING_ORIGIN}/api/v1/billing/balance`, 'verification'))
+    .toBe(`${RUNCRATE_BILLING_ORIGIN}/api/v1/billing/balance`);
+  expect(validateProviderRequestUrl('runcrate', `${RUNCRATE_ORIGIN}/v1/models`, 'direct'))
+    .toBe(`${RUNCRATE_ORIGIN}/v1/models`);
+  expect(() => validateProviderRequestUrl('runcrate', `${RUNCRATE_BILLING_ORIGIN}/v1/models`, 'direct')).toThrow();
+  expect(() => validateProviderRequestUrl('runcrate', 'https://evil.invalid/api/v1/billing/balance', 'verification')).toThrow();
 });
 
 it('supports safe env-var overrides with strict origin pinning and precedence over vault.json', async () => {
@@ -626,7 +643,14 @@ it('binds Runcrate key_topups_disabled and Zro receipts to the verified credenti
   // Legacy egress Runcrate receipt never substitutes an unverified local vault key; it keeps using only its verified egress token.
   const legacyEgress = { base_url: `${SQUIRE_EGRESS_ORIGIN}/v1/egress/g_${'r'.repeat(24)}`, token: 'synthetic-egress-runcrate' };
   await rm(join(directory, 'runcrate.json'), { force: true });
-  await writeRuncrateGrant(legacyEgress, directory);
+  await writeRuncrateGrant(legacyEgress, directory, {
+    verification: {
+      free_account_verified: true,
+      key_topups_disabled: true,
+      credential_sha256: credentialFingerprint(legacyEgress),
+      verified_at: new Date().toISOString()
+    }
+  });
   expect(await readRuncrateGrant(directory, {})).toMatchObject({ ...legacyEgress, key_topups_disabled: true });
   await writeVaultEntry('runcrate', { api_key: replacementKey, source: 'import' }, directory);
   expect(await readRuncrateGrant(directory, {})).toMatchObject({ ...legacyEgress, key_topups_disabled: true });
@@ -642,7 +666,7 @@ it('binds Runcrate key_topups_disabled and Zro receipts to the verified credenti
   await expect(readZroGrant(directory, {})).rejects.toThrow('verification is missing');
 });
 
-it('verifies Runcrate replacement keys through normal CLI setup, falls back to Squire when vault verification fails, and allows refreshed Squire egress grants', async () => {
+it('verifies Runcrate replacement keys and refreshed Squire egress grants through normal CLI setup, rejecting unverified refreshed grants before inference', async () => {
   vi.stubEnv('GRUNT_CONFIG_DIR', directory);
   await recordDataSharingConsent(directory, ['runcrate']);
   const verifiedKey = 'sk-runcrate-initial-verified-key';
@@ -671,13 +695,13 @@ it('verifies Runcrate replacement keys through normal CLI setup, falls back to S
   const server = await startFakeUpstream(req => {
     const auth = req.authorization;
     if (req.url === '/api/v1/billing/balance') {
-      return { body: { creditsBalance: 0, activeUsageCost: 0, floating_balance_usd: 0 } };
+      return { body: { data: { creditsBalance: 0, activeUsageCost: 0, floating_balance_usd: 0 } } };
     }
     if (req.url === '/api/v1/billing/auto-recharge') {
-      return { body: { enabled: auth === `Bearer ${unsafeReplacementKey}` } };
+      return { body: { data: { enabled: auth === `Bearer ${unsafeReplacementKey}` } } };
     }
     if (req.url === '/api/v1/billing/payment-methods') {
-      return { body: { payment_methods: [] } };
+      return { body: { data: [] } };
     }
     if (req.url === '/v1/models' || req.url.endsWith('/v1/models')) {
       if (auth === `Bearer ${oldEgressToken}`) return { status: 401, body: { error: 'expired' } };
@@ -694,16 +718,38 @@ it('verifies Runcrate replacement keys through normal CLI setup, falls back to S
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const requested = String(input);
     const parsed = new URL(requested);
-    expect([RUNCRATE_ORIGIN, RUNCRATE_BILLING_ORIGIN, SQUIRE_EGRESS_ORIGIN]).toContain(parsed.origin);
+    expect([...providerAllowedRequestOrigins('runcrate'), SQUIRE_EGRESS_ORIGIN]).toContain(parsed.origin);
     return realFetch(`${server.origin}${parsed.pathname}${parsed.search}`, init);
   });
 
-  const squireCalls = vi.fn(async (name: string) => {
+  let squireBillingState: { creditsBalance: number; autoRechargeEnabled: boolean; paymentMethods: unknown[] } = {
+    creditsBalance: 0,
+    autoRechargeEnabled: false,
+    paymentMethods: []
+  };
+  const squireCalls = vi.fn(async (name: string, args: Record<string, unknown>) => {
     if (name === 'list_credentials') {
       return { credentials: [{ service: 'runcrate', reference: 'vault://runcrate-squire', field_names: ['api_key'] }] };
     }
     if (name === 'grant_app_access') {
       return { base_url: newEgressUrl, token: newEgressToken };
+    }
+    if (name === 'use_credential') {
+      expect(args.reference).toBe('vault://runcrate-squire');
+      const http = args.http as { method: string; url: string; headers: Record<string, string> };
+      expect(http.method).toBe('GET');
+      expect(http.headers.Authorization).toBe('Bearer ${SECRET}');
+      expect(new URL(http.url).origin).toBe(RUNCRATE_BILLING_ORIGIN);
+      if (http.url.endsWith('/api/v1/billing/balance')) {
+        return { response: { status: 200, headers: {}, body: JSON.stringify({ data: { creditsBalance: squireBillingState.creditsBalance, activeUsageCost: 0 } }), truncated: false } };
+      }
+      if (http.url.endsWith('/api/v1/billing/auto-recharge')) {
+        return { response: { status: 200, headers: {}, body: JSON.stringify({ data: { enabled: squireBillingState.autoRechargeEnabled } }), truncated: false } };
+      }
+      if (http.url.endsWith('/api/v1/billing/payment-methods')) {
+        return { response: { status: 200, headers: {}, body: JSON.stringify({ data: squireBillingState.paymentMethods }), truncated: false } };
+      }
+      return { response: { status: 404, headers: {}, body: '{}', truncated: false } };
     }
     throw new Error(`Unexpected Squire call: ${name}`);
   });
@@ -715,7 +761,7 @@ it('verifies Runcrate replacement keys through normal CLI setup, falls back to S
       const squire = new BrowserSquire();
       vi.spyOn(squire, 'connect').mockResolvedValue();
       vi.spyOn(squire, 'close').mockResolvedValue();
-      vi.spyOn(squire, 'call').mockImplementation(async name => squireCalls(name));
+      vi.spyOn(squire, 'call').mockImplementation(async (name, args) => squireCalls(name, args));
       return squire;
     },
     approveDataSharing: async () => ({ approved: ['runcrate'], skipped: [] }),
@@ -750,7 +796,7 @@ it('verifies Runcrate replacement keys through normal CLI setup, falls back to S
     });
     expect(await readRuncrateGrant(directory, {})).toMatchObject({ ...safeGrant, key_topups_disabled: true });
 
-    // 2. Unsafe local vault replacement key (auto-recharge enabled) is rejected and normal CLI falls back cleanly to Squire egress without calling fetch_credential.
+    // 2. Unsafe local vault replacement key (auto-recharge enabled) is rejected and normal CLI falls back cleanly to Squire egress verified via use_credential (never calling fetch_credential).
     server.seen.length = 0;
     squireCalls.mockClear();
     await vaultCommand(['set', 'runcrate'], { directory, env: {}, log: () => {}, readSecret: async () => unsafeReplacementKey });
@@ -758,6 +804,7 @@ it('verifies Runcrate replacement keys through normal CLI setup, falls back to S
     expect(server.seen.some(item => item.authorization === `Bearer ${unsafeReplacementKey}` && item.url.includes('/chat/completions'))).toBe(false);
     expect(squireCalls.mock.calls.some(([name]) => name === 'fetch_credential')).toBe(false);
     expect(squireCalls.mock.calls.some(([name]) => name === 'grant_app_access')).toBe(true);
+    expect(squireCalls.mock.calls.filter(([name]) => name === 'use_credential')).toHaveLength(3);
     expect(await readRuncrateGrant(directory, {})).toMatchObject({
       base_url: newEgressUrl,
       token: newEgressToken,
@@ -766,14 +813,37 @@ it('verifies Runcrate replacement keys through normal CLI setup, falls back to S
     });
     expect(await new Runcrate({ directory }).available()).toBe(true);
 
-    // 3. Refreshed Squire egress grant with a changed fingerprint replaces an expired egress receipt cleanly through normal CLI setup.
+    // 3. Refreshed Squire egress grant is REJECTED before writing runcrate.json or probing inference when billing verification fails.
     await deleteVaultEntry('runcrate', directory);
-    await writeRuncrateGrant({ base_url: oldEgressUrl, token: oldEgressToken }, directory);
+    const oldEgressGrant = { base_url: oldEgressUrl, token: oldEgressToken };
+    await writeRuncrateGrant(oldEgressGrant, directory, {
+      verification: {
+        free_account_verified: true,
+        key_topups_disabled: true,
+        credential_sha256: credentialFingerprint(oldEgressGrant),
+        verified_at: new Date().toISOString()
+      }
+    });
+    squireBillingState = { creditsBalance: 0, autoRechargeEnabled: true, paymentMethods: [] };
+    server.seen.length = 0;
+    squireCalls.mockClear();
+    await expect(runCliAddRuncrate()).rejects.toBeInstanceOf(RuncrateVerificationError);
+    expect(squireCalls.mock.calls.some(([name]) => name === 'fetch_credential')).toBe(false);
+    expect(squireCalls.mock.calls.filter(([name]) => name === 'use_credential')).toHaveLength(3);
+    expect(server.seen.some(item => item.authorization === `Bearer ${newEgressToken}` && item.url.includes('/chat/completions'))).toBe(false);
+    expect(await readRuncrateGrant(directory, {})).toMatchObject({
+      ...oldEgressGrant,
+      credential_sha256: credentialFingerprint(oldEgressGrant)
+    });
+
+    // 4. Refreshed Squire egress grant with passing billing verification replaces an expired egress receipt cleanly through normal CLI setup.
+    squireBillingState = { creditsBalance: 0, autoRechargeEnabled: false, paymentMethods: [] };
     server.seen.length = 0;
     squireCalls.mockClear();
     await runCliAddRuncrate();
     expect(squireCalls.mock.calls.some(([name]) => name === 'fetch_credential')).toBe(false);
     expect(squireCalls.mock.calls.some(([name]) => name === 'grant_app_access')).toBe(true);
+    expect(squireCalls.mock.calls.filter(([name]) => name === 'use_credential')).toHaveLength(3);
     expect(await readRuncrateGrant(directory, {})).toMatchObject({
       base_url: newEgressUrl,
       token: newEgressToken,
@@ -781,7 +851,7 @@ it('verifies Runcrate replacement keys through normal CLI setup, falls back to S
     });
     expect(await new Runcrate({ directory }).available()).toBe(true);
 
-    // 4. Safe env-var replacement key also verifies end-to-end through normal CLI setup.
+    // 5. Safe env-var replacement key also verifies end-to-end through normal CLI setup.
     vi.stubEnv(vaultEnvKeyName('runcrate'), envReplacementKey);
     server.seen.length = 0;
     squireCalls.mockClear();

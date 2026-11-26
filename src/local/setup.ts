@@ -27,8 +27,8 @@ import { BROWSER_CONCURRENCY } from './parallel.js';
 import { Nvidia, writeNvidiaGrant } from './nvidia.js';
 import { Zro, writeZroGrant } from './zro.js';
 import { TokenHarbor, writeTokenHarborGrant } from './tokenharbor.js';
-import { Runcrate, RuncrateVerificationError, readRuncrateGrant, validateRuncrateVerification, verifyRuncrateDirectGrant, writeRuncrateGrant } from './runcrate.js';
-import type { RuncrateGrantVerifier, RuncrateVerification } from './runcrate.js';
+import { Runcrate, RuncrateVerificationError, readRuncrateGrant, validateRuncrateVerification, verifyRuncrateDirectGrant, verifyRuncrateSquireGrant, writeRuncrateGrant } from './runcrate.js';
+import type { RuncrateGrantContext, RuncrateGrantVerifier } from './runcrate.js';
 import { setupMistralVibe } from './mistral-vibe-setup.js';
 import { setupLiveKit } from './livekit-setup.js';
 import { setupPollinations } from './pollinations-setup.js';
@@ -83,7 +83,7 @@ const exec = promisify(execFile);
 export const FREELLMAPI_IMAGE = 'ghcr.io/tashfeenahmed/freellmapi@sha256:845a4b568a20fffd5112e1b9c0258e7782d9eabbba2430612d2f7c811eee267e';
 export const PROVIDERS: Record<string, string> = { groq: 'https://console.groq.com/keys', cerebras: 'https://cloud.cerebras.ai/platform/api-keys', kilo: 'https://app.kilo.ai/profile', nvidia: 'https://build.nvidia.com/settings/api-keys', zro: 'https://zro.moonmath.ai/overview', tokenharbor: 'https://tokenharbor.ai/dashboard', runcrate: 'https://www.runcrate.ai/auth/signup', 'mistral-vibe': 'https://console.mistral.ai', livekit: 'https://cloud.livekit.io', pollinations: 'https://enter.pollinations.ai', beatapi: 'https://beatapi.io', perch: 'https://www.perchai.app', nous: 'https://portal.nousresearch.com/login', kenari: 'https://kenari.id/login', numes: 'https://numes.ai/dashboard', goedel: 'https://inference.goedelmachines.com/keys', crowllm: 'https://crowllm.com/keys', fikra: 'https://fikraapi.co.ke/account/signup', openference: 'https://openference.com/register', darus: 'https://gateway.darusalfatah.id/', 'aperture-ai': 'https://www.aperture-ai.run/login.html', 'reflection-beam': 'https://kilo.ai/docs/getting-started/using-kilo-for-free', 'antseed-vikey': 'https://antseed.com/docs/', millionseek: 'https://100milionseek.top/signup', freepi: 'https://freepi.ai', ifm: 'https://platform.ifm.ai/api-keys' };
 const freeProviderInstructions: Record<string, string> = {
-  runcrate: ' Go straight to the API keys page at https://www.runcrate.ai/dashboard/api-keys. Leave optional marketing unchecked. Do not open or change billing settings or create another account. Capture the API key with api_hosts ["api.runcrate.ai"] and auth_shape "bearer", service runcrate, label grunt. Capture an existing key where the site shows its value; never reset or rotate it.'
+  runcrate: ' Go straight to the API keys page at https://www.runcrate.ai/dashboard/api-keys. Leave optional marketing unchecked. Do not open or change billing settings or create another account. Capture the API key with api_hosts ["api.runcrate.ai", "www.runcrate.ai"] in that order and auth_shape "bearer", service runcrate, label grunt. Capture an existing key where the site shows its value; never reset or rotate it.'
 };
 export type Provider = keyof typeof PROVIDERS;
 export function providerURL(value: string): URL | undefined {
@@ -216,7 +216,7 @@ async function probeGrant(source: Source, location: string, caller?: AbortSignal
   } catch (error) { await rm(join(location, `${source.id}.json`), { force: true }); signal.throwIfAborted(); throw error; }
 }
 
-export async function setupProviders(squire: SetupSquire, router: { addGrant(platform: string, grant: { base_url: string; token: string }): Promise<void>; hasKey?(platform: string): Promise<boolean> }, options: { providers?: Provider[]; notify: (line: string) => void; reuseSaved?: boolean; dataSharingApproved?: readonly string[]; signal?: AbortSignal | undefined; directory?: string; background?: boolean; exportToVault?: boolean } ) {
+export async function setupProviders(squire: SetupSquire, router: { addGrant(platform: string, grant: { base_url: string; token: string }): Promise<void>; addVerifiedGrant?(platform: string, grant: { base_url: string; token: string }, context?: RuncrateGrantContext): Promise<void>; hasKey?(platform: string): Promise<boolean> }, options: { providers?: Provider[]; notify: (line: string) => void; reuseSaved?: boolean; dataSharingApproved?: readonly string[]; signal?: AbortSignal | undefined; directory?: string; background?: boolean; exportToVault?: boolean } ) {
   const pending: string[] = [];
   const dropped: string[] = [];
   const drop = (provider: string, reason?: string, diagnostic?: SquireDiagnostic) => {
@@ -241,7 +241,8 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
       catch (error) { rememberFailure(error); }
       if (vaulted) {
         try {
-          await router.addGrant(provider, { base_url: vaulted.base_url, token: vaulted.token });
+          if (router.addVerifiedGrant) await router.addVerifiedGrant(provider, { base_url: vaulted.base_url, token: vaulted.token });
+          else await router.addGrant(provider, { base_url: vaulted.base_url, token: vaulted.token });
           options.signal?.throwIfAborted();
           options.notify(`${provider}: connected through local Grunt vault`);
           continue;
@@ -271,7 +272,11 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
             notify: options.notify
           });
           materialized = resolved.transport === 'direct';
-          await router.addGrant(provider, { base_url: resolved.base_url, token: resolved.token });
+          const keyField = apiKeyField(credential, provider);
+          const secretPlaceholder = credential.field_names.length > 1 && keyField ? `\${SECRET.${keyField}}` : '${SECRET}';
+          const context: RuncrateGrantContext = { reference: credential.reference, secretPlaceholder };
+          if (router.addVerifiedGrant) await router.addVerifiedGrant(provider, { base_url: resolved.base_url, token: resolved.token }, context);
+          else await router.addGrant(provider, { base_url: resolved.base_url, token: resolved.token });
           options.signal?.throwIfAborted();
           options.notify(resolved.transport === 'direct'
             ? `${provider}: connected through local Grunt vault`
@@ -283,7 +288,10 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
           }
           if (error instanceof RuncrateVerificationError) {
             options.signal?.throwIfAborted();
-            options.notify(`${provider}: exported key failed free/top-up verification; trying Squire egress`);
+            options.notify(materialized
+              ? `${provider}: exported key failed free/top-up verification`
+              : `${provider}: saved key failed free/top-up verification`);
+            rememberFailure(error);
             continue;
           }
           const status = rejectedStatus(error);
@@ -1506,8 +1514,9 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
     }
     if (providers.includes('runcrate')) {
       const source = new Runcrate({ directory: location });
-      const verifyDirect: RuncrateGrantVerifier = options.verifyRuncrateGrant
-        ?? ((grant, signal) => verifyRuncrateDirectGrant(grant, signal ? { signal } : {}));
+      const squireCaller = typeof (squire as { call?: unknown }).call === 'function'
+        ? (squire as { call(name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> })
+        : undefined;
       try {
         const result = await setupProviders(squire, {
           hasKey: async id => {
@@ -1519,25 +1528,37 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
             }
             return source.available();
           },
-          addGrant: async (id, grant) => {
+          addGrant: async id => {
+            if (id !== 'runcrate') throw new Error('Unexpected runcrate credential');
+            throw new RuncrateVerificationError('Runcrate setup requires verified grant context');
+          },
+          addVerifiedGrant: async (id, grant, context) => {
             if (id !== 'runcrate') throw new Error('Unexpected runcrate credential');
             let isDirect = false;
             try { validateDirectOrigin('runcrate', grant.base_url); isDirect = true; } catch { /* Squire egress grant. */ }
-            let verification: RuncrateVerification | undefined;
-            if (isDirect) {
-              let raw: unknown;
-              try {
-                raw = await verifyDirect(grant, options.signal);
-              } catch (error) {
-                options.signal?.throwIfAborted();
-                if (error instanceof RuncrateVerificationError) throw error;
-                throw new RuncrateVerificationError(
-                  error instanceof Error ? error.message : 'Runcrate free-account and top-ups-disabled verification failed'
-                );
+            let raw: unknown;
+            try {
+              if (options.verifyRuncrateGrant) {
+                raw = await options.verifyRuncrateGrant(grant, options.signal, context);
+              } else if (isDirect) {
+                raw = await verifyRuncrateDirectGrant(grant, options.signal ? { signal: options.signal } : {});
+              } else {
+                raw = await verifyRuncrateSquireGrant(grant, {
+                  ...(squireCaller ? { squire: squireCaller } : {}),
+                  ...(context?.reference ? { reference: context.reference } : {}),
+                  ...(context?.secretPlaceholder ? { secretPlaceholder: context.secretPlaceholder } : {}),
+                  ...(options.signal ? { signal: options.signal } : {})
+                });
               }
-              verification = validateRuncrateVerification(grant, raw);
+            } catch (error) {
+              options.signal?.throwIfAborted();
+              if (error instanceof RuncrateVerificationError || rejectedStatus(error) !== undefined) throw error;
+              throw new RuncrateVerificationError(
+                error instanceof Error ? error.message : 'Runcrate free-account and top-ups-disabled verification failed'
+              );
             }
-            await writeRuncrateGrant(grant, location, verification ? { verification } : process.env);
+            const verification = validateRuncrateVerification(grant, raw);
+            await writeRuncrateGrant(grant, location, { verification });
             await probeGrant(source, location, options.signal);
           }
         }, {

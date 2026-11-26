@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { BrowserSquire, FreeLLMAdmin, setup, setupProviders } from './setup.js';
 import { setupFallbacks } from './fallback-setup.js';
-import { Runcrate } from './runcrate.js';
+import { Runcrate, RUNCRATE_DEEPSEEK } from './runcrate.js';
 import { Zro, writeZroGrant } from './zro.js';
 import { TokenHarbor } from './tokenharbor.js';
 import { recordDataSharingConsent } from './data-sharing.js';
@@ -22,13 +22,25 @@ afterEach(async () => {
 });
 
 const rejected = () => new SourceError('logged_out', 'runcrate returned HTTP 401', undefined, undefined, { httpStatus: 401 });
+function runcrateBillingResponse(args: Record<string, unknown>) {
+  const url = String((args.http as { url?: unknown } | undefined)?.url ?? '');
+  if (url.endsWith('/api/v1/billing/balance')) return { response: { status: 200, headers: {}, body: JSON.stringify({ data: { creditsBalance: 0, activeUsageCost: 0 } }), truncated: false } };
+  if (url.endsWith('/api/v1/billing/auto-recharge')) return { response: { status: 200, headers: {}, body: JSON.stringify({ data: { enabled: false } }), truncated: false } };
+  if (url.endsWith('/api/v1/billing/payment-methods')) return { response: { status: 200, headers: {}, body: JSON.stringify({ data: [] }), truncated: false } };
+  return { response: { status: 404, headers: {}, body: '{}', truncated: false } };
+}
 function squireCalls(provider: string, events: string[], drive?: (goal: string) => Record<string, unknown>) {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async url => {
+    if (String(url).endsWith('/v1/models')) return Response.json({ data: [{ id: RUNCRATE_DEEPSEEK }] });
+    return new Response(null, { status: 404 });
+  });
   return vi.spyOn(BrowserSquire.prototype, 'call').mockImplementation(async (name, args) => {
     events.push(name);
     if (name === 'list_credentials') return { credentials: [{ service: provider, reference: `vault://${provider}`, field_names: ['api_key'] }] };
     if (name === 'operate_drive' && drive) return drive(String(args.goal));
     if (name === 'operate_finish') return {};
     if (name === 'grant_app_access') return { base_url: `https://egress.squire.test/${provider}`, token: 'synthetic-private-grant' };
+    if (name === 'use_credential') return runcrateBillingResponse(args);
     throw new Error('Unexpected Squire call');
   });
 }
@@ -70,7 +82,7 @@ it.each(['runcrate'] as const)('opens %s in the browser only after the provider 
     expect(goal).not.toContain('automatic top-ups disabled');
     expect(goal).toContain('Do not open or change billing settings');
     expect(goal).not.toMatch(/free tokens|allowance|DeepSeek-V4.1-Flash/);
-    expect(goal).toContain('["api.runcrate.ai"]');
+    expect(goal).toContain('["api.runcrate.ai", "www.runcrate.ai"]');
     expect(goal).toContain('Capture an existing key where the site shows its value');
     return { session_id: `${provider}-session`, status: 'complete' };
   });
@@ -219,7 +231,15 @@ it.each([
       return { text: 'ready' };
     });
     let captured = false;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async url => {
+      if (String(url).endsWith('/v1/models')) return Response.json({ data: [{ id: RUNCRATE_DEEPSEEK }] });
+      return new Response(null, { status: 404 });
+    });
     const squire = {
+      call: async (name: string, args: Record<string, unknown>) => {
+        if (name === 'use_credential') return runcrateBillingResponse(args);
+        throw new Error(`Unexpected Squire call: ${name}`);
+      },
       credentials: {
         list: async () => capture && !captured ? [] : [{ service: provider, reference: 'vault://probe', field_names: ['api_key'] }],
         grant: async () => ({ base_url: 'https://grant.test', token: 'synthetic-grant' })
@@ -241,6 +261,7 @@ it.each([
     expect(squire.runs.start).toHaveBeenCalledTimes(capture ? 1 : 0);
     await expect(stat(join(directory, `${provider}.json`))).rejects.toMatchObject({ code: 'ENOENT' });
     complete.mockRestore();
+    fetchSpy.mockRestore();
   }
 });
 

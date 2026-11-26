@@ -15,9 +15,9 @@ const COMPAT_EGRESS_PATH = /^\/v1\/egress\/g_[A-Za-z0-9_-]+\/?$/;
 const SHA256_HEX = /^[a-f0-9]{64}$/;
 
 /**
- * Exact pinned HTTPS origins each provider's local vault key is allowed to call.
- * Keeping this allowlist strict prevents a misconfigured or tampered grant from
- * sending a provider API key to an untrusted host.
+ * Exact pinned HTTPS origins each provider's local vault key is allowed to call
+ * for inference. Keeping this allowlist strict prevents a misconfigured or
+ * tampered grant from sending a provider API key to an untrusted host.
  */
 export const PROVIDER_DIRECT_ORIGINS = {
   beatapi: ['https://api.beatapi.io'],
@@ -40,6 +40,18 @@ export const PROVIDER_DIRECT_ORIGINS = {
   groq: ['https://api.groq.com'],
   cerebras: ['https://api.cerebras.ai']
 } as const satisfies Record<string, readonly string[]>;
+
+/**
+ * Exact pinned HTTPS origins a provider's local vault key is allowed to call
+ * for read-only billing/account verification when the provider hosts its
+ * billing API on a dedicated first-party origin separate from its inference
+ * host (for example, Runcrate's Infrastructure/Billing API at
+ * https://www.runcrate.ai/api/v1 per https://www.runcrate.ai/openapi.json,
+ * authenticated with the same ApiKeyAuth Bearer rc_live_* token).
+ */
+export const PROVIDER_VERIFICATION_ORIGINS: Partial<Record<VaultProvider, readonly string[]>> = {
+  runcrate: ['https://www.runcrate.ai']
+};
 
 export type VaultProvider = keyof typeof PROVIDER_DIRECT_ORIGINS;
 export type VaultEntrySource = 'local' | 'squire' | 'import';
@@ -83,6 +95,15 @@ export function assertVaultProvider(value: string): VaultProvider {
 
 export function providerDirectOrigins(provider: VaultProvider): readonly string[] {
   return PROVIDER_DIRECT_ORIGINS[assertVaultProvider(provider)];
+}
+
+export function providerVerificationOrigins(provider: VaultProvider): readonly string[] {
+  return PROVIDER_VERIFICATION_ORIGINS[assertVaultProvider(provider)] ?? [];
+}
+
+export function providerAllowedRequestOrigins(provider: VaultProvider): readonly string[] {
+  const id = assertVaultProvider(provider);
+  return [...new Set([...providerDirectOrigins(id), ...providerVerificationOrigins(id)])];
 }
 
 export function defaultProviderOrigin(provider: VaultProvider): string {
@@ -145,6 +166,48 @@ export function validateDirectOrigin(provider: VaultProvider, baseUrl: string): 
     throw new Error(`Untrusted direct HTTPS origin for ${provider}`);
   }
   return url.origin;
+}
+
+/**
+ * Validates that a read-only billing/account verification origin is HTTPS,
+ * carries no userinfo/query/fragment or injected path, and exactly matches one
+ * of the provider's vault-pinned verification origins.
+ */
+export function validateVerificationOrigin(provider: VaultProvider, baseUrl: string): string {
+  const allowed = providerVerificationOrigins(provider);
+  if (typeof baseUrl !== 'string' || /[?#]/.test(baseUrl)) {
+    throw new Error(`Untrusted verification HTTPS origin for ${provider}`);
+  }
+  let url: URL;
+  try { url = new URL(baseUrl); } catch { throw new Error(`Untrusted verification HTTPS origin for ${provider}`); }
+  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash
+    || (url.pathname !== '' && url.pathname !== '/')
+    || !allowed.includes(url.origin)) {
+    throw new Error(`Untrusted verification HTTPS origin for ${provider}`);
+  }
+  return url.origin;
+}
+
+/**
+ * Validates an outbound direct or billing-verification request URL against the
+ * provider's strict vault origin allowlist before attaching a bearer token.
+ */
+export function validateProviderRequestUrl(
+  provider: VaultProvider,
+  rawUrl: string,
+  scope: 'direct' | 'verification'
+): string {
+  if (typeof rawUrl !== 'string' || /#/.test(rawUrl)) {
+    throw new Error(`Untrusted ${scope} request URL for ${provider}`);
+  }
+  let url: URL;
+  try { url = new URL(rawUrl); } catch { throw new Error(`Untrusted ${scope} request URL for ${provider}`); }
+  if (url.protocol !== 'https:' || url.username || url.password || url.hash) {
+    throw new Error(`Untrusted ${scope} request URL for ${provider}`);
+  }
+  if (scope === 'direct') validateDirectOrigin(provider, url.origin);
+  else validateVerificationOrigin(provider, url.origin);
+  return url.href;
 }
 
 export function isSquireEgressEndpoint(baseUrl: string, strictLength = true): boolean {
