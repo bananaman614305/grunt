@@ -61,7 +61,8 @@ afterEach(async () => {
 
 async function effectiveEnvironment(unit: string, inherited: string[] = []) {
   const files = (await readdir(unit + '.d')).filter(name => name.endsWith('.conf')).map(name => join(unit + '.d', name));
-  const overrides = [...inherited, ...files].sort((a, b) => Buffer.compare(Buffer.from(basename(a)), Buffer.from(basename(b))));
+  const byName = new Map([...inherited, ...files].map(file => [basename(file), file]));
+  const overrides = [...byName.values()].sort((a, b) => Buffer.compare(Buffer.from(basename(a)), Buffer.from(basename(b))));
   let environment: NodeJS.ProcessEnv = {};
   for (const file of [unit, ...overrides]) {
     for (const [, assignment] of (await readFile(file, 'utf8')).matchAll(/^Environment=(.*)$/gm)) {
@@ -207,17 +208,23 @@ it.each(['milo', 'grunt'])('uses grunt.service and keeps the effective port and 
   await expect(readFile(join(units, 'milo.service'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
-it.each([false, true])('keeps the effective state directory and port after migrating an environment reset (inherited override: %s)', async inherited => {
+const lastOverrideName = '\u{10fffd}'.repeat(62) + '\u07ff.conf';
+it.each([
+  { label: 'service override', ownerOverride: 'zz-owner.conf' },
+  { label: 'inherited override', ownerOverride: 'zz-owner.conf', inheritedOverride: 'zzzz-type.conf' },
+  { label: 'maximum-length service override', ownerOverride: 'z'.repeat(250) + '.conf' },
+  { label: 'maximum-length inherited override', ownerOverride: 'zz-owner.conf', inheritedOverride: 'é'.repeat(125) + '.conf' },
+  { label: 'last possible service override', ownerOverride: lastOverrideName },
+  { label: 'last possible inherited override', ownerOverride: 'zz-owner.conf', inheritedOverride: lastOverrideName }
+])('keeps the effective state directory and port after a reset in a $label', async ({ ownerOverride, inheritedOverride }) => {
   const units = join(directory, 'xdg/systemd/user');
   const legacy = join(units, 'milo.service'), current = join(units, 'grunt.service');
   const state = join(directory, 'grunt'), entry = join(state, 'runtime/dist/local/main.js');
-  const ownerOverride = 'zz-owner.conf';
   const reset = `[Service]\nEnvironment=\nEnvironment="MILO_CONFIG_DIR=${state}" "MILO_PORT=8792"\n`;
-  const inheritedOverride = join(units, 'service.d', 'zzzz-type.conf');
-  const inheritedFiles = inherited ? [inheritedOverride] : [];
-  if (inherited) {
+  const inheritedFiles = inheritedOverride ? [join(units, 'service.d', inheritedOverride)] : [];
+  if (inheritedFiles[0]) {
     await mkdir(join(units, 'service.d'), { recursive: true });
-    await writeFile(inheritedOverride, reset, { mode: 0o600 });
+    await writeFile(inheritedFiles[0], reset, { mode: 0o600 });
   }
   await mkdir(legacy + '.d', { recursive: true });
   await writeFile(legacy, `[Service]\nExecStart="${process.execPath}" "${entry}"\nEnvironment="MILO_PORT=8788"\n`, { mode: 0o600 });
@@ -234,18 +241,22 @@ it.each([false, true])('keeps the effective state directory and port after migra
     return { stdout: '' };
   });
   await installService(['kilo']);
-  expect(await readFile(join(current + '.d', ownerOverride), 'utf8')).toBe(reset);
+  const ownerOverrideContents = await readFile(join(current + '.d', ownerOverride), 'utf8');
+  if (ownerOverride === lastOverrideName) expect(ownerOverrideContents.startsWith(reset)).toBe(true);
+  else expect(ownerOverrideContents).toBe(reset);
+  if (inheritedFiles[0]) expect(await readFile(inheritedFiles[0], 'utf8')).toBe(reset);
   expect(await readFile(join(state, 'installed-port.json'), 'utf8')).toBe('8792');
 });
 
-it('restores the old runtime before restarting the legacy unit when migration cannot start Grunt', async () => {
+it.each(['owner.conf', lastOverrideName])('restores the old runtime and override when migration cannot start Grunt', async ownerOverride => {
   const units = join(directory, 'xdg/systemd/user'), oldUnit = join(units, 'milo.service');
   const state = join(directory, 'grunt'), runtime = join(state, 'runtime');
   const entry = join(runtime, 'dist/local/main.js');
   const original = `[Service]\nExecStart="${process.execPath}" "${entry}"\n`;
   await mkdir(oldUnit + '.d', { recursive: true });
   await writeFile(oldUnit, original, { mode: 0o600 });
-  await writeFile(join(oldUnit + '.d', 'owner.conf'), '[Service]\nEnvironment=MILO_PORT=8792\n', { mode: 0o600 });
+  const override = '[Service]\nEnvironment=MILO_PORT=8792\n';
+  await writeFile(join(oldUnit + '.d', ownerOverride), override, { mode: 0o600 });
   await mkdir(runtime, { mode: 0o700 });
   const oldRuntime = join(runtime, 'previous-runtime');
   await writeFile(oldRuntime, 'old runtime');
@@ -259,7 +270,8 @@ it('restores the old runtime before restarting the legacy unit when migration ca
   });
   await expect(installService(['kilo'])).rejects.toThrow('Synthetic start failure');
   expect(await readFile(oldUnit, 'utf8')).toBe(original);
-  expect(await readdir(oldUnit + '.d')).toEqual(['owner.conf']);
+  expect(await readdir(oldUnit + '.d')).toEqual([ownerOverride]);
+  expect(await readFile(join(oldUnit + '.d', ownerOverride), 'utf8')).toBe(override);
   await expect(readFile(join(units, 'grunt.service'))).rejects.toMatchObject({ code: 'ENOENT' });
   await expect(readdir(join(units, 'grunt.service.d'))).rejects.toMatchObject({ code: 'ENOENT' });
   expect(fixture.execFile.mock.calls.map(([, args]) => args)).toContainEqual(['--user', 'start', 'milo.service']);

@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { constants, existsSync } from 'node:fs';
 import { lstat, mkdir, open, readdir, readFile, rename, rm, rmdir, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, join } from 'node:path';
@@ -50,6 +50,27 @@ export async function bootoutService(run: Run, domain: string, label: string) {
   }
 }
 
+const dropInExtension = '.conf';
+const maxFilenameBytes = 255;
+const laterCharacters = ['0', 'A', 'a', '~', '\u07ff', '\ufffd', '\u{10fffd}'];
+function laterDropInName(last: string) {
+  const stem = last.slice(0, -dropInExtension.length);
+  for (const ending of ['~grunt-migration.conf', '~.conf']) {
+    const candidate = stem + ending;
+    if (Buffer.byteLength(candidate) <= maxFilenameBytes) return candidate;
+  }
+  // A longer stem no longer fits. Increase a trailing character and discard
+  // any characters after it, which keeps the name later in systemd's byte order.
+  const characters = Array.from(stem);
+  while (characters.length) {
+    const current = characters.pop()!.codePointAt(0)!;
+    const next = laterCharacters.find(character => character.codePointAt(0)! > current);
+    if (!next) continue;
+    const candidate = characters.join('') + next + dropInExtension;
+    if (Buffer.byteLength(candidate) <= maxFilenameBytes) return candidate;
+  }
+}
+
 export async function prepareServiceMigration(options: {
   platform: 'linux' | 'darwin'; file: string; node: string; entry: string;
   effective: Record<string, string>; original: NodeJS.ProcessEnv; enabled?: string; enableNew?: boolean; run: Run;
@@ -78,7 +99,7 @@ export async function prepareServiceMigration(options: {
     ([name]) => name.startsWith('GRUNT_') && options.original[name] === undefined
   ));
   const environment = systemdEnvironment(additions);
-  let translatedDropIn: string | undefined;
+  let translatedDropIn: { path: string; contents: string | Buffer; append: boolean } | undefined;
   if (linux && environment) {
     const localDirectory = dropIns ? previousOverrides : replacementDropIns ? replacementOverrides : undefined;
     if (localDirectory) {
@@ -86,18 +107,31 @@ export async function prepareServiceMigration(options: {
       if (!info.isDirectory() || info.uid !== process.getuid?.()) throw new Error('The existing Grunt service overrides are unsafe');
     }
     const active = await systemctl('show', oldName, '-p', 'DropInPaths', '--value');
-    const activeNames = typeof active === 'string'
-      ? [...active.matchAll(/(?:^|\s)(\/.*?\.conf)(?=\s|$)/g)].map(([, path]) => basename(path!)) : [];
-    const names = [...activeNames, ...(localDirectory ? await readdir(localDirectory) : [])];
-    const last = names.filter(name => name.endsWith('.conf')).sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b))).at(-1);
-    // An empty Environment= clears earlier assignments. Apply the translated
-    // values after the existing overrides, which keep their original contents.
-    if (last) translatedDropIn = join(replacementOverrides, last.slice(0, -5) + '~grunt-migration.conf');
+    const activePaths = typeof active === 'string'
+      ? [...active.matchAll(/(?:^|\s)(\/.*?\.conf)(?=\s|$)/g)].map(([, path]) => path!) : [];
+    const localNames = localDirectory ? await readdir(localDirectory) : [];
+    const names = [...activePaths.map(path => basename(path)), ...localNames];
+    const last = names.filter(name => name.endsWith(dropInExtension)).sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b))).at(-1);
+    // An empty Environment= clears earlier assignments, so write the translated values last.
+    if (last) {
+      const later = laterDropInName(last);
+      const append = !later && localNames.includes(last);
+      const inherited = !later && !append ? activePaths.find(path => basename(path) === last) : undefined;
+      const settings = (later ? '' : '\n\n') + '[Service]\n' + environment + '\n';
+      // At the end of the filename order, use the last file's own name. A
+      // service-specific file with the same name takes precedence over an inherited one.
+      translatedDropIn = {
+        path: join(replacementOverrides, later ?? last),
+        contents: inherited ? Buffer.concat([await readFile(inherited), Buffer.from(settings)]) : settings,
+        append
+      };
+    }
   }
   const contents = linux ? await readFile(file, 'utf8') : launchAgent('grunt', node, entry, env);
   const unit = linux && environment && !translatedDropIn ? contents.trimEnd() + '\n\n[Service]\n' + environment + '\n' : contents;
   let installed = false, moved = false, movedDropIns = false, disabling = false, starting = false;
   let addedDropIn = false, createdDropInDirectory = false;
+  let originalDropInSize: number | undefined;
   return {
     async apply() {
       if (linux) { disabling = true; await systemctl('disable', oldName); }
@@ -111,10 +145,16 @@ export async function prepareServiceMigration(options: {
           await mkdir(replacementOverrides, { mode: 0o700 });
           createdDropInDirectory = true;
         }
-        const handle = await open(translatedDropIn, 'wx', 0o600);
-        addedDropIn = true;
-        try { await handle.writeFile('[Service]\n' + environment + '\n'); }
-        finally { await handle.close(); }
+        const handle = await open(translatedDropIn.path,
+          translatedDropIn.append ? constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW | constants.O_NONBLOCK : 'wx', 0o600);
+        try {
+          if (translatedDropIn.append) {
+            const info = await handle.stat();
+            if (!info.isFile() || info.uid !== process.getuid?.()) throw new Error('The last Grunt service override is unsafe');
+            originalDropInSize = info.size;
+          } else addedDropIn = true;
+          await handle.writeFile(translatedDropIn.contents);
+        } finally { await handle.close(); }
       }
       if (linux) { await systemctl('daemon-reload'); await enable(newName, options.enableNew ? 'enabled' : enabled); }
     },
@@ -129,7 +169,12 @@ export async function prepareServiceMigration(options: {
         else await bootoutService(run, domain, 'ai.grunt.service');
       }
       if (linux && installed) await systemctl('disable', newName);
-      if (addedDropIn && translatedDropIn) await rm(translatedDropIn);
+      if (translatedDropIn && originalDropInSize !== undefined) {
+        const handle = await open(translatedDropIn.path, constants.O_WRONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        try { await handle.truncate(originalDropInSize); }
+        finally { await handle.close(); }
+      }
+      if (addedDropIn && translatedDropIn) await rm(translatedDropIn.path);
       if (createdDropInDirectory) await rmdir(replacementOverrides);
       if (movedDropIns) await rename(replacementOverrides, previousOverrides);
       if (installed) await rm(replacement);
