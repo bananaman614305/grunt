@@ -6,12 +6,12 @@ import { bootstrapKilo, BrowserSquire, setup } from './setup.js';
 import type { SetupSquire } from './setup.js';
 import type { SignupAgent } from './signup-mcp.js';
 import { parallelMap, SETUP_CONCURRENCY } from './parallel.js';
-import { disabledAdapters } from '../registry.js';
+import { bundledRegistry, disabledAdapters, isDeclarativeAdapter } from '../registry.js';
 import type { Registry } from '../registry.js';
 import { OpenCode } from './opencode.js';
 import { DOCTOR_TIMEOUT_MS } from './freebuff.js';
 import { SourceError, Sources } from './source.js';
-import { DATA_SHARING_POLICIES, readDataSharingConsent, requiresDataSharing, requiresExplicitDataSharing } from './data-sharing.js';
+import { DATA_SHARING_POLICIES, readDataSharingConsent, registryDataSharingPolicies, requiresDataSharing, requiresExplicitDataSharing } from './data-sharing.js';
 import type { Source } from './source.js';
 import { setupFailureReason } from './setup-failure.js';
 
@@ -92,8 +92,11 @@ export async function setupFallbacks(options: {
   const execution = [...anonymous.filter(id => requested.includes(id)), ...requested.filter(id => !anonymous.includes(id))];
   const unavailable = requested.filter(id => disabledAdapters.has(id));
   for (const id of unavailable) options.notify(`${id}: routing is disabled; other free services continue`);
-  const approved = [...new Set([...(options.dataSharingApproved ?? []).filter(id => !requiresExplicitDataSharing(id)),
-    ...await readDataSharingConsent(options.directory, DATA_SHARING_POLICIES.map(policy => policy.provider))])];
+  const currentRegistry = options.registry?.() ?? bundledRegistry;
+  const extraPolicies = registryDataSharingPolicies(currentRegistry);
+  const allPolicies = [...DATA_SHARING_POLICIES, ...extraPolicies];
+  const approved = [...new Set([...(options.dataSharingApproved ?? []).filter(id => !requiresExplicitDataSharing(id, extraPolicies)),
+    ...await readDataSharingConsent(options.directory, allPolicies.map(policy => policy.provider), extraPolicies)])];
   if (squire instanceof BrowserSquire) squire.approveDataSharing(approved);
   // Reuse a grant created by an earlier setup before probing the free model.
   const savedConfig = join(options.directory, 'opencode-free.json');
@@ -399,13 +402,22 @@ export async function setupFallbacks(options: {
         try {
           if (disabledAdapters.has(id)) return;
           options.onStarted?.(id);
-          if (requiresDataSharing(id) && !approved.includes(id)) {
+          if (requiresDataSharing(id, extraPolicies) && !approved.includes(id)) {
             failures.set(id, 'approval required');
             unavailable.push(id);
             options.notify(`${id}: skipped until the grouped data-sharing approval is granted`);
             return;
           }
-          const task = tasks[id];
+          const declarative = currentRegistry.adapters.find(adapter => adapter.id === id);
+          const task = tasks[id] ?? (isDeclarativeAdapter(declarative) ? async () => { try {
+            await (options.setupProvider ?? setup)(options.notify, [id], { squire: squire as SetupSquire, directory: options.directory,
+              connect, background: reuseOnly, dataSharingApproved: approved,
+              ...(options.registry ? { registry: options.registry } : {}),
+              ...(options.signal ? { signal: options.signal } : {}) });
+          } catch (error) {
+            failedSetup(id, error);
+            options.notify(`${id}: declarative free setup pending; other routes remain available.`);
+          } } : undefined);
           if (!task) throw new Error('Unsupported vetted adapter');
           await task();
           available = !unavailable.includes(id);

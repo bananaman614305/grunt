@@ -215,9 +215,9 @@ accepted, with `GRUNT_*` taking precedence.
   the daemon's next read of the
   session (setup makes one status read) starts a pass for the remaining
   signups. The route a pass is signing up shows as connecting in status.
-- **Hot-add.** In the automatic pool, a newly listed adapter that Grunt ships
-  becomes a routable source at once, with no restart. A manual `GRUNT_SOURCES`
-  list stays fixed.
+- **Hot-add.** In the automatic pool, a newly listed shipped or declarative
+  (`install: "declarative:openai"`) adapter becomes a routable source at once,
+  with no restart. A manual `GRUNT_SOURCES` list stays fixed.
 - **Scout to registry.** The daemon never reads the scout's sheet. The scout,
   or a bot following `GET /v1/registry/instructions`, writes three optional
   fields per adapter through the registry API (`PUT /v1/registry/entries/{id}`;
@@ -229,11 +229,40 @@ accepted, with `GRUNT_*` taking precedence.
 | Status Active / Expiring soon / Inactive | `status: "active" \| "expiring" \| "inactive"` | Expiring and Inactive retire the route and are never opened. A missing `status` counts as Active. |
 | Expiry date | `expires: "YYYY-MM-DD"` | After that UTC day, the route counts as Inactive. |
 
-An offering with no Grunt adapter is a "needs adapter" signal for the scout's
-release pipeline (`ops/provider-scout`). It is written to the registry's
-`candidates` list, which every client ignores. Adapters still ship by release.
-The router ignores registry ids that no shipped adapter matches, so the daemon
-skips them.
+For an ephemeral OpenAI-compatible free API promo that requires no custom
+TypeScript adapter or npm release, the scout can publish a declarative entry
+directly to `adapters` with `install: "declarative:openai"`, `kind: "model"`,
+`modalities: ["text"]`, a pinned `model`, public HTTPS `signup`, page-by-page
+`hints`, optional `expires` (`YYYY-MM-DD`), and a strictly validated
+`declarative` object:
+
+| Field | Required | Rule |
+|---|---|---|
+| `baseUrl` | yes | Public HTTPS origin (`https://api.example.com`) with no path, custom port, credentials, query, fragment, IP literal, loopback, link-local, RFC1918, or `.local`/`.internal` host. |
+| `apiPath` | yes | Normalized path starting with `/` (e.g. `/v1/chat/completions`), no `..`, `//`, query, or control characters. |
+| `zeroPriceCheck` | yes | `"models_catalog"` (live `GET modelsEndpoint` check requiring exact pinned model with zero pricing before every dispatch) or `"none"`. |
+| `modelsEndpoint` | with `models_catalog` | Normalized path starting with `/` (e.g. `/v1/models`). |
+| `stream` | no | Boolean; when `true`, uses SSE transport with exact model and zero-cost checks. |
+| `disclosure` | yes | Non-blank data-sharing disclosure (up to 1500 characters). |
+| `policyVersion` | yes | Version tag matching `/^[A-Za-z0-9._-]{1,64}$/` (changing it invalidates older consent receipts). |
+| `policyUrl` | yes | Public HTTPS URL for the provider's privacy/terms page. |
+| `name` | no | Human-readable provider name (up to 100 characters). |
+| `minContextLength` | no | Minimum integer context window checked against catalog metadata when `zeroPriceCheck` is `"models_catalog"`. |
+
+Every declarative adapter enforces the same invariants as built-in adapters:
+native function-tool calling, HTTPS-only pinned origin matching the Squire
+grant's allowed host (or Squire's egress proxy), exact response `model`
+attestation, refusal of any non-zero cost fields in catalog or usage responses,
+versioned explicit data-sharing receipts, and immediate retirement when
+`expires` passes or `status` becomes `expiring` or `inactive`. Arbitrary code,
+shell commands, and unknown fields in `declarative` are rejected by the
+validator.
+
+An offering that needs custom client logic beyond `declarative:openai` stays a
+"needs adapter" signal for the scout's release pipeline (`ops/provider-scout`).
+It is written to the registry's `candidates` list, which every client ignores.
+Unknown `npm:*` registry ids that no shipped adapter matches are likewise
+ignored by the daemon.
 
 One more optional adapter field raises the chance that Squire's drive finishes a
 signup alone. It is an add-on: the signup driver model stays the fallback.
@@ -267,9 +296,10 @@ once, retaining the fact across polling yields until session cleanup. Other
 stops follow the [signup reporting rules](reference.md#free-api-and-account-setup).
 
 Squire's `operate_drive` `store` (where the drive saves a key it reveals) never
-comes from the registry. Grunt derives it from the vault service the signup
-checks: that service, the label and API host its shipped source reads, and
-`auth_shape` `bearer`. Without `store`, only a fallback operator's
+comes directly from an arbitrary registry blob. Grunt derives it from the vault
+service the signup checks: that service, the label (`Grunt Free` for declarative
+adapters) and the validated API host its shipped or declarative source reads,
+and `auth_shape` `bearer`. Without `store`, only a fallback operator's
 `operate_extract` can capture the key.
 
 ## 4. Route feedback

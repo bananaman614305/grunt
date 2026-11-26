@@ -3,6 +3,7 @@ import { constants } from 'node:fs';
 import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { ID_PATTERN, disabledAdapters, knownAdapters, safePublicHttpsOrigin } from '../registry.js';
 import type { FreeApiGrant } from './free-api.js';
 
 export const providerGrantDirectory = () => configRoot();
@@ -48,5 +49,41 @@ export async function writePrivateProviderGrant(provider: Provider, value: FreeA
   try {
     await writeFile(temporary, JSON.stringify(value), { mode: 0o600, flag: 'wx' });
     await rename(temporary, join(location, `${provider}.json`));
+  } finally { await rm(temporary, { force: true }); }
+}
+
+function declarativeProviderName(id: string): string {
+  if (!ID_PATTERN.test(id) || knownAdapters.has(id) || disabledAdapters.has(id)) throw new Error('Invalid declarative provider');
+  return id;
+}
+
+export function declarativeGrantAllowed(grant: FreeApiGrant, baseUrl: string): boolean {
+  const expectedOrigin = safePublicHttpsOrigin(baseUrl);
+  if (!expectedOrigin) return false;
+  let url: URL;
+  try { url = new URL(grant.base_url); } catch { return false; }
+  if (url.origin === 'https://trusty-squire-api.fly.dev') {
+    return /^\/v1\/egress\/g_[A-Za-z0-9_-]+$/.test(url.pathname);
+  }
+  return grant.base_url === expectedOrigin;
+}
+
+export async function readDeclarativeProviderGrant(id: string, location: string): Promise<unknown> {
+  const valid = declarativeProviderName(id);
+  const file = await open(join(location, `${valid}.json`), constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = await file.stat();
+    if (!stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.uid !== process.getuid?.()) throw new Error('Unsafe declarative provider grant file');
+    return JSON.parse(await file.readFile('utf8'));
+  } finally { await file.close(); }
+}
+
+export async function writeDeclarativeProviderGrant(id: string, value: FreeApiGrant, location: string) {
+  const valid = declarativeProviderName(id);
+  const temporary = join(location, `${valid}.${randomUUID()}.tmp`);
+  await mkdir(location, { recursive: true, mode: 0o700 });
+  try {
+    await writeFile(temporary, JSON.stringify(value), { mode: 0o600, flag: 'wx' });
+    await rename(temporary, join(location, `${valid}.json`));
   } finally { await rm(temporary, { force: true }); }
 }

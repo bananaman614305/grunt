@@ -7,7 +7,7 @@ import { taskTurns } from './harness.js';
 import { RequestError, SourceError, answeredBy, bridgedTools, canReplay, needsFunctionTools, toolCapable, NO_TOOL_SOURCE } from './source.js';
 import type { Completion, ErrorCode, ModelRequest, SlowUpstreamPolicy, Source } from './source.js';
 import type { Adapter, Registry } from '../registry.js';
-import { knownAdapters } from '../registry.js';
+import { isDeclarativeAdapter, knownAdapters } from '../registry.js';
 import { SourceStatus } from './source-status.js';
 import { SourceAvailability } from './source-availability.js';
 import { currentDiagnosticContext, observeRequestPhase, withDiagnosticContext } from './diagnostics.js';
@@ -166,7 +166,10 @@ export class StickyRouter {
     if (!wasBenched && this.benched(id)) try { this.options.dropped?.(id); } catch { /* Signup triggers cannot change routing. */ }
   }
 
-  private registered(id: string) { return knownAdapters.has(id) || !!this.options.localOptIns?.has(id); }
+  registered(id: string) {
+    return knownAdapters.has(id) || !!this.options.localOptIns?.has(id)
+      || isDeclarativeAdapter(this.options.registry().adapters.find(adapter => adapter.id === id));
+  }
   listed(id: string) { return this.registered(id) && this.options.registry().adapters.some(a => a.id === id && !scoutRetired(a, this.now())); }
   supportsInput(id: string, imageInput = false) {
     return this.registered(id) && this.options.registry().adapters.some(adapter => adapter.id === id && adapter.modalities.includes('text') && (!imageInput || adapter.modalities.includes('image')));

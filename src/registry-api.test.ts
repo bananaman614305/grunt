@@ -3,12 +3,12 @@ import { createClient } from '@libsql/client';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ADAPTER_FIELDS, CANDIDATE_FIELDS, HINTS_MAX, TIER_TOTALS, bundledRegistry, installers, validateRegistry } from './registry.js';
+import { ADAPTER_FIELDS, CANDIDATE_FIELDS, DECLARATIVE_FIELDS, HINTS_MAX, TIER_TOTALS, bundledRegistry, installers, validateRegistry } from './registry.js';
 import type { Registry } from './registry.js';
 import { registryRoutes } from './registry-routes.js';
 import { RegistryStore } from './registry-store.js';
 import type { Scores } from './registry-store.js';
-import { EXAMPLE_CANDIDATE } from './registry-instructions.js';
+import { EXAMPLE_CANDIDATE, EXAMPLE_DECLARATIVE_ADAPTER } from './registry-instructions.js';
 // @ts-expect-error The recorded 0.9.7 validator is plain JavaScript.
 import { BUNDLED_PUBLISHED, validateRegistry as validate097 } from './local/fixtures/registry-0.9.7.mjs';
 
@@ -466,4 +466,41 @@ it('rejects a saved snapshot with malformed candidates before reverting', async 
   expect(await response.json()).toEqual({ errors: [{ field: 'registry', rule: 'must be a valid registry snapshot' }] });
   expect(await readFile(api.path, 'utf8')).toBe(before);
   expect(await api.store.writes()).toHaveLength(1);
+});
+
+it('publishes, updates, reverts, and strictly validates declarative adapters through the registry API', async () => {
+  const api = await server({ published: bundledRegistry });
+  const page = await (await api.app.request('/v1/registry/instructions')).text();
+  for (const field of DECLARATIVE_FIELDS) expect(page).toContain(`| \`${field}\` |`);
+  const blocks = [...page.matchAll(/```json\n([\s\S]+?)\n```/g)].map(match => JSON.parse(match[1]!));
+  expect(blocks[1]).toEqual(EXAMPLE_DECLARATIVE_ADAPTER);
+
+  const put = await api.request('PUT', `/v1/registry/entries/${EXAMPLE_DECLARATIVE_ADAPTER.id}`, EXAMPLE_DECLARATIVE_ADAPTER, tokens.owner);
+  expect(put.status).toBe(200);
+  const result = await put.json() as { placed: string; write: number };
+  expect(result.placed).toBe('adapters');
+
+  const live = await api.registry();
+  const saved = live.adapters.find(adapter => adapter.id === EXAMPLE_DECLARATIVE_ADAPTER.id)!;
+  expect(saved.install).toBe('declarative:openai');
+  expect(saved.declarative).toEqual(EXAMPLE_DECLARATIVE_ADAPTER.declarative);
+  expect(live.adapters.filter(a => a.tier === 'experimental').reduce((sum, a) => sum + a.weight, 0)).toBeCloseTo(TIER_TOTALS.experimental, 12);
+
+  // Reject SSRF baseUrl, unknown command injection field, and missing hints.
+  const ssrf = await api.request('PUT', '/v1/registry/entries/bad-ssrf', {
+    ...EXAMPLE_DECLARATIVE_ADAPTER, id: 'bad-ssrf',
+    declarative: { ...EXAMPLE_DECLARATIVE_ADAPTER.declarative, baseUrl: 'https://169.254.169.254', command: 'id' }
+  }, tokens.owner);
+  expect(ssrf.status).toBe(422);
+  const ssrfErrors = (await ssrf.json() as { errors: { field: string }[] }).errors.map(error => error.field);
+  expect(ssrfErrors).toEqual(expect.arrayContaining(['declarative.baseUrl', 'declarative.command']));
+
+  const { hints: _hints, ...noHints } = EXAMPLE_DECLARATIVE_ADAPTER;
+  const missingHints = await api.request('PUT', '/v1/registry/entries/no-hints', { ...noHints, id: 'no-hints' }, tokens.owner);
+  expect(missingHints.status).toBe(422);
+  expect((await missingHints.json() as { errors: { field: string }[] }).errors.map(error => error.field)).toContain('hints');
+
+  // Revert removes the declarative adapter cleanly.
+  expect((await api.request('PUT', `/v1/registry/reverts/${result.write}`, undefined, tokens.owner)).status).toBe(200);
+  expect((await api.registry()).adapters.some(adapter => adapter.id === EXAMPLE_DECLARATIVE_ADAPTER.id)).toBe(false);
 });

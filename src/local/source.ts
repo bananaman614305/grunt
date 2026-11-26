@@ -1,5 +1,4 @@
 export type ErrorCode = 'not_installed' | 'logged_out' | 'quota' | 'timeout' | 'upstream' | 'refused' | 'cancelled';
-import { knownAdapters } from '../registry.js';
 import { providerQuotaPolicy, scheduledQuotaRefill } from './quota-policy.js';
 import type { SellerQuota } from './quota-policy.js';
 import { randomUUID } from 'node:crypto';
@@ -623,7 +622,7 @@ export class Sources {
       const blocked = toolsRequired && !toolCapable(source) ? 'tools_unsupported' : this.pending.has(source.id) ? 'pending_setup'
         : this.retired(source.id) ? 'retired' : this.registeredRouter?.trialBusy(source.id) ? 'trial_in_progress'
         : this.chainRouter?.listed(source.id) && !this.chainRouter.supportsInput(source.id, request.imageInput) ? 'input_unsupported'
-        : this.chainRouter && knownAdapters.has(source.id) && !this.dispatchEligible(source.id)
+        : this.chainRouter && this.chainRouter.registered(source.id) && !this.dispatchEligible(source.id)
           ? !this.chainRouter.listed(source.id) ? 'not_listed' : this.disabledModels.has(source.id) ? 'disabled' : 'cooldown' : undefined;
       if (blocked) {
         this.observeRoute(source.id, blocked, true);
