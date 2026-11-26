@@ -432,7 +432,7 @@ it.each([false, true])('counts five HTTP 502 failures after an admitted quota re
       rejects[i]!(new SourceError('upstream', 'Temporary upstream error', undefined, undefined, { httpStatus: 502 }));
       await turns[i];
       expect(value.cooldown('runcrate')!.until).toBeGreaterThanOrEqual(70000);
-      expect(status.routingBackoff('runcrate')).toMatchObject({ code: 'quota', signature: 'upstream:502::', streak: i, quotaUntil: 70000 });
+      expect(status.routingBackoff('runcrate')).toMatchObject({ code: 'quota', signature: 'outage:::', streak: i, quotaUntil: 70000 });
       expect(value.retired('runcrate')).toBe(i === 5);
     }
     now = 70001;
@@ -498,7 +498,7 @@ it.each([false, true])('clears a recovered upstream cooldown while preserving th
     now = 11000;
     admitted[1]!.reject(new SourceError('upstream', 'Temporary failure', undefined, undefined, { httpStatus: 502 }));
     await turns[1];
-    expect(value.cooldown('runcrate')!.until).toBe(911000);
+    expect(value.cooldown('runcrate')!.until).toBe(311000);
     const sibling = stored ? new SourceStatus(['runcrate'], () => now) : undefined;
     if (sibling) await sibling.setRoutingHistory(await open(path));
     now = 12000;
@@ -596,4 +596,46 @@ it('does not retry non-contention COMMIT failures or keep their uncommitted samp
   begin.mockRestore();
   await history.record('kilo', 'interactive-text', true, 1000, 12000);
   expect((await history.snapshot(13000)).performance.map(row => row.value.samples)).toEqual([1, 1]);
+});
+
+it('keeps the tool streak across text replies in memory and after restart', async () => {
+  let now = 10000;
+  const history = await open(await directory());
+  const status = new SourceStatus(['kilo'], () => now);
+  await status.setRoutingHistory(history);
+  const one = source('kilo'), value = router([one], status, () => now);
+  const bad = new SourceError('upstream', 'Invalid tool call', undefined, undefined, { httpStatus: 200, failureReason: 'response_tools' });
+  for (const seconds of [30, 60, 120]) {
+    await value.recordFailure('kilo', bad);
+    const until = now + seconds * 1000;
+    now++;
+    await withRoutingWorkload('background-text', () => status.complete(one, request, new AbortController().signal));
+    await status.refreshRoutingHistory();
+    expect(value.cooldown('kilo')?.until).toBe(until);
+    expect((await history.snapshot(now)).backoff[0]?.value.until).toBe(until);
+    now = until + 1;
+  }
+  await withRoutingWorkload('interactive-tools', () => status.complete(one, request, new AbortController().signal));
+  expect(status.routingBackoff('kilo')).toBeUndefined();
+  expect((await history.snapshot(now)).backoff).toEqual([]);
+});
+
+it('keeps due retired routes behind healthy peers and admits a trial after exhaustion', async () => {
+  let now = 10000;
+  const primary = source('kilo'), peer = source('runcrate');
+  const status = new SourceStatus([primary.id, peer.id], () => now);
+  const schedule = vi.fn();
+  const value = new StickyRouter([primary, peer], { registry: () => bundledRegistry, observation: status, now: () => now, random: () => 0, scheduleRecovery: schedule });
+  routers.push(value);
+  for (let i = 0; i < RETIRE_AFTER_FAILURES; i++) {
+    await value.recordFailure(primary.id, new SourceError('upstream', 'unavailable'));
+    now = status.routingBackoff(primary.id)!.until + 1;
+  }
+  expect(schedule).toHaveBeenLastCalledWith(primary.id, now - 1);
+  await value.complete(request, AbortSignal.timeout(1000));
+  expect(primary.complete).not.toHaveBeenCalled();
+  peer.complete.mockRejectedValue(new SourceError('quota', 'reset', 60));
+  await value.complete(request, AbortSignal.timeout(1000));
+  expect(primary.complete).toHaveBeenCalledOnce();
+  expect(status.routingBackoff(primary.id)).toBeUndefined();
 });

@@ -77,13 +77,15 @@ it('gives a retired route one real request after 15 minutes, doubling the wait p
     await retire(routes);
     let calls = vi.mocked(routes.a.complete).mock.calls.length;
     for (const wait of [15, 30, 60, 120, 240, 240]) {
+      vi.mocked(routes.b.available).mockResolvedValue(true);
       routes.advance(wait * MIN - 2 * MIN);
       await expect(turn(routes)).resolves.toEqual({ text: 'kilo done' });
       expect(routes.sources.retired('opencode')).toBe(true);
       expect(routes.a.complete).toHaveBeenCalledTimes(calls);
+      vi.mocked(routes.b.available).mockResolvedValue(false);
       routes.advance(3 * MIN);
       expect(routes.sources.retired('opencode')).toBe(false);
-      await expect(turn(routes)).resolves.toEqual({ text: 'kilo done' });
+      await expect(turn(routes)).rejects.toMatchObject({ code: 'quota' });
       expect(routes.a.complete).toHaveBeenCalledTimes(++calls);
       expect(routes.sources.retired('opencode')).toBe(true);
     }
@@ -95,9 +97,15 @@ it('clears retirement when the trial request succeeds', async () => {
   try {
     await retire(routes);
     routes.advance(16 * MIN);
+    await expect(turn(routes)).resolves.toEqual({ text: 'kilo done' });
+    expect(routes.a.complete).toHaveBeenCalledTimes(RETIRE_AFTER_FAILURES);
+    vi.mocked(routes.b.available).mockResolvedValue(false);
+    routes.advance(MIN);
     vi.mocked(routes.a.complete).mockResolvedValueOnce({ text: 'opencode back' });
     await expect(turn(routes)).resolves.toEqual({ text: 'opencode back' });
     expect(routes.sources.retired('opencode')).toBe(false);
+    vi.mocked(routes.b.available).mockResolvedValue(true);
+    routes.advance(MIN);
     // A later failure starts a fresh streak instead of re-retiring at once.
     await expect(turn(routes)).resolves.toBeDefined();
     routes.advance(16 * MIN);
@@ -114,8 +122,12 @@ it('lets only one request through while a half-open trial is in flight', async (
     let finish!: () => void;
     vi.mocked(routes.a.complete).mockClear();
     vi.mocked(routes.a.complete).mockImplementation(() => new Promise(resolve => { finish = () => resolve({ text: 'opencode back' }); }));
+    vi.mocked(routes.b.available).mockResolvedValue(false);
     const first = turn(routes);
     await vi.waitFor(() => expect(routes.a.complete).toHaveBeenCalledTimes(1));
+    await expect(turn(routes)).rejects.toMatchObject({ code: 'quota' });
+    vi.mocked(routes.b.available).mockResolvedValue(true);
+    routes.advance(MIN);
     await expect(turn(routes)).resolves.toEqual({ text: 'kilo done' });
     await expect(turn(routes)).resolves.toEqual({ text: 'kilo done' });
     expect(routes.a.complete).toHaveBeenCalledTimes(1);

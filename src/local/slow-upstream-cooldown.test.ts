@@ -25,9 +25,9 @@ function setup(policy: boolean) {
     benched: async (id: string, failure: SourceError) => { const at = now; await router.recordFailure(id, failure); return ((router.cooldown(id)?.until ?? at) - at) / 1000; } };
 }
 
-it('without a policy a slow failure keeps the default 15 minute cooldown', async () => {
+it('uses the default five minute base for a slow failure without an override', async () => {
   const t = setup(false);
-  expect(await t.benched('millionseek', slow(502))).toBe(15 * 60);
+  expect(await t.benched('millionseek', slow(502))).toBe(5 * 60);
 });
 it('benches a slow upstream failure for the policy base, doubling per consecutive one up to the cap', async () => {
   const t = setup(true), { baseSeconds, maxSeconds } = MILLIONSEEK_SLOW_UPSTREAM;
@@ -71,8 +71,8 @@ it('failures that are not slow keep the default cooldown', async () => {
   t.advance(16 * minute);
   expect(await t.benched('millionseek', new SourceError('refused', 'no'))).toBe(15 * 60);
 });
-it('retirement still follows the identical-failure streak', async () => {
-  // Five identical 502s, each after its cooldown, retire the route as before (half-open reopen stays 15 minutes).
+it('retirement preserves a longer upstream cooldown', async () => {
+  // Five identical 502s, each after its cooldown, retire the route as before.
   const t = setup(true);
   for (let i = 1; i <= RETIRE_AFTER_FAILURES; i++) {
     expect(t.router.retired('millionseek')).toBe(false);
@@ -82,14 +82,16 @@ it('retirement still follows the identical-failure streak', async () => {
   expect(RETIRE_AFTER_FAILURES).toBe(5);
   const retiredAt = t.status.routingBackoff('millionseek')!;
   expect(retiredAt.streak).toBe(RETIRE_AFTER_FAILURES);
-  expect(retiredAt.until - retiredAt.at).toBe(15 * minute);
+  expect(retiredAt.until - retiredAt.at).toBe(MILLIONSEEK_SLOW_UPSTREAM.maxSeconds * 1000);
 });
-it('different slow failure kinds never retire a route, exactly as before', async () => {
-  const t = setup(true);
-  for (let i = 0; i < 8; i++) {
+it('flapping-outage-streak-reset counts alternating failures toward retirement', async () => {
+  const t = setup(false);
+  for (let i = 1; i <= RETIRE_AFTER_FAILURES; i++) {
     await t.router.recordFailure('millionseek', i % 2 ? timeout() : slow(502));
-    t.advance(MILLIONSEEK_SLOW_UPSTREAM.maxSeconds * 1000 + 1);
-    expect(t.router.retired('millionseek')).toBe(false);
+    const hold = t.status.routingBackoff('millionseek')!;
+    expect(hold).toMatchObject({ signature: 'outage:::', streak: i });
+    expect(t.router.retired('millionseek')).toBe(i === RETIRE_AFTER_FAILURES);
+    t.advance(hold.until - t.now() + 1);
   }
 });
 it('millionseek opts in with a longer first cooldown than the default and a bounded cap', () => {

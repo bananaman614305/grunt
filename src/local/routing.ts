@@ -1,10 +1,11 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { realpath } from 'node:fs/promises';
 import { setImmediate as metadataTurn } from 'node:timers/promises';
 import { taskTurns } from './harness.js';
-import { RequestError, SourceError, answeredBy, bridgedTools, canReplay, needsFunctionTools, toolCapable, withAttemptStream, NO_TOOL_SOURCE } from './source.js';
+import { Sources, RequestError, SourceError, answeredBy, bridgedTools, canReplay, needsFunctionTools, toolCapable, withAttemptStream, NO_TOOL_SOURCE } from './source.js';
 import type { Completion, ErrorCode, ModelRequest, SlowUpstreamPolicy, Source } from './source.js';
 import type { Adapter, Registry } from '../registry.js';
 import { knownAdapters } from '../registry.js';
@@ -13,10 +14,11 @@ import { SourceAvailability } from './source-availability.js';
 import { currentDiagnosticContext, observeRequestPhase, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticEvent } from './diagnostics.js';
 import type { RoutingWorkload } from './routing-history.js';
-import { RETIRE_AFTER_FAILURES, localRequestRefusal, routingWorkload, slowUpstreamFailure, upstreamRetryHint, withRoutingWorkload } from './routing-history.js';
+import { RETIRE_AFTER_FAILURES, activeRoutingWorkload, toolFailureSignature, localRequestRefusal, currentRoutingWorkload, slowUpstreamFailure, upstreamRetryHint, withRoutingWorkload } from './routing-history.js';
 
 const exec = promisify(execFile);
 const DEFAULT_FAILURE_COOLDOWN_SECONDS = 15 * 60;
+const DEFAULT_SLOW_UPSTREAM = { baseSeconds: 300, maxSeconds: 7200 };
 const BAD_SAMPLE_COOLDOWN_SECONDS = 30;
 const MAX_UPSTREAM_RETRY_SECONDS = 24 * 60 * 60;
 // The 5th consecutive identical failure, each within the routing-history window
@@ -51,7 +53,13 @@ export const FIRST_DRAW_IDLE_WAIT_MS = 3000;
 // An image-capable source benched for longer than this no longer keeps the image in the conversation (see imageUsable).
 export const IMAGE_WAIT_SECONDS = 300;
 
-export interface RoutingOptions { registry: () => Registry; localOptIns?: ReadonlySet<string>; unrouted?: ReadonlySet<string>; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; disabled?: ReadonlySet<string>; observation?: SourceStatus; attempt?: (source: Source, request: ModelRequest, signal: AbortSignal) => Promise<Completion>; observe?: (source: string, reason: NonNullable<DiagnosticEvent['reason']>, skipped?: boolean) => void; observeEligible?: (source: string, at: number) => void; dropped?: (source: string) => void }
+export const HEDGE_AFTER_MS = 8000;
+const backupUnavailable = Symbol('backup eligibility changed');
+const attemptProgress = new AsyncLocalStorage<{ commit: () => boolean; progress: () => void }>();
+export const acceptRoutingCompletion = () => attemptProgress.getStore()?.commit() ?? true;
+export const routingOutputProgress = () => attemptProgress.getStore()?.progress;
+
+export interface RoutingOptions { hedgeAfterMs?: number; scheduleRecovery?: (id: string, at: number) => void; registry: () => Registry; localOptIns?: ReadonlySet<string>; unrouted?: ReadonlySet<string>; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; disabled?: ReadonlySet<string>; observation?: SourceStatus; attempt?: (source: Source, request: ModelRequest, signal: AbortSignal) => Promise<Completion>; observe?: (source: string, reason: NonNullable<DiagnosticEvent['reason']>, skipped?: boolean) => void; observeEligible?: (source: string, at: number) => void; dropped?: (source: string) => void }
 interface Task {
   source?: string; original: string; output: string; checkpoint?: string; switched: boolean; busy: boolean;
   reassessment?: { from: string; source: string; samples: number; at: number };
@@ -93,25 +101,40 @@ export class StickyRouter {
   }
   // Retired and not yet due for a trial. A retired route reopens after a bounded wait (15 min, doubling to
   // 4 h per failed trial) for a single real request; success clears it, failure extends the wait.
+  private textDuringToolHold(id: string) {
+    return activeRoutingWorkload()?.endsWith('-text') && toolFailureSignature(this.observation.routingBackoff(id)?.signature);
+  }
   retired(id: string) {
+    if (this.textDuringToolHold(id)) return false;
     const backoff = this.observation.routingBackoff(id);
     if (!backoff || backoff.streak < RETIRE_AFTER_FAILURES) return false;
     return this.now() < backoff.until;
   }
   // A due retired route whose single trial is already in flight.
-  trialBusy(id: string) { return this.trials.has(id) && (this.observation.routingBackoff(id)?.streak ?? 0) >= RETIRE_AFTER_FAILURES; }
+  trialBusy(id: string) { return this.dueTrial(id) && (this.trials.has(id) || this.observation.isBusy(id)); }
   // Synchronously claims the single trial of a due retired route; call it right after the retired() check
   // and before dispatch. Returns a release to call when the attempt has settled, or a no-op otherwise.
   claimTrial(id: string): () => void {
     const backoff = this.observation.routingBackoff(id);
-    if (!backoff || backoff.streak < RETIRE_AFTER_FAILURES || this.trials.has(id)) return () => {};
+    if (!backoff || this.textDuringToolHold(id) || backoff.streak < RETIRE_AFTER_FAILURES || this.trials.has(id)) return () => {};
     this.trials.add(id);
     return () => { this.trials.delete(id); };
+  }
+  private dueTrial(id: string) {
+    return !this.textDuringToolHold(id) && (this.observation.routingBackoff(id)?.streak ?? 0) >= RETIRE_AFTER_FAILURES;
+  }
+  private awaitingProbe(id: string) {
+    return this.dueTrial(id) || this.observation.schedulesRecovery && !this.textDuringToolHold(id) && !!this.observation.routingBackoff(id);
   }
   needsHealthCheck(id: string) { return this.bars.get(id) === Infinity; }
   healthy(id: string) { if (this.bars.get(id) === Infinity) { this.bars.delete(id); this.barFailures.delete(id); } }
   verified(id: string) { this.bars.delete(id); this.barFailures.delete(id); this.barAt.delete(id); this.observation.clearRoutingBackoff(id); }
   cooldown(id: string, clearRecovered = true) {
+    if (!this.needsHealthCheck(id) && this.textDuringToolHold(id)) {
+      const hold = this.observation.routingBackoff(id);
+      const until = this.observation.quotaRetryAt(id) ?? hold?.quotaUntil;
+      return until === undefined ? undefined : { until, code: 'quota' as const };
+    }
     let until = this.bars.get(id), code = this.barFailures.get(id);
     if (until !== undefined && Number.isFinite(until) && (this.observation.routingRecoveryAt(id) ?? 0) > (this.barAt.get(id) ?? Infinity)) {
       if (clearRecovered) { this.bars.delete(id); this.barFailures.delete(id); this.barAt.delete(id); }
@@ -155,7 +178,7 @@ export class StickyRouter {
       // A reply that arrived but held an invalid function call is a bad
       // sample, not an outage; bench the source only briefly.
       const badSample = failure.code === 'upstream' && status === 200 && failure.diagnostics?.failureReason === 'response_tools';
-      const policy = hasUpstreamHint || badSample || !slowUpstreamFailure(failure) ? undefined : this.sources.find(source => source.id === id)?.slowUpstream;
+      const policy = hasUpstreamHint || badSample || !slowUpstreamFailure(failure) ? undefined : this.sources.find(source => source.id === id)?.slowUpstream ?? DEFAULT_SLOW_UPSTREAM;
       const seconds = hasUpstreamHint ? Math.min(MAX_UPSTREAM_RETRY_SECONDS, Math.max(1, retry ?? 1))
         : badSample ? BAD_SAMPLE_COOLDOWN_SECONDS : policy ? this.slowUpstreamSeconds(id, policy) : DEFAULT_FAILURE_COOLDOWN_SECONDS;
       // The policy already scales its own delay across consecutive slow failures of any kind.
@@ -163,6 +186,7 @@ export class StickyRouter {
     }
     this.barAt.set(id, this.observation.routingBackoff(id)?.at ?? this.now());
     this.bars.set(id, until); this.barFailures.set(id, this.observation.routingBackoff(id)?.code ?? failure.code);
+    if (Number.isFinite(until)) this.options.scheduleRecovery?.(id, until);
     if (!wasBenched && this.benched(id)) try { this.options.dropped?.(id); } catch { /* Signup triggers cannot change routing. */ }
   }
 
@@ -256,12 +280,80 @@ export class StickyRouter {
     if (!previous || previous.from !== current.source.id || previous.source !== best.source.id || estimate.samples < previous.samples || estimate.at <= previous.at) return;
     return best;
   }
+  private raceAttempts(primary: Source, signal: AbortSignal, backup: () => Source | undefined,
+    run: (source: Source, signal: AbortSignal) => Promise<Completion>, bind: (source: Source) => void,
+    releasePrimary: () => void, fail: (source: Source, failure: SourceError) => Promise<void>, hedge: boolean) {
+    if (!hedge) return run(primary, signal).catch(async error => {
+      signal.throwIfAborted();
+      const failure = error instanceof SourceError ? error : new SourceError('upstream', 'Adapter request failed');
+      await fail(primary, failure);
+      throw failure;
+    });
+    return new Promise<Completion>((resolve, reject) => {
+      const active = new Map<Source, { controller: AbortController; release: () => void }>();
+      let winner: Source | undefined;
+      let done = false;
+      const stop = (source: Source) => {
+        const attempt = active.get(source);
+        active.delete(source);
+        attempt?.controller.abort(signal.aborted ? signal.reason : new SourceError('cancelled', 'Another route answered'));
+        attempt?.release();
+      };
+      const finish = () => {
+        done = true;
+        clearTimeout(timer);
+        signal.removeEventListener('abort', abort);
+        for (const source of active.keys()) stop(source);
+      };
+      const abort = () => { finish(); reject(signal.reason); };
+      const launch = async (source: Source, release: () => void) => {
+        const controller = new AbortController();
+        active.set(source, { controller, release });
+        const commit = () => {
+          if (done || controller.signal.aborted || !active.has(source)) return false;
+          if (!winner) {
+            winner = source;
+            clearTimeout(timer);
+            bind(source);
+            for (const other of active.keys()) if (other !== source) stop(other);
+          }
+          return winner === source;
+        };
+        try {
+          const result = await attemptProgress.run({ commit, progress: () => clearTimeout(timer) }, () => Sources.withStreamTextGate(commit, () => run(source, controller.signal)));
+          if (commit()) { active.delete(source); resolve(result); finish(); }
+        } catch (error) {
+          if (done || controller.signal.aborted) return;
+          const failure = error === backupUnavailable ? new SourceError('cancelled', 'Backup eligibility changed') : error instanceof SourceError ? error : new SourceError('upstream', 'Adapter request failed');
+          clearTimeout(timer);
+          active.delete(source);
+          release();
+          const terminal = !!winner || !active.size || (!canReplay(failure) && error !== backupUnavailable);
+          if (terminal) finish();
+          try { await fail(source, failure); }
+          catch (storageError) { finish(); reject(storageError); return; }
+          if (terminal) reject(failure);
+        } finally { release(); }
+      };
+      signal.addEventListener('abort', abort, { once: true });
+      const timer = setTimeout(() => {
+        try {
+          const source = backup();
+          if (source) void launch(source, this.reserve(source.id));
+        } catch { /* An unavailable backup leaves the primary running. */ }
+      }, this.options.hedgeAfterMs ?? HEDGE_AFTER_MS);
+      void launch(primary, releasePrimary);
+    });
+  }
   async complete(request: ModelRequest, signal: AbortSignal, fallback?: (reason: SourceError, signal: AbortSignal) => Promise<Completion>, skipped = new Map<string, string>()): Promise<Completion> {
+    return withRoutingWorkload(currentRoutingWorkload(request), () => this.route(request, signal, fallback, skipped));
+  }
+  private async route(request: ModelRequest, signal: AbortSignal, fallback: ((reason: SourceError, signal: AbortSignal) => Promise<Completion>) | undefined, skipped: Map<string, string>): Promise<Completion> {
     signal = AbortSignal.any([signal, this.shutdown.signal]);
     signal.throwIfAborted();
     await this.observation.refreshRoutingHistory();
     signal.throwIfAborted();
-    const workload = routingWorkload(request);
+    const workload = currentRoutingWorkload(request);
     const cwd = await realpath(request.cwd);
     // An explicit source selection cannot inherit an automatic binding with the
     // same user turns (or another explicitly selected source's continuation).
@@ -289,6 +381,7 @@ export class StickyRouter {
       observedEligible.add(id);
       withDiagnosticContext(context, () => observeEligible(id, at));
     };
+    let hedged = false;
     let yieldedMetadata = false, idleWaitEnds: number | undefined;
     const observation = this.observation;
     const skip = (source: string, reason: NonNullable<DiagnosticEvent['reason']>) => {
@@ -320,7 +413,7 @@ export class StickyRouter {
         signal.throwIfAborted();
         const registered = this.options.registry().adapters.filter(a => this.registered(a.id));
         const adapters = registered.filter(a => a.modalities.includes('text') && (!request.imageInput || a.modalities.includes('image')));
-        const eligible: Candidate[] = [];
+        let eligible: Candidate[] = [];
         const unknown: Source[] = [];
         const retryTimes: number[] = [];
         let transient = false;
@@ -399,6 +492,12 @@ export class StickyRouter {
           if (!explicit && fallback) return await fallback(failure, signal);
           throw failure;
         }
+        const open = eligible.filter(({ source }) => !this.awaitingProbe(source.id));
+        if (open.length) eligible = open;
+        else if (unknown.length && this.availability.hasPending()) {
+          await this.availability.changed(signal);
+          continue;
+        }
         const boundMain = eligible.some(candidate => candidate.source.id === task.source);
         // A task that is not bound yet (a first draw or a fallback) takes a native tool source when one is eligible, so
         // a model that must be asked in prose to call tools is not drawn while a provider-native one could answer. A
@@ -467,23 +566,46 @@ export class StickyRouter {
           if (performanceSwitch) { task.lastPerformanceSwitchAt = this.now(); delete task.reassessment; }
           attempted.add(selected.source.id);
           this.options.observe?.(selected.source.id, request.model === selected.source.id ? 'explicit' : task.switched ? 'fallback' : bound ? 'sticky' : 'weighted');
-          const result = await withRoutingWorkload(workload, () => this.options.attempt ? this.options.attempt(selected.source, input, signal) : withAttemptStream(selected.source.id, () => observation.complete(selected.source, input, signal)));
+          const primary = selected.source;
+          const safeToRace = (source: Source) => source.inferenceOnly || adapters.some(a => a.id === source.id && a.kind === 'model');
+          const backupEligible = (source: Source) => safeToRace(source) && !this.options.unrouted?.has(source.id)
+            && !dispatchBlockReason(source.id) && !this.awaitingProbe(source.id) && (this.cooldown(source.id)?.until ?? 0) <= this.now()
+            && this.availability.peek(source.id) === true && (!source.acceptsRequest || source.acceptsRequest(request))
+            && (!toolsRequired || toolCapable(source) && (!NATIVE_TOOL_SOURCES_FIRST || bridgedTools(source) === bridgedTools(primary)));
+          const backup = () => {
+            const source = this.sources.find(source => !attempted.has(source.id) && !this.busy(source.id) && backupEligible(source));
+            if (source) { attempted.add(source.id); hedged = true; }
+            return source;
+          };
+          const run = async (source: Source, child: AbortSignal) => {
+            let payload = input;
+            if (source !== primary) {
+              if (source.acceptsRequest) payload = { ...request, cwd };
+              else if (!handoff && (switched || bound)) payload = await this.handoff({ ...request, cwd }, task, child);
+              child.throwIfAborted();
+              if (!backupEligible(source) || this.busy(source.id, 1)) throw backupUnavailable;
+              this.options.observe?.(source.id, 'fallback');
+            }
+            return this.options.attempt ? this.options.attempt(source, payload, child)
+              : withAttemptStream(source.id, () => observation.complete(source, payload, child));
+          };
+          const fail = async (source: Source, failure: SourceError) => {
+            if (failure.code === 'cancelled') return;
+            if (localRequestRefusal(failure)) {
+              refused.add(source.id);
+              skipped.set(source.id, 'rejected the tool definitions or tool history');
+            } else skipped.set(source.id, observation.routeFailure(source.id, failure.code) ?? 'request failed');
+            await this.recordFailure(source.id, failure);
+          };
+          const result = await this.raceAttempts(primary, signal, backup, run, source => { task.source = source.id; },
+            unreserve, fail, !explicit && !hedged && safeToRace(primary));
           signal.throwIfAborted();
           task.output = Buffer.from(result.text).subarray(-4096).toString('utf8'); task.switched = false;
-          answeredBy.set(result, selected.source.id);
+          answeredBy.set(result, task.source!);
           return result;
         } catch (error) {
-          signal.throwIfAborted();
           const failure = error instanceof SourceError ? error : new SourceError('upstream', 'Adapter request failed');
           if (failure.output) task.output = failure.output;
-          if (failure.code === 'cancelled') throw failure;
-          if (localRequestRefusal(failure)) {
-            refused.add(selected.source.id);
-            skipped.set(selected.source.id, 'rejected the tool definitions or tool history');
-          } else {
-            skipped.set(selected.source.id, observation.routeFailure(selected.source.id, failure.code) ?? 'request failed');
-          }
-          await this.recordFailure(selected.source.id, failure);
           signal.throwIfAborted();
           if (!canReplay(failure)) throw failure;
           task.switched = true;

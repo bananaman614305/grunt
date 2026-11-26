@@ -7,6 +7,9 @@ import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { bundledRegistry } from '../registry.js';
+import { Sources, SourceError } from './source.js';
+import { createSourceMaintenance } from './runtime-maintenance.js';
 import { DailyMaintenance, MAINTENANCE_CHECK_TIMEOUT, MAINTENANCE_GAP, MAINTENANCE_INTERVAL, MAINTENANCE_JITTER } from './maintenance.js';
 import type { MaintenanceResult } from './maintenance.js';
 
@@ -312,4 +315,42 @@ it.each(['permissions', 'symlink'] as const)('refuses unsafe coordination %s bef
   const check = vi.fn(async () => passed()), item = queue({ directory: path, providers: () => ['kilo'], check });
   await expect(item.start()).rejects.toThrow('private local state'); expect(check).not.toHaveBeenCalled();
   if (kind === 'symlink') expect(await readFile(join(path, 'protected.db'), 'utf8')).toBe('preserved');
+});
+
+it('rechecks a recently verified provider at its recovery deadline after the quiet gap', async () => {
+  const check = vi.fn(async () => passed());
+  const item = queue({ directory: await directory(), providers: () => ['kilo'], check, random: () => 0 });
+  await item.start(); await vi.advanceTimersByTimeAsync(0); await completed(item, 'kilo');
+  item.scheduleRecovery('kilo', epoch + MAINTENANCE_GAP / 2);
+  await vi.advanceTimersByTimeAsync(MAINTENANCE_GAP - 1);
+  expect(check).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(1);
+  await until(() => check.mock.calls.length === 2);
+});
+
+it('probes a failed live route at its deadline and reschedules a failed probe', async () => {
+  const complete = vi.fn(async () => ({ text: 'healthy' }));
+  const sources = new Sources([{ id: 'livekit', available: async () => true, complete }], { registry: () => bundledRegistry });
+  const maintenance = createSourceMaintenance(sources, { directory: await directory(), refreshSession: async () => undefined });
+  queues.push(maintenance);
+  try {
+    await maintenance.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await completed(maintenance, 'livekit');
+    expect(complete).toHaveBeenCalledTimes(1);
+    const failure = new SourceError('upstream', 'gateway', undefined, undefined, { httpStatus: 502 });
+    complete.mockRejectedValueOnce(failure).mockRejectedValueOnce(failure);
+    const request = { model: 'livekit', tools: [], messages: [{ role: 'user', content: 'live' }], cwd: tmpdir(), stream: false };
+    await expect(sources.complete(request, new AbortController().signal)).rejects.toThrow();
+    const first = sources.status().sources[0]!.retryAt!;
+    expect(first).toBe(epoch + 300000);
+    await vi.advanceTimersByTimeAsync(first - Date.now());
+    await until(() => maintenance.snapshot().livekit?.outcome === 'failed' && vi.getTimerCount() === 1);
+    expect(complete).toHaveBeenCalledTimes(3);
+    const second = sources.status().sources[0]!.retryAt!;
+    expect(second).toBe(first + 600000);
+    await vi.advanceTimersByTimeAsync(second - Date.now());
+    await until(() => complete.mock.calls.length === 4 && maintenance.snapshot().livekit?.outcome === 'passed');
+    expect(sources.status().sources[0]!.retryAt).toBeUndefined();
+  } finally { await sources.close(); }
 });

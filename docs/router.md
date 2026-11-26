@@ -117,6 +117,12 @@ no longer accepted; operators who previously used it must set
   routes; with fewer idle routes than tasks the rest share as before. The claim
   is released when the attempt succeeds, fails or is cancelled, or the selection
   is dropped.
+- **Stalled inference.** An automatic inference request that stays silent for
+  eight seconds may race one idle backup with fresh positive availability in
+  the same tool draw tier. Both routes retain their dispatch and consent
+  guards. The first valid stream text or completion binds the task. Grunt
+  cancels the other attempt without counting a failure. Named sources and
+  agents that may perform local work keep a single attempt.
 - **Native tool sources first.** For a request with function tools that names no
   source, a first draw and a fallback pick among the eligible sources that call
   tools through the provider's own interface before any JSON-bridged source
@@ -166,19 +172,19 @@ no longer accepted; operators who previously used it must set
   to 1 second–24 hours. Local request-shape refusals (`failureReason`
   `request_*`: unsupported tools, a tool schema or tool conversation the
   adapter refused before any provider was reached) set no back-off at all. A source
-  may opt into a slow-upstream policy (100milionseek does): its gateway errors
-  (HTTP 502, 503, 504, 524), connection resets, cut streams and output
-  deadlines, with no Retry-After, bench it for the policy's base (30 minutes),
-  doubling per consecutive slow failure of any kind up to its cap (2 hours); a
-  success resets the count, a parallel failure inside the cooldown does not
-  escalate it, and a provider Retry-After still wins. Retirement counts are
-  unchanged. Quota failures use the provider's reset time instead;
+  uses a five-minute base for gateway errors (HTTP 502, 503, 504, 524),
+  connection resets/timeouts, cut streams and output deadlines. MillionSeek
+  uses a thirty-minute base. Consecutive outages double that delay up to two
+  hours. A parallel failure inside the delay does not extend the slow cooldown.
+  Alternating outage symptoms share one retirement streak. Invalid function
+  calls have their own escalating tool hold. Text successes preserve it until
+  a tool turn succeeds or the route is explicitly verified. Quota failures use the provider's reset time instead;
   successful recovery preserves that quota deadline. Missing installations
   and expired logins stay barred until a successful health check.
   On the first upgrade to Kilo's free-model rotation, routing history clears
   the legacy Particle-only Kilo quota hold so other free models can be tried.
   Other holds and subsequent quota holds from exhausting the pool persist.
-- **Retirement.** On the **5th consecutive identical failure**, each within
+- **Retirement.** On the **5th consecutive failure of the same class**, each within
   6 hours of the last, the route is retired. Quota failures never count
   toward this, and neither do local request-shape refusals or HTTP 5xx
   failures that carry a Retry-After hint (those are only cooldowns). Identical
@@ -187,9 +193,11 @@ no longer accepted; operators who previously used it must set
   doesn't count as open (so the next pass opens a replacement), and isn't
   re-signed up.
 - **Return.** Four things bring a retired route back:
-  - a half-open trial: 15 minutes after retirement (or after the last failed
-    trial) the route may take exactly one real routed request. Success clears
-    the retirement; failure doubles the wait (15 min, 30, 60, 120, then 4 h);
+  - maintenance can check the route when its cooldown expires, under the same
+    cross-process lock and quiet gap as daily checks. A due retired route may
+    take a single live trial when no other eligible route remains. Success
+    clears retirement. Failed trials double the reopen delay up to four hours,
+    with a minimum of the applicable slow-upstream cooldown;
   - a successful reply, which includes the daily access check (that check
     probes the source directly);
   - a newer registry publication that changes its entry (a weight-only change

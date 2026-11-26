@@ -22,6 +22,8 @@ export interface RoutingPerformance { samples: number; reliability: number; late
 export interface RoutingBackoff { code: ErrorCode; signature: string; streak: number; at: number; until: number; quotaUntil?: number; trials?: number }
 export interface RoutingHistorySnapshot { performance: { source: string; profile: RoutingProfile; value: RoutingPerformance }[]; backoff: { source: string; value: RoutingBackoff }[] }
 const workloads = new AsyncLocalStorage<RoutingWorkload>();
+export const activeRoutingWorkload = () => workloads.getStore();
+export const toolFailureSignature = (signature?: string) => signature?.split(':')[2] === 'response_tools';
 export const withRoutingWorkload = <T>(workload: RoutingWorkload, run: () => T) => workloads.run(workload, run);
 export function routingWorkload(request: ModelRequest, background = false): RoutingWorkload {
   return `${background ? 'background' : 'interactive'}-${request.tools.some(tool => tool.type === 'function') ? 'tools' : 'text'}`;
@@ -69,6 +71,7 @@ export function slowUpstreamFailure(error: SourceError) {
     || safe.failureReason === 'stream_read' || safe.failureReason === 'stream_incomplete';
 }
 export function routingFailureSignature(error: SourceError) {
+  if (slowUpstreamFailure(error)) return 'outage:::';
   const safe = sanitizeSafeDiagnosticMetadata(error.diagnostics);
   return [error.code, safe.httpStatus ?? '', safe.failureReason ?? '', safe.networkCode ?? ''].join(':').toLowerCase();
 }
@@ -98,7 +101,7 @@ export function nextRoutingBackoff(previous: RoutingBackoff | undefined, error: 
     if (at < previous.until) return previous;
     if (upstreamRetryHint(error)) return { ...previous, until: Math.max(previous.until, at + seconds * 1000) };
     const trials = (previous.trials ?? 0) + 1;
-    return { ...previous, at: Math.max(previous.at, at), until: at + retiredReopenDelay(trials), trials };
+    return { ...previous, at: Math.max(previous.at, at), until: at + Math.max(retiredReopenDelay(trials), slowUpstreamFailure(error) ? seconds * 1000 : 0), trials };
   }
   if (upstreamRetryHint(error)) {
     const until = at + seconds * 1000;
@@ -110,7 +113,7 @@ export function nextRoutingBackoff(previous: RoutingBackoff | undefined, error: 
   // Explicit provider/reset hints bypass adaptive multiplication, including zero.
   const delay = adaptive ? Math.min(MAX_ADAPTIVE_BACKOFF_SECONDS, seconds * 2 ** (streak - 1)) : seconds;
   const retiring = error.code !== 'quota' && streak >= RETIRE_AFTER_FAILURES;
-  return mergeRoutingBackoff(previous, { code: error.code, signature, streak, at, until: at + (retiring ? RETIRED_REOPEN_MS : delay * 1000) });
+  return mergeRoutingBackoff(previous, { code: error.code, signature, streak, at, until: at + (retiring ? Math.max(RETIRED_REOPEN_MS, signature === 'outage:::' ? delay * 1000 : 0) : delay * 1000) });
 }
 function performanceValue(raw: unknown): RoutingPerformance | undefined {
   const value = object(raw);
@@ -259,8 +262,8 @@ export class RoutingHistory {
         result.push({ source, profile: key, value });
       }
       if (success) {
-        await tx.execute({ sql: "DELETE FROM routing_backoff WHERE source=? AND json_extract(value,'$.code')<>'quota' AND at<?", args: [source, now] });
-        await tx.execute({ sql: "UPDATE routing_backoff SET value=json_set(value,'$.until',COALESCE(json_extract(value,'$.quotaUntil'),json_extract(value,'$.until')),'$.signature','quota:::','$.streak',1) WHERE source=? AND json_extract(value,'$.code')='quota' AND at<?", args: [source, now] });
+        await tx.execute({ sql: "DELETE FROM routing_backoff WHERE source=? AND json_extract(value,'$.code')<>'quota' AND at<? AND (? OR json_extract(value,'$.signature') NOT GLOB '*:*:response_tools:*')", args: [source, now, Number(profile.endsWith('-tools'))] });
+        await tx.execute({ sql: "UPDATE routing_backoff SET value=json_set(value,'$.until',COALESCE(json_extract(value,'$.quotaUntil'),json_extract(value,'$.until')),'$.signature','quota:::','$.streak',1) WHERE source=? AND json_extract(value,'$.code')='quota' AND at<? AND (? OR json_extract(value,'$.signature') NOT GLOB '*:*:response_tools:*')", args: [source, now, Number(profile.endsWith('-tools'))] });
       }
       await tx.execute({ sql: 'DELETE FROM routing_performance WHERE rowid NOT IN (SELECT rowid FROM routing_performance ORDER BY at DESC LIMIT 500)', args: [] });
       return result;
@@ -272,11 +275,16 @@ export class RoutingHistory {
       const row = (await tx.execute({ sql: 'SELECT value FROM routing_backoff WHERE source=?', args: [source] })).rows[0];
       let old; try { old = backoffValue(JSON.parse(String(row?.value))); } catch { /* Discard corrupt advisory state. */ }
       if (error.code !== 'quota') {
-        const row = (await tx.execute({ sql: "SELECT value FROM routing_performance WHERE source=? AND profile='all'", args: [source] })).rows[0];
-        let performance; try { performance = performanceValue(JSON.parse(String(row?.value))); } catch { /* Invalid recovery is not authority. */ }
-        if ((performance?.lastSuccessAt ?? 0) > now) {
+        const matching = toolFailureSignature(routingFailureSignature(error)) ? "profile IN ('interactive-tools','background-tools')" : "profile='all'";
+        const rows = await tx.execute({ sql: `SELECT value FROM routing_performance WHERE source=? AND ${matching}`, args: [source] });
+        let recoveredAt = 0;
+        for (const row of rows.rows) {
+          try { recoveredAt = Math.max(recoveredAt, performanceValue(JSON.parse(String(row.value)))?.lastSuccessAt ?? 0); }
+          catch { /* Invalid recovery is not authority. */ }
+        }
+        if (recoveredAt > now) {
           if (old?.code === 'quota' && old.until > now) return old;
-          if (old && old.at >= performance!.lastSuccessAt!) return old;
+          if (old && old.at >= recoveredAt) return old;
           // Report no active hold without resurrecting a late pre-recovery failure.
           return { code: error.code, signature: routingFailureSignature(error), streak: 1, at: now, until: now };
         }

@@ -259,6 +259,7 @@ export class Sources {
   private get registeredRouter() { return this.router ?? this.chainRouter; }
   private createRouter(routing: RoutingOptions) {
     return new StickyRouter(this.sources, { ...routing, pending: this.pending, disabled: this.disabledModels, observation: this.observation, attempt: this.attempt,
+      scheduleRecovery: (id, at) => this.maintenanceRecovery?.(id, at),
       dropped: id => { if (this.observation.observedAvailable(id) !== false) this.dropped?.(id); },
       observeEligible: (source, at) => {
         const context = currentDiagnosticContext();
@@ -518,6 +519,7 @@ export class Sources {
       if (failure.code === 'cancelled') return { outcome: 'deferred', code: 'cancelled' };
       const retryAfter = failure.code === 'quota' ? (typeof failure.retryAfter === 'number' && Number.isFinite(failure.retryAfter) && failure.retryAfter >= 0 ? failure.retryAfter : 3600) : undefined;
       this.observation.failed(id, failure.code, retryAfter);
+      await this.registeredRouter?.recordFailure(id, failure);
       const retryAt = retryAfter === undefined ? undefined : now() + retryAfter * 1000;
       return { outcome: 'failed', code: failure.code, ...(retryAt !== undefined && Number.isFinite(retryAt) ? { retryAt } : {}) };
     } finally {
@@ -547,6 +549,16 @@ export class Sources {
   // A route left the open set, including an observed availability loss.
   setRouteDropped(dropped: (id: string) => void) { this.dropped = dropped; }
   private dropped: ((id: string) => void) | undefined;
+  private maintenanceRecovery?: (id: string, at: number) => void;
+  setMaintenanceRecovery(schedule: (id: string, at: number) => void) {
+    this.maintenanceRecovery = schedule;
+    this.observation.onRestoredBackoff(schedule);
+  }
+  static withStreamTextGate<T>(allow: () => boolean, work: () => T): T {
+    const current = streamObserverStorage.getStore();
+    if (!current) return work();
+    return streamObserverStorage.run((id, text) => allow() ? current(id, text) : false, work);
+  }
   // Whether some source could take this request with its image kept: one that lists image input, is set up, and is not
   // benched for long (an explicitly named source only counts itself; a tools request needs a tool-capable one).
   // Without a registry each source decides for itself, so this stays true and nothing is rewritten.

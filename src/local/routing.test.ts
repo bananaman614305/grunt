@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { RequestError, Sources, replayTimeout, requestRefusal, SourceError } from './source.js';
+import { emitStreamText, RequestError, Sources, replayTimeout, requestRefusal, SourceError } from './source.js';
 import { StickyRouter } from './routing.js';
 import type { ModelRequest, Source } from './source.js';
 import { bundledRegistry } from '../registry.js';
@@ -225,8 +225,8 @@ it.each([
   [503, 0, 1],
   [503, 7200, 7200],
   [503, 172800, 86400],
-  [503, Infinity, 900],
-  [503, -1, 900],
+  [503, Infinity, 300],
+  [503, -1, 300],
   [undefined, 4, 900],
   [400, 4, 900],
 ])('uses a bounded upstream retry delay for HTTP %s and hint %s', async (httpStatus, hint, expectedSeconds) => {
@@ -444,4 +444,75 @@ it.each([false, true])('rejects an unsupported tool type with 400 and records no
   // Nothing was put in cooldown: the next ordinary request is answered at once.
   expect((await post([fn])).status).toBe(200);
   expect(a.complete).toHaveBeenCalledOnce();
+});
+
+it.each(['backup wins', 'primary fails', 'primary wins'] as const)('settles one pre-output hedge when %s', async ending => {
+  const primary = source('runcrate'), backup = source('kilo');
+  let failPrimary!: (error: SourceError) => void, finishPrimary!: () => void, finishBackup!: () => void;
+  let primarySignal!: AbortSignal, backupSignal!: AbortSignal;
+  vi.mocked(primary.complete).mockImplementationOnce((_request, signal) => {
+    primarySignal = signal;
+    return new Promise((resolve, reject) => { failPrimary = reject; finishPrimary = () => resolve({ text: 'primary' }); });
+  });
+  vi.mocked(backup.complete).mockImplementationOnce((_request, signal) => {
+    backupSignal = signal;
+    return new Promise(resolve => { finishBackup = () => resolve({ text: 'backup' }); });
+  });
+  const pool = new Sources([primary, backup], { registry: () => bundledRegistry, random: () => 0, hedgeAfterMs: 10 });
+  try {
+    const reply = pool.complete(request, AbortSignal.timeout(2000));
+    await vi.waitFor(() => expect(backup.complete).toHaveBeenCalledOnce());
+    if (ending === 'primary wins') {
+      finishPrimary();
+      expect(await reply).toEqual({ text: 'primary' });
+      expect(backupSignal.aborted).toBe(true);
+      finishBackup();
+    } else {
+      if (ending === 'primary fails') {
+        failPrimary(new SourceError('upstream', 'gateway'));
+        await vi.waitFor(() => expect(pool.status().sources.find(s => s.id === primary.id)?.retryAt).toBeDefined());
+      }
+      finishBackup();
+      expect(await reply).toEqual({ text: 'backup' });
+      if (ending === 'backup wins') {
+        expect(primarySignal.aborted).toBe(true);
+        finishPrimary();
+        expect(pool.status().sources.find(s => s.id === primary.id)?.retryAt).toBeUndefined();
+      }
+    }
+    expect(backup.complete).toHaveBeenCalledOnce();
+  } finally { finishPrimary?.(); finishBackup?.(); await pool.close(); }
+});
+
+it.each(['primary', 'backup'])('binds first stream text from the %s and mutes late loser chunks', async winner => {
+  const a = source('runcrate'), b = source('kilo');
+  const emitters = new Map<string, (text: string) => void>();
+  const finish = new Map<string, () => void>();
+  const signals = new Map<string, AbortSignal>();
+  for (const provider of [a, b]) vi.mocked(provider.complete).mockImplementation((_request, signal) => {
+    signals.set(provider.id, signal);
+    return new Promise(resolve => {
+      // Drive each callback through a promise reaction created inside the adapter's stream context.
+      let send!: (text: string) => void;
+      const chunk = new Promise<string>(resolve => { send = resolve; });
+      emitters.set(provider.id, send);
+      void chunk.then(text => emitStreamText(text));
+      finish.set(provider.id, () => resolve({ text: provider.id }));
+    });
+  });
+  const pool = new Sources([a, b], { registry: () => bundledRegistry, random: () => 0, hedgeAfterMs: 10 });
+  const seen: string[] = [];
+  try {
+    const reply = pool.complete({ ...request, stream: true }, AbortSignal.timeout(2000), (id, text) => { seen.push(id + '/' + text); });
+    await vi.waitFor(() => expect(emitters.size).toBe(2));
+    const first = winner === 'primary' ? a.id : b.id, other = winner === 'primary' ? b.id : a.id;
+    emitters.get(first)!('winner');
+    await Promise.resolve();
+    expect(signals.get(other)?.aborted).toBe(true);
+    emitters.get(other)!('late');
+    finish.get(other)!(); finish.get(first)!();
+    expect(await reply).toEqual({ text: first });
+    expect(seen).toEqual([first + '/winner']);
+    expect(pool.status().sources.find(row => row.id === other)?.errorCode).toBeUndefined();
+  } finally { for (const end of finish.values()) end(); await pool.close(); }
 });
