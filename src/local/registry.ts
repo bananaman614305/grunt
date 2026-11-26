@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { bundledRegistry, disabledAdapters, knownAdapters, validateRegistry } from '../registry.js';
+import { bundledRegistry, isSupportedAdapter, validateRegistry } from '../registry.js';
 import type { Registry } from '../registry.js';
 
 // The slow router loop (docs/router.md): re-read the registry, then open routes.
@@ -26,7 +26,7 @@ export class RegistrySync {
     // Runs after every refresh: route feedback out, liveliness scores in.
     exchange?: () => Promise<void>;
   }) {}
-  get enabled() { return this.current.adapters.filter(adapter => knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)); }
+  get enabled() { return this.current.adapters.filter(adapter => isSupportedAdapter(adapter)); }
   private accepts(registry: Registry) {
     const incoming = Date.parse(registry.published), current = Date.parse(this.current.published);
     // Each publication is immutable. A release's bundled list is the initial

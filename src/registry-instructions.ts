@@ -1,9 +1,10 @@
-import { ADAPTER_FIELDS, ADAPTER_RULES, CANDIDATE_FIELDS, CANDIDATE_RULES, CANDIDATES_MAX, HINTS_MAX, TIER_TOTALS, installers } from './registry.js';
+import { ADAPTER_FIELDS, ADAPTER_RULES, CANDIDATE_FIELDS, CANDIDATE_RULES, CANDIDATES_MAX, DECLARATIVE_FIELDS, DECLARATIVE_OPENAI_INSTALL, DECLARATIVE_RULES, HINTS_MAX, TIER_TOTALS, installers } from './registry.js';
 import type { Registry } from './registry.js';
 import type { Scores } from './registry-store.js';
 import { ENTRY_MAX_BYTES } from './registry-write.js';
 
 const ADAPTER_REQUIRED = new Set(['id', 'kind', 'tier', 'weight', 'modalities', 'install']);
+const DECLARATIVE_REQUIRED = new Set(['baseUrl', 'apiPath', 'zeroPriceCheck', 'disclosure', 'policyVersion', 'policyUrl']);
 const CANDIDATE_REQUIRED = new Set(['id', 'signup', 'hints']);
 // Published with the page; the instructions test writes it through the same PUT.
 export const EXAMPLE_CANDIDATE = {
@@ -14,6 +15,28 @@ export const EXAMPLE_CANDIDATE = {
   models: ['deepseek-v4.1-flash'],
   docs: 'https://example.com/docs',
   notes: 'Free tier: 1M tokens per day. Prompts may be used for training.'
+};
+export const EXAMPLE_DECLARATIVE_ADAPTER = {
+  id: 'example-promo',
+  kind: 'model',
+  tier: 'experimental',
+  weight: 0.01,
+  modalities: ['text'],
+  install: DECLARATIVE_OPENAI_INSTALL,
+  model: 'deepseek-v4.1-flash:free',
+  signup: 'https://example.com/signup',
+  hints: "On /signup press 'Continue with Google' and choose the Squire-connected Google account. On /keys press 'Create key', type grunt in 'Name', press 'Create', then press 'Copy' so it is stored.",
+  expires: '2026-12-31',
+  declarative: {
+    baseUrl: 'https://api.example.com',
+    apiPath: '/v1/chat/completions',
+    modelsEndpoint: '/v1/models',
+    zeroPriceCheck: 'models_catalog',
+    disclosure: 'Prompts and tool context pass through Example API and its upstream inference provider. Retention and training policies are unverified.',
+    policyVersion: '2026-11-25',
+    policyUrl: 'https://example.com/privacy',
+    name: 'Example Promo Free'
+  }
 };
 const list = (ids: string[]) => ids.length ? ids.map(id => `\`${id}\``).join(', ') : 'none';
 const table = (fields: readonly string[], rules: Record<string, string>, required: ReadonlySet<string>) => [
@@ -63,7 +86,7 @@ curl -s -X DELETE ${base}/v1/registry/entries/example-free-api -H "Authorization
 ## How a write works
 
 - A PUT replaces the whole entry. Read the registry, change the entry, and send it back.
-- An id that Grunt ships an adapter for, or an entry whose \`install\` is \`npm:<package>\`, goes in \`adapters\`. Any other id goes in \`candidates\`, the providers waiting for an adapter. An id lives in one list only. The registry accepts at most ${CANDIDATES_MAX} candidates.
+- An id that Grunt ships an adapter for, an entry whose \`install\` is \`${DECLARATIVE_OPENAI_INSTALL}\`, or an entry whose \`install\` is \`npm:<package>\`, goes in \`adapters\`. Any other id goes in \`candidates\`, the providers waiting for an adapter. An id lives in one list only. The registry accepts at most ${CANDIDATES_MAX} candidates.
 - Shipped adapter ids: ${list(shipped)}.
 - On an adapter update, an omitted \`weight\` keeps the old one. Each tier is then rescaled so stable weights total ${TIER_TOTALS.stable} and experimental weights total ${TIER_TOTALS.experimental}.
 - An entry with a \`signup\` must carry \`hints\`.
@@ -74,6 +97,12 @@ curl -s -X DELETE ${base}/v1/registry/entries/example-free-api -H "Authorization
 ## Adapter fields
 
 ${table(ADAPTER_FIELDS, ADAPTER_RULES, ADAPTER_REQUIRED)}
+
+## Declarative adapter fields (\`declarative\`)
+
+For ephemeral OpenAI-compatible free API promos that need no custom TypeScript adapter, set \`install\` to \`${DECLARATIVE_OPENAI_INSTALL}\`, \`kind\` to \`model\`, \`modalities\` to \`["text"]\`, and provide \`model\`, \`signup\`, \`hints\`, \`expires\`, and \`declarative\`:
+
+${table(DECLARATIVE_FIELDS, DECLARATIVE_RULES, DECLARATIVE_REQUIRED)}
 
 ## Candidate fields
 
@@ -113,6 +142,14 @@ Example only: do not send it.
 
 \`\`\`json
 ${JSON.stringify(EXAMPLE_CANDIDATE, null, 2)}
+\`\`\`
+
+### Example declarative adapter PUT body
+
+Example only: do not send it.
+
+\`\`\`json
+${JSON.stringify(EXAMPLE_DECLARATIVE_ADAPTER, null, 2)}
 \`\`\`
 `;
 }

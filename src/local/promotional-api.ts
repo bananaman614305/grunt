@@ -154,7 +154,7 @@ function completion(text: string, calls: ToolCall[], usage: Record<string, unkno
 // SSE is transport even when the harness requests a non-streamed completion.
 // Bound memory, assemble indexed function fragments, require an explicit finish,
 // and reject errors/truncated streams instead of passing partial output as success.
-export async function readPromotionalStream(response: Response, model: string | undefined, signal: AbortSignal, observe?: { failure(reason: FailureReason): void; cleanup(): void; progress?: () => void; result?: (usage: Record<string, unknown>) => void;
+export async function readPromotionalStream(response: Response, model: string | undefined, signal: AbortSignal, observe?: { failure(reason: FailureReason): void; cleanup(): void; progress?: () => void; event?: (chunk: Record<string, unknown>) => void; result?: (usage: Record<string, unknown>) => void;
   // Optional: receives each parsed chunk, reasoning or text delta, custom model verification, relaxed finish/tool checks, and raises the 4 MiB stream cap for a long reply.
   chunk?: (frame: Record<string, unknown>) => void; reasoning?: (delta: string) => void; text?: (delta: string) => void; verifyModel?: (model: unknown) => boolean; strictToolArgs?: boolean; allowAnyFinishReason?: boolean; maxBytes?: number }): Promise<Completion> {
   // Observers receive fixed reason codes only. Preserve thrown values (even
@@ -203,8 +203,11 @@ export async function readPromotionalStream(response: Response, model: string | 
     if (chunk.model !== undefined) {
       if (checkModel && !checkModel(chunk.model)) throw invalid('completion_model', 'Unexpected model');
       seenModel = true;
-      if (bufferedText) flushText('');
     }
+    // Allow callers to inspect every parsed stream event (for example, to reject
+    // nonzero monetary fields even if a later chunk overwrites usage).
+    observe?.event?.(chunk);
+    if (seenModel && bufferedText) flushText('');
     if (chunk.usage) usage = object(chunk.usage);
     // A usage-only chunk may omit `choices`; any other chunk must carry them.
     if (chunk.choices === undefined && chunk.usage) return;

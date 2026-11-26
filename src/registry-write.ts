@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { ADAPTER_FIELDS, NPM_INSTALL, TIER_TOTALS, adapterErrors, candidateErrors, knownAdapters, validateRegistry } from './registry.js';
+import { ADAPTER_FIELDS, DECLARATIVE_OPENAI_INSTALL, NPM_INSTALL, TIER_TOTALS, adapterErrors, candidateErrors, knownAdapters, validateRegistry } from './registry.js';
 import type { Adapter, Candidate, Registry, RegistryError } from './registry.js';
 
 export const ENTRY_MAX_BYTES = 16 * 1024;
@@ -27,15 +27,17 @@ const replaced = <T extends { id: string }>(list: readonly T[], entry: T) => {
 };
 const invalid = { field: 'registry', rule: 'the resulting registry is invalid (at most 100 adapters, at least one adapter)' };
 
-// One PUT: a shipped adapter id or an npm install goes in `adapters`, anything
-// else in `candidates`. An id lives in one list only.
+// One PUT: a shipped adapter id, a declarative:openai adapter, or an npm
+// install goes in `adapters`, anything else in `candidates`. An id lives in one list only.
 export function putEntry(base: Registry, id: string, body: unknown, now: number): WriteResult {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return { status: 400, errors: [{ field: 'entry', rule: 'must be a JSON object' }] };
   const value = body as Record<string, unknown>;
   if (value.id !== undefined && value.id !== id) return { status: 400, errors: [{ field: 'id', rule: 'must equal the id in the path' }] };
   const entry: Record<string, unknown> = { ...value, id };
   const candidates = (base.candidates ?? []).filter(candidate => candidate.id !== id);
-  const placed: Placement = knownAdapters.has(id) || typeof entry.install === 'string' && NPM_INSTALL.test(entry.install) ? 'adapters' : 'candidates';
+  const placed: Placement = knownAdapters.has(id)
+    || typeof entry.install === 'string' && (NPM_INSTALL.test(entry.install) || entry.install === DECLARATIVE_OPENAI_INSTALL)
+    ? 'adapters' : 'candidates';
   if (placed === 'candidates') {
     const errors = candidateErrors(entry);
     if (errors.length) return { status: 422, errors };
