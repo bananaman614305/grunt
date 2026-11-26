@@ -12,7 +12,6 @@ import { Sources, SourceError } from './source.js';
 import { bundledRegistry } from '../registry.js';
 import type { Source } from './source.js';
 import { approveDataSharing, dataSharingPolicies, readDataSharingConsent, recordDataSharingConsent } from './data-sharing.js';
-import { planSteps } from './fixtures/key-only-goal.js';
 
 vi.mock('@clack/prompts', () => ({
   text: vi.fn(async () => 'https://example.test/v1'), multiselect: vi.fn(async () => ['groq']), confirm: vi.fn(async () => false), isCancel: (value: unknown) => typeof value === 'symbol',
@@ -124,7 +123,7 @@ it.each([true, false])('connects an account only when OpenCode requires it, reus
   const list = vi.fn().mockResolvedValueOnce(exists ? [entry] : []).mockResolvedValue([entry]);
   const squire = { signup: vi.fn(async () => {}), credentials: { list, grant: vi.fn(async () => ({ base_url: 'https://grant.test/opencode', token: 'synthetic-grant' })) } };
   const verify = vi.fn().mockRejectedValueOnce(new SourceError('logged_out', 'OpenCode returned HTTP 401')).mockResolvedValue(undefined);
-  const result = await setupFallbacks({ directory: dir, dataSharingApproved: ['freebuff', 'opencode'], run: async () => {}, notify: () => {}, squire, signedIn: async () => true, verify });
+  const result = await setupFallbacks({ directory: dir, dataSharingApproved: ['freebuff', 'opencode'], run: async () => {}, notify: () => {}, squire, verify });
   expect(result.unavailable).toEqual([]);
   expect(squire.signup).toHaveBeenCalledTimes(exists ? 0 : 1);
   expect(squire.credentials.grant).toHaveBeenCalledWith('vault://test');
@@ -154,18 +153,6 @@ it('starts the service before connecting the free providers on default installs'
   actions.setupFallbacks.mockClear();
   await wizard('groq', actions);
   expect(actions.setupFallbacks).not.toHaveBeenCalled();
-});
-
-it('pairs the local Freebuff CLI using its own login URL through Squire', async () => {
-  const { loginFreebuff } = await import('./fallback-setup.js');
-  dir = await mkdtemp(join(tmpdir(), 'grunt-login-test-'));
-  const program = '#!' + process.execPath + '\nconsole.log("https://freebuff.com/login?auth_code=synthetic&cli_flow=fixture"); setTimeout(() => process.exit(0), 100);\n';
-  await writeFile(join(dir, 'freebuff'), program, { mode: 0o700 });
-  vi.stubEnv('PATH', dir + ':' + process.env.PATH);
-  const squire = { signup: vi.fn(async () => {}), credentials: { list: vi.fn(), grant: vi.fn() } };
-  await loginFreebuff(squire);
-  expect(squire.signup).toHaveBeenCalledWith('freebuff', 'https://freebuff.com/login?auth_code=synthetic&cli_flow=fixture', expect.stringContaining('local CLI'));
-  expect(planSteps(String((squire.signup.mock.calls[0] as unknown[])[2]))).toEqual([]);
 });
 
 

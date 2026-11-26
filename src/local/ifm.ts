@@ -6,7 +6,7 @@ import { diagnosticFetch, diagnosticNetworks, observeAttemptDispatch, observeAtt
 import type { SafeDiagnosticMetadata } from './diagnostics.js';
 import { readPromotionalStream } from './promotional-api.js';
 import type { FreeApiGrant } from './free-api.js';
-import { FreebuffTools } from './freebuff-tools.js';
+import { JsonToolBridge } from './json-tool-bridge.js';
 import { readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
 import { quotaRetryAfter, quotaSeconds } from './quota-timing.js';
 import { completionEnding, endingOf, withEnding, lengthLimited, truncatedCompletion, SourceError, requestRefusal } from './source.js';
@@ -200,8 +200,8 @@ export class Ifm implements Source {
   async available() { try { return !!await this.checked(); } catch { return false; } }
   async complete(request: ModelRequest, caller: AbortSignal, progress?: () => void): Promise<Completion> {
     caller.throwIfAborted();
-    if (!['ifm', 'grunt', 'milo'].includes(request.model) || request.imageInput || request.tools.some(t => t.type !== 'function')) throw new SourceError('refused', 'IFM requires its exact K2 Horizon text route');
-    try { new FreebuffTools(request); } catch { throw requestRefusal('Invalid IFM function definitions or tool conversation'); }
+    if (!['ifm', 'grunt'].includes(request.model) || request.imageInput || request.tools.some(t => t.type !== 'function')) throw new SourceError('refused', 'IFM requires its exact K2 Horizon text route');
+    try { new JsonToolBridge(request); } catch { throw requestRefusal('Invalid IFM function definitions or tool conversation'); }
     const validators = compileToolSchemas(request.tools, 'Invalid IFM function schema');
     let grant: FreeApiGrant | undefined;
     try { grant = await this.checked(caller); } catch (e) { caller.throwIfAborted(); if (e instanceof SourceError) throw e; }

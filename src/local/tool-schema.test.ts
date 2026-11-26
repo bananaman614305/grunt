@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { claudeCodeRequest } from './fixtures/claude-code-tools.js';
-import { FreebuffTools } from './freebuff-tools.js';
+import { JsonToolBridge } from './json-tool-bridge.js';
 import { SourceError } from './source.js';
 import type { Tool } from './source.js';
 import { ToolSchemaCompiler, compileToolSchemas } from './tool-schema.js';
@@ -35,8 +35,8 @@ describe('recorded Claude Code 2.1.331 tools', () => {
     expect(validators.get('Agent')!({ description: 'x', prompt: 'y', subagent_type: 'general-purpose' })).toBe(true);
     expect(validators.get('DeferredToolPlaceholder')!({})).toBe(true);
   });
-  it('lets FreebuffTools enforce the real schema instead of silently accepting any arguments', () => {
-    const bridge = new FreebuffTools(claudeCodeRequest(0));
+  it('lets JsonToolBridge enforce the real schema instead of silently accepting any arguments', () => {
+    const bridge = new JsonToolBridge(claudeCodeRequest(0));
     const envelope = (args: unknown) => JSON.stringify({ version: 1, type: 'calls', calls: [{ name: 'Bash', arguments: args }] });
     expect(bridge.parse(envelope({ command: 'ls' })).calls).toHaveLength(1);
     expect(() => bridge.parse(envelope({ command: 'ls', extra: true }))).toThrow();

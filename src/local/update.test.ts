@@ -36,7 +36,7 @@ async function fixture(settings: Settings = {}) {
   for (const file of [unit, dropIn, plist]) await writeFile(file, 'preserve original service configuration', { mode: 0o600 });
   await mkdir(join(pkg, 'dist/local'), { recursive: true });
   await writeFile(join(pkg, 'dist/local/main.js'), 'if(process.argv[1])throw new Error("CLI must not start while staging");export const fixture=true;');
-  await writeFile(join(pkg, 'package.json'), JSON.stringify({ name: 'usegrunt', version: '1.2.3', type: 'module', dependencies: {}, scripts: { preinstall: 'do not run this' } }));
+  await writeFile(join(pkg, 'package.json'), JSON.stringify({ name: 'usegrunt', version: '1.2.3', type: 'module', dependencies: { hono: '^4.13.8', standardwebhooks: '^1.1.1', 'ipaddr.js': '^2.5.0' }, scripts: { preinstall: 'do not run this' } }));
   await writeFile(join(pkg, 'README.md'), 'synthetic release');
   const archivePath = join(base, 'release.tgz');
   await execute('tar', ['-czf', archivePath, '-C', remote, 'package']);
@@ -91,6 +91,7 @@ async function fixture(settings: Settings = {}) {
       expect(args).toContain('--ignore-scripts'); expect(args).toContain('--registry=https://registry.npmjs.org');
       const installed = JSON.parse(await readFile(join(args[args.indexOf('--prefix') + 1]!, 'package.json'), 'utf8'));
       expect(installed.scripts).toBeUndefined();
+      expect(installed.dependencies).toEqual({ hono: '^4.13.8' });
       if (settings.cancelNpm) { settings.abort!.abort(); options?.signal?.throwIfAborted(); }
       return '';
     }

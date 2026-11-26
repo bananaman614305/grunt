@@ -6,7 +6,7 @@ import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { compileToolSchemas } from './tool-schema.js';
-import { FreebuffTools } from './freebuff-tools.js';
+import { JsonToolBridge } from './json-tool-bridge.js';
 import { readDataSharingConsent } from './data-sharing.js';
 import { lengthLimited, SourceError, requestRefusal } from './source.js';
 import type { Completion, ModelRequest, Source } from './source.js';
@@ -162,7 +162,7 @@ export async function verifyPollinationsAccess(grant: AccessGrant, options: { fe
     throw new SourceError('upstream', 'Pollinations free-access check failed');
   }
 }
-function requestBridge(request: ModelRequest): FreebuffTools {
+function requestBridge(request: ModelRequest): JsonToolBridge {
   if (request.tools.some(tool => tool.type !== 'function' || !object(tool.function).parameters)) throw requestRefusal('Pollinations rejected unsupported tool definitions or an invalid tool conversation');
   compileToolSchemas(request.tools, 'Pollinations rejected a function tool schema');
   try {
@@ -176,7 +176,7 @@ function requestBridge(request: ModelRequest): FreebuffTools {
         previous.tool_calls = [...previous.tool_calls, ...message.tool_calls];
       } else messages.push({ ...message });
     }
-    return new FreebuffTools({ ...request, messages });
+    return new JsonToolBridge({ ...request, messages });
   } catch { throw requestRefusal('Pollinations rejected unsupported tool definitions or an invalid tool conversation'); }
 }
 export function stripPollinationsThinking(text: string): string {

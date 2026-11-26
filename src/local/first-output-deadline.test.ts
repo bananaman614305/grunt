@@ -1,11 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { chmod, copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { Sources, SourceError } from './source.js';
 import type { Completion, ModelRequest, Source } from './source.js';
 import { bundledRegistry } from '../registry.js';
-import { Freebuff } from './freebuff.js';
 
 // Freebuff is not in the published pool; give the router a test entry for it.
 const opencode = bundledRegistry.adapters.find(adapter => adapter.id === 'opencode')!;
@@ -160,90 +156,4 @@ it('retains the initial watchdog when a legacy adapter ignores caller cancellati
   await rejection;
   expect(failed).not.toHaveBeenCalled();
   expect(after.complete).not.toHaveBeenCalled();
-});
-
-it('freebuff doctor runs once per failure in the background, one at a time, and never repeats on its own', async () => {
-  log = vi.spyOn(console, 'error').mockImplementation(() => {});
-  let finish!: (output: string) => void;
-  const doctor = vi.fn(() => new Promise<string>(resolve => { finish = resolve; }));
-  const driver = new Freebuff({ doctor });
-  driver.failed(); driver.failed(); driver.failed();
-  await new Promise(resolve => setTimeout(resolve, 10));
-  // Still running: further failures do not start a second doctor.
-  expect(doctor).toHaveBeenCalledOnce();
-  finish('Freebuff doctor\nlogin: not signed in');
-  await new Promise(resolve => setTimeout(resolve, 50));
-  expect(log.mock.calls.flat().join('\n')).toContain('freebuff doctor after failure:\nFreebuff doctor\nlogin: not signed in');
-  // Finishing does not start another run.
-  expect(doctor).toHaveBeenCalledOnce();
-  // A later failure gets its own run.
-  driver.failed();
-  await new Promise(resolve => setTimeout(resolve, 10));
-  expect(doctor).toHaveBeenCalledTimes(2);
-  finish('ok');
-  await new Promise(resolve => setTimeout(resolve, 10));
-  expect(doctor).toHaveBeenCalledTimes(2);
-  await driver.close();
-});
-
-it('a doctor that fails is logged and does not throw', async () => {
-  log = vi.spyOn(console, 'error').mockImplementation(() => {});
-  const driver = new Freebuff({ doctor: async () => { throw new Error('freebuff not found'); } });
-  expect(() => driver.failed()).not.toThrow();
-  await new Promise(resolve => setTimeout(resolve, 10));
-  expect(log.mock.calls.flat().join('\n')).toContain('freebuff doctor after failure did not finish: freebuff not found');
-  await driver.close();
-});
-
-it.each([false, true])('cuts off a stalled native Freebuff turn without replay and runs doctor in the background (sticky=%s)', async sticky => {
-  log = vi.spyOn(console, 'error').mockImplementation(() => {});
-  const home = await mkdtemp(join(tmpdir(), 'grunt-hang-'));
-  let finish!: (output: string) => void;
-  const doctor = vi.fn(() => new Promise<string>(resolve => { finish = resolve; }));
-  const mux = { start: async () => {}, stop: async () => {},
-    send: async (_id: string, prompt: string) => {
-      const dir = join(home, '.config/manicode/projects', home.split('/').at(-1)!, 'chats', 'hang');
-      await mkdir(dir, { recursive: true });
-      await writeFile(join(dir, 'chat-messages.json'), JSON.stringify([{ variant: 'user', content: prompt }]));
-    } };
-  const driver = new Freebuff({ home, mux, startup: 1, poll: 5, timeout: 60000, doctor });
-  try {
-    await copyFile(new URL('./fixtures/fake-freebuff.cjs', import.meta.url), join(home, 'freebuff')); await chmod(join(home, 'freebuff'), 0o755);
-    vi.stubEnv('PATH', `${home}:${process.env.PATH}`);
-    const after = next();
-    const sources = chain([driver, after], sticky, 1500);
-    // This fixture exercises inference timeout after admission, rather than the
-    // intentional race between native eligibility and an already-ready mock.
-    await sources.models();
-    const started = Date.now();
-    // The doctor never finishes during this request; the answer must not wait for it.
-    await expect(sources.complete({ ...request, cwd: home }, new AbortController().signal))
-      .rejects.toMatchObject({ code: 'timeout', replay: 'unsafe' });
-    expect(Date.now() - started).toBeLessThan(5000);
-    expect(after.complete).not.toHaveBeenCalled();
-    expect(doctor).toHaveBeenCalledOnce();
-    finish('Freebuff doctor\nall checks passed');
-  } finally { await driver.close(); await rm(home, { recursive: true, force: true }); }
-});
-
-it('a real Freebuff whose reply starts before the deadline is not cut off', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'grunt-slow-'));
-  const mux = { start: async () => {}, stop: async () => {},
-    send: async (_id: string, prompt: string) => {
-      const dir = join(home, '.config/manicode/projects', home.split('/').at(-1)!, 'chats', 'slow');
-      const file = join(dir, 'chat-messages.json');
-      await mkdir(dir, { recursive: true });
-      await writeFile(file, JSON.stringify([{ variant: 'user', content: prompt }, { variant: 'ai', isComplete: false, blocks: [{ type: 'text', textType: 'reasoning', content: 'thinking' }] }]));
-      setTimeout(() => { void writeFile(file, JSON.stringify([{ variant: 'user', content: prompt }, { variant: 'ai', isComplete: true, blocks: [{ type: 'text', content: 'done after the deadline' }] }])); }, 2500);
-    } };
-  const doctor = vi.fn(async () => 'unused');
-  const driver = new Freebuff({ home, mux, startup: 1, poll: 5, timeout: 60000, doctor });
-  try {
-    await copyFile(new URL('./fixtures/fake-freebuff.cjs', import.meta.url), join(home, 'freebuff')); await chmod(join(home, 'freebuff'), 0o755);
-    vi.stubEnv('PATH', `${home}:${process.env.PATH}`);
-    const after = next();
-    expect(await chain([driver, after], false, 1500).complete({ ...request, cwd: home }, new AbortController().signal)).toEqual({ text: 'done after the deadline' });
-    expect(after.complete).not.toHaveBeenCalled();
-    expect(doctor).not.toHaveBeenCalled();
-  } finally { await driver.close(); await rm(home, { recursive: true, force: true }); }
 });

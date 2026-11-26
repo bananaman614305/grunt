@@ -151,7 +151,12 @@ it('writes Grunt service identity and primary environment names for a fresh inst
   expect(unit).toContain('GRUNT_CONFIG_DIR='); expect(unit).toContain('GRUNT_PORT=18792');
   expect(unit).toContain('GRUNT_SOURCES=kilo'); expect(unit).toContain('GRUNT_FREELLMAPI_URL=http://127.0.0.1:3301/v1');
   expect(unit).not.toContain('MILO_');
-  expect(JSON.parse(await readFile(join(directory, 'grunt/runtime/package.json'), 'utf8')).name).toBe('grunt-runtime');
+  const runtimePkg = JSON.parse(await readFile(join(directory, 'grunt/runtime/package.json'), 'utf8'));
+  expect(runtimePkg.name).toBe('grunt-runtime');
+  expect(runtimePkg.dependencies).toHaveProperty('hono');
+  expect(runtimePkg.dependencies).not.toHaveProperty('standardwebhooks');
+  expect(runtimePkg.dependencies).not.toHaveProperty('ipaddr.js');
+  expect(runtimePkg.dependencies).not.toHaveProperty('@trusty-squire/sdk');
 });
 
 it.each(['milo', 'grunt'])('preserves the installed %s unit, custom drop-in and effective port without creating a duplicate', async identity => {

@@ -7,7 +7,7 @@ import { access, chmod, lstat, mkdir, mkdtemp, open, rename, rm, writeFile } fro
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { replayTimeout, SourceError, requestRefusal } from './source.js';
-import { FreebuffTools } from './freebuff-tools.js';
+import { JsonToolBridge } from './json-tool-bridge.js';
 import type { Completion, ModelRequest, Source } from './source.js';
 
 export const MISTRAL_VIBE_VERSION = '3.1.2';
@@ -188,13 +188,13 @@ export class MistralVibe implements Source {
   private async completeBridged(request: ModelRequest, caller: AbortSignal): Promise<Completion> {
     const needsBridge = request.tools.length > 0 || request.messages.some(message => message.role === 'tool' || message.tool_calls?.length);
     if (!needsBridge) return this.rejectEmptyTruncation(request, await this.completeText(request, caller));
-    let bridge: FreebuffTools;
-    try { bridge = new FreebuffTools(request); }
+    let bridge: JsonToolBridge;
+    try { bridge = new JsonToolBridge(request); }
     catch { throw requestRefusal('Mistral Vibe rejected unsupported tool definitions or an invalid tool conversation'); }
     const signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(this.options.timeout ?? 180000)]);
     let inputTokens = 0, outputTokens = 0;
     for (let attempt = 0; attempt < 2; attempt++) {
-      const handoffPrompt = bridge.prompt(attempt > 0).replace('native Freebuff tools', 'native Mistral Vibe tools');
+      const handoffPrompt = bridge.prompt(attempt > 0, 'native Mistral Vibe tools');
       const maxTokens = request.maxTokens === undefined ? undefined : request.maxTokens - outputTokens;
       if (maxTokens === 0) return this.rejectEmptyTruncation(request, { text: '', finishReason: 'length', inputTokens, outputTokens });
       const result = await this.completeText({ ...request, ...(maxTokens === undefined ? {} : { maxTokens }), handoffPrompt }, signal);

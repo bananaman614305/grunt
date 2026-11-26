@@ -92,7 +92,7 @@ export class Aperture implements Source {
   async complete(request: ModelRequest, caller: AbortSignal): Promise<Completion> {
     caller.throwIfAborted();
     if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Aperture source closed');
-    if (![this.id, 'grunt', 'milo'].includes(request.model) || request.tools.some(tool => tool.type !== 'function')) throw new SourceError('refused', 'Unsupported Aperture request');
+    if (![this.id, 'grunt'].includes(request.model) || request.tools.some(tool => tool.type !== 'function')) throw new SourceError('refused', 'Unsupported Aperture request');
     let grant: FreeApiGrant | undefined;
     try { grant = await this.freeGrant(caller); } catch (error) { caller.throwIfAborted(); if (error instanceof SourceError) throw error; }
     caller.throwIfAborted();

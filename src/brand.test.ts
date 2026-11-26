@@ -14,6 +14,24 @@ test('Grunt environment values override legacy values, including an explicit emp
   expect(gruntEnv('PORT', {})).toBeUndefined();
 });
 
+test('brand-new Grunt-era settings do not fall back to legacy MILO_* variables', () => {
+  for (const name of [
+    'FLEET_REPORTING',
+    'ADOPTION_REPORTING',
+    'BACKGROUND_ACCOUNT_ACQUISITION',
+    'OPT_IN_SOURCES',
+    'SETUP_NO_DATA_SHARING',
+    'APPROVE_DATA_SHARING',
+    'ANTSEED_VIKEY_PORT',
+    'NUMES_MODEL',
+    'HERMES_ROOT',
+    'SETUP_NO_ANONYMOUS',
+  ]) {
+    expect(gruntEnv(name, { [`MILO_${name}`]: '1' })).toBeUndefined();
+    expect(gruntEnv(name, { [`GRUNT_${name}`]: '1', [`MILO_${name}`]: '0' })).toBe('1');
+  }
+});
+
 test('new installations use Grunt with explicit config and XDG compatibility', () => {
   expect(configRoot({}, '/synthetic-home')).toBe('/synthetic-home/.config/grunt');
   expect(configRoot({ XDG_CONFIG_HOME: '/synthetic-config' })).toBe('/synthetic-config/grunt');

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { bundledRegistry } from '../registry.js';
 import { createLocalApp, decode } from './api.js';
 import { recordDataSharingConsent } from './data-sharing.js';
-import { FreebuffTools } from './freebuff-tools.js';
+import { JsonToolBridge } from './json-tool-bridge.js';
 import { Kilo, KILO_ORIGIN, KILO_PARTICLE } from './kilo.js';
 import { StickyRouter } from './routing.js';
 import { RequestError, SourceError, Sources, requestRefusal } from './source.js';
@@ -56,7 +56,7 @@ it.each([
 });
 
 it('shows why the bridge refused: only the non-object arguments, not the other conversation shapes', () => {
-  const refused = (body: unknown) => { try { new FreebuffTools(decode(body as Record<string, unknown>, 'messages', '/tmp')); return false; } catch { return true; } };
+  const refused = (body: unknown) => { try { new JsonToolBridge(decode(body as Record<string, unknown>, 'messages', '/tmp')); return false; } catch { return true; } };
   // Control: valid arguments are accepted, and extra interleaving that Claude Code produces is tolerated.
   expect(refused(history({ file_path: '/a', content: 'x' }))).toBe(false);
   expect(refused(history({}, [{ role: 'user', content: [{ type: 'text', text: 'reminder' }] }]))).toBe(false);
@@ -83,7 +83,7 @@ it('keeps valid historical arguments byte for byte and the translation determini
     { id: 'b', type: 'function', function: { name: 'Write', arguments: '{}' } }
   ]);
   expect(first.messages[2]).toMatchObject({ tool_call_id: 'a', content: 'ra' });
-  new FreebuffTools(first);
+  new JsonToolBridge(first);
 });
 
 it('normalises historical arguments on the Chat and Responses routes too', () => {
@@ -91,12 +91,12 @@ it('normalises historical arguments on the Chat and Responses routes too', () =>
     { role: 'assistant', content: null, tool_calls: [{ id: 'a', type: 'function', function: { name: 'Write', arguments: '' } }, { id: 'o', type: 'function', function: { name: 'Write', arguments: { k: 1 } } }] },
     { role: 'tool', content: 'ra', tool_call_id: 'a' }, { role: 'tool', content: 'ro', tool_call_id: 'o' }] }, 'chat', '/tmp');
   expect(chat.messages[1]!.tool_calls!.map(call => call.function.arguments)).toEqual(['{}', '{"k":1}']);
-  new FreebuffTools(chat);
+  new JsonToolBridge(chat);
   const responses = decode({ model: 'grunt', input: [{ role: 'user', content: 'go' },
     { type: 'function_call', call_id: 'a', name: 'Write', arguments: truncated }, { type: 'function_call', call_id: 'n', name: 'Write' },
     { type: 'function_call_output', call_id: 'a', output: 'ra' }, { type: 'function_call_output', call_id: 'n', output: 'rn' }] }, 'responses', '/tmp');
   expect(responses.messages[1]!.tool_calls!.map(call => call.function.arguments)).toEqual(['{}', '{}']);
-  new FreebuffTools(responses);
+  new JsonToolBridge(responses);
 });
 
 // The gate for new calls: nothing unparseable is returned as complete, on any route or source.
