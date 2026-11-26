@@ -223,15 +223,14 @@ it('does not let transport heartbeats or role-only events postpone the first-out
     expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/chat/completions'))).toHaveLength(1);
   } finally { clearInterval(heartbeat); await sources.close(); }
 });
-const fikraRegistryAdapter = {
-  id: 'fikra', kind: 'model' as const, tier: 'experimental' as const, weight: 0.01, modalities: ['text' as const],
-  install: 'builtin:fikra', signup: PROMOTIONAL_PROVIDERS.fikra.signup, model: PROMOTIONAL_PROVIDERS.fikra.model
+const preExpiryRegistry = {
+  ...bundledRegistry,
+  adapters: bundledRegistry.adapters.map(adapter => adapter.id === 'fikra' ? { ...adapter, status: 'active' as const } : adapter)
 };
-const preExpiryRegistry = { ...bundledRegistry, adapters: [...bundledRegistry.adapters, fikraRegistryAdapter] };
 
-it('includes active openference in automatic onboarding and omits expired fikra from bundledRegistry', () => {
+it('includes active openference in automatic onboarding and marks expired fikra inactive in bundledRegistry', () => {
   expect(bundledRegistry.adapters.find(adapter => adapter.id === 'openference')?.model).toBe(PROMOTIONAL_PROVIDERS.openference.model);
-  expect(bundledRegistry.adapters.some(adapter => adapter.id === 'fikra')).toBe(false);
+  expect(bundledRegistry.adapters.find(adapter => adapter.id === 'fikra')?.status).toBe('inactive');
   expect(localOptInAdapters.some(adapter => adapter.id === 'openference' || adapter.id === 'fikra')).toBe(false);
 });
 it('routes Fikra native tools through the Grunt HTTP interface with a mixed source configuration', async () => {

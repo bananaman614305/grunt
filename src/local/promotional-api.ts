@@ -155,8 +155,8 @@ function completion(text: string, calls: ToolCall[], usage: Record<string, unkno
 // Bound memory, assemble indexed function fragments, require an explicit finish,
 // and reject errors/truncated streams instead of passing partial output as success.
 export async function readPromotionalStream(response: Response, model: string | undefined, signal: AbortSignal, observe?: { failure(reason: FailureReason): void; cleanup(): void; progress?: () => void; result?: (usage: Record<string, unknown>) => void;
-  // Optional: receives each reasoning or text delta, custom model verification, relaxed finish/tool checks, and raises the 4 MiB stream cap for a long reply.
-  reasoning?: (delta: string) => void; text?: (delta: string) => void; verifyModel?: (model: unknown) => boolean; strictToolArgs?: boolean; allowAnyFinishReason?: boolean; maxBytes?: number }): Promise<Completion> {
+  // Optional: receives each parsed chunk, reasoning or text delta, custom model verification, relaxed finish/tool checks, and raises the 4 MiB stream cap for a long reply.
+  chunk?: (frame: Record<string, unknown>) => void; reasoning?: (delta: string) => void; text?: (delta: string) => void; verifyModel?: (model: unknown) => boolean; strictToolArgs?: boolean; allowAnyFinishReason?: boolean; maxBytes?: number }): Promise<Completion> {
   // Observers receive fixed reason codes only. Preserve thrown values (even
   // non-Error values), cancellation priority and all existing acceptance rules.
   const tagged = (error: unknown, reason: FailureReason) => {
@@ -197,6 +197,9 @@ export async function readPromotionalStream(response: Response, model: string | 
     if (done) throw invalid('stream_format', 'Event after DONE');
     const chunk = object(observed('response_json', () => JSON.parse(data)));
     if (chunk.error) throw invalid('stream_format', 'Stream failed');
+    // Allow callers to inspect and reject a chunk (for example, top-level billing
+    // fields) before any model progress or text delta is emitted.
+    observe?.chunk?.(chunk);
     if (chunk.model !== undefined) {
       if (checkModel && !checkModel(chunk.model)) throw invalid('completion_model', 'Unexpected model');
       seenModel = true;

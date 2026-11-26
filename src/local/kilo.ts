@@ -272,10 +272,25 @@ export class Kilo implements Source {
       let streamUsage: Record<string, unknown> = {};
       let streamFailure: SafeDiagnosticMetadata['failureReason'];
       let reply: Completion;
+      const checkBillingContainer = (container: Record<string, unknown>) => {
+        const unverifiedUsage = 'Kilo returned unverified free usage or exceeded the output budget';
+        if (['cost', 'total_cost', 'credits_charged'].some(key => key in container && container[key] !== 0)) {
+          throw fail('refused', unverifiedUsage, 'completion_billing');
+        }
+        if (container.usage !== undefined && container.usage !== null) {
+          const chunkUsage = object(container.usage), details = object(chunkUsage.cost_details);
+          if (('cost' in chunkUsage && chunkUsage.cost !== 0)
+            || ['total_cost', 'credits_charged'].some(key => key in chunkUsage && chunkUsage[key] !== 0)
+            || ['upstream_inference_cost', 'upstream_inference_prompt_cost', 'upstream_inference_completions_cost'].some(key => key in details && details[key] !== 0)) {
+            throw fail('refused', unverifiedUsage, 'completion_billing');
+          }
+        }
+      };
       try {
         reply = await readPromotionalStream(response, model, signal, {
           strictToolArgs: false,
           allowAnyFinishReason: true,
+          chunk: checkBillingContainer,
           ...(output ? { progress: output } : {}),
           ...(request.stream ? { text: delta => emitStreamText(delta) } : {}),
           result: u => { streamUsage = u; },
@@ -284,7 +299,11 @@ export class Kilo implements Source {
         });
       } catch (error) {
         if (signal.aborted) throw error;
-        if (error instanceof SourceError && error.code === 'refused') throw fail('refused', 'Kilo refused the request', 'refusal');
+        if (error instanceof SourceError) {
+          if (error.diagnostics?.failureReason) throw error;
+          if (error.code === 'refused') throw fail('refused', 'Kilo refused the request', 'refusal');
+          throw error;
+        }
         if (streamFailure === 'completion_model') throw fail('refused', 'Kilo returned an unverified model', 'completion_model');
         throw fail('upstream', 'Kilo request failed', streamFailure ?? 'response_body');
       }

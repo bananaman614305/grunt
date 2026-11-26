@@ -259,3 +259,31 @@ it('does not replay onto another route after incremental text has already been e
   expect(wire).not.toContain('data: [DONE]');
   expect(backup.complete).not.toHaveBeenCalled();
 });
+
+it.each([
+  ['cost', { cost: 0.01 }, 'first'],
+  ['total_cost', { total_cost: 0.02 }, 'first'],
+  ['credits_charged', { credits_charged: 1 }, 'first'],
+  ['cost', { cost: 0.01 }, 'trailing'],
+  ['total_cost', { total_cost: 0.02 }, 'trailing'],
+  ['credits_charged', { credits_charged: 1 }, 'trailing']
+] as const)('rejects a Kilo SSE stream carrying nonzero top-level %s on a %s chunk', async (_field, billingPatch, position) => {
+  const dir = await mkdtemp(join(tmpdir(), 'grunt-kilo-stream-billing-'));
+  dirs.push(dir);
+  await recordDataSharingConsent(dir, ['kilo']);
+  const fetcher = vi.fn<typeof fetch>(async url => {
+    if (String(url) === `${KILO_ORIGIN}/models`) {
+      return Response.json({ data: [{ id: KILO_PARTICLE, isFree: true, pricing: { prompt: '0', completion: '0' }, context_length: 1048576, supported_parameters: ['tools', 'max_tokens'] }] });
+    }
+    const zeroUsage = { prompt_tokens: 12, completion_tokens: 3, cost: 0, cost_details: { upstream_inference_cost: 0, upstream_inference_prompt_cost: 0, upstream_inference_completions_cost: 0 } };
+    return sse([
+      JSON.stringify({ ...(position === 'first' ? billingPatch : {}), model: KILO_PARTICLE, choices: [{ index: 0, delta: { content: 'Charged?' }, finish_reason: 'stop' }] }),
+      JSON.stringify({ ...(position === 'trailing' ? billingPatch : {}), model: KILO_PARTICLE, choices: [], usage: zeroUsage }),
+      '[DONE]'
+    ]);
+  });
+  const kilo = new Kilo({ directory: dir, fetcher });
+  await expect(kilo.complete({ model: 'kilo', messages: [{ role: 'user', content: 'hi' }], tools: [], cwd: dir, stream: true }, AbortSignal.timeout(5000)))
+    .rejects.toMatchObject({ code: 'refused', diagnostics: { failureReason: 'completion_billing' } });
+  await kilo.close();
+});
