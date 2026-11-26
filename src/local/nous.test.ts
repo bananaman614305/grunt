@@ -12,7 +12,7 @@ import type { ModelRequest } from './source.js';
 const origin = 'https://inference-api.nousresearch.com';
 let directory: string;
 beforeEach(async () => { directory = await mkdtemp(join(tmpdir(), 'grunt-nous-test-')); });
-afterEach(async () => { vi.unstubAllGlobals(); await rm(directory, { recursive: true, force: true }); });
+afterEach(async () => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); await rm(directory, { recursive: true, force: true }); });
 
 const free = {
   id: NOUS_FREE_MODEL,
@@ -102,14 +102,18 @@ class ClientSession:
         return Response(content_type='text/event-stream', chunks=chunks)
 
 class Runner:
-    def __init__(self, *_args, **_kwargs): pass
+    def __init__(self, *_args, **_kwargs): self.server = None
     async def setup(self): pass
-    async def cleanup(self): pass
+    async def cleanup(self):
+        if self.server is not None:
+            self.server.close()
+            await self.server.wait_closed()
 
 class Site:
-    def __init__(self, _, path): self.path = path
+    def __init__(self, runner, path): self.runner, self.path = runner, path
     async def start(self):
-        Path(self.path).touch()
+        assert Path(self.path).parent.stat().st_mode & 0o777 == 0o700
+        self.runner.server = await asyncio.start_unix_server(lambda _, writer: writer.close(), path=self.path)
         Path('process.json').write_text(json.dumps({'pid': os.getpid(), 'path': self.path}))
 
 web = SimpleNamespace(AppRunner=Runner, UnixSite=Site)
@@ -144,6 +148,18 @@ it.each(['sse', 'json', 'quota'] as const)('preserves %s replies through the Her
     if (mode === 'quota') await expect(reply).rejects.toMatchObject({ code: 'quota', retryAfter: 240 });
     else await expect(reply).resolves.toEqual({ text: 'Hello' });
   } finally { await source.close(); }
+});
+
+it('streams after a real Unix socket bind when TMPDIR is too long for its path', async () => {
+  const { source } = await hermesFixture('sse');
+  const longTmp = join(directory, 'x'.repeat(120));
+  await mkdir(longTmp);
+  vi.stubEnv('TMPDIR', longTmp);
+  const sources = new Sources([source]), onText = vi.fn();
+  try {
+    await expect(sources.complete({ ...request, stream: true }, AbortSignal.timeout(2000), onText)).resolves.toEqual({ text: 'Hello' });
+    expect(onText).toHaveBeenCalledExactlyOnceWith('nous', 'Hello');
+  } finally { await sources.close(); }
 });
 
 it('routes a Grunt reply through the pinned Nous model after a fresh public catalog check', async () => {

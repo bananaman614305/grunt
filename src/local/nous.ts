@@ -202,11 +202,22 @@ export async function hasNousProfile(directory: string, env?: NodeJS.ProcessEnv)
   } catch { return false; }
 }
 
+async function makeHermesSocketDirectory() {
+  const prefix = '/tmp/grunt-nous-';
+  try { return await mkdtemp(prefix); }
+  catch (error) {
+    const fallback = join(tmpdir(), 'grunt-nous-');
+    // macOS allows 103 bytes before the terminating NUL, including the generated suffix and socket name.
+    if (fallback === prefix || !isAbsolute(fallback) || Buffer.byteLength(join(`${fallback}XXXXXX`, 'proxy')) > 103) throw error;
+    return mkdtemp(fallback);
+  }
+}
+
 async function hermesRequest(directory: string, mode: 'check' | 'complete', signal: AbortSignal, env?: NodeJS.ProcessEnv, body?: string): Promise<Response> {
   signal.throwIfAborted();
   const paths = nousHermesPaths(directory, env);
   const deadline = AbortSignal.any([signal, AbortSignal.timeout(mode === 'check' ? 20_000 : 165_000)]);
-  const socketDirectory = mode === 'complete' ? await mkdtemp(join(tmpdir(), 'grunt-nous-')) : undefined;
+  const socketDirectory = mode === 'complete' ? await makeHermesSocketDirectory() : undefined;
   // The parent owns the socket directory so it can remove it even after killing Hermes.
   const release = async () => { if (socketDirectory) await rm(socketDirectory, { recursive: true, force: true }).catch(() => {}); };
   let stop = release;
