@@ -14,7 +14,7 @@ import { SourceAvailability } from './source-availability.js';
 import { currentDiagnosticContext, observeRequestPhase, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticEvent } from './diagnostics.js';
 import type { RoutingWorkload } from './routing-history.js';
-import { RETIRE_AFTER_FAILURES, activeRoutingWorkload, toolFailureSignature, localRequestRefusal, currentRoutingWorkload, slowUpstreamFailure, upstreamRetryHint, withRoutingWorkload } from './routing-history.js';
+import { RETIRE_AFTER_FAILURES, activeRoutingWorkload, toolHold, generalHold, recoveryDeadline, localRequestRefusal, currentRoutingWorkload, slowUpstreamFailure, upstreamRetryHint, withRoutingWorkload } from './routing-history.js';
 
 const exec = promisify(execFile);
 const DEFAULT_FAILURE_COOLDOWN_SECONDS = 15 * 60;
@@ -68,9 +68,7 @@ interface Task {
 interface Candidate { source: Source; weight: number }
 export class StickyRouter {
   private tasks = new Map<string, Task>();
-  private bars = new Map<string, number>();
   private barFailures = new Map<string, ErrorCode>();
-  private barAt = new Map<string, number>();
   private observation: SourceStatus;
   private availability: SourceAvailability;
   private shutdown = new AbortController();
@@ -101,56 +99,46 @@ export class StickyRouter {
   }
   // Retired and not yet due for a trial. A retired route reopens after a bounded wait (15 min, doubling to
   // 4 h per failed trial) for a single real request; success clears it, failure extends the wait.
-  private textDuringToolHold(id: string) {
-    return activeRoutingWorkload()?.endsWith('-text') && toolFailureSignature(this.observation.routingBackoff(id)?.signature);
+  private applicableTool(id: string) {
+    return activeRoutingWorkload()?.endsWith('-text') ? undefined : toolHold(this.observation.routingBackoff(id));
   }
   retired(id: string) {
-    if (this.textDuringToolHold(id)) return false;
-    const backoff = this.observation.routingBackoff(id);
-    if (!backoff || backoff.streak < RETIRE_AFTER_FAILURES) return false;
-    return this.now() < backoff.until;
+    const general = generalHold(this.observation.routingBackoff(id)), tool = this.applicableTool(id);
+    return [general, tool].some(hold => hold && hold.streak >= RETIRE_AFTER_FAILURES && hold.until > this.now());
   }
   // A due retired route whose single trial is already in flight.
   trialBusy(id: string) { return this.dueTrial(id) && (this.trials.has(id) || this.observation.isBusy(id)); }
   // Synchronously claims the single trial of a due retired route; call it right after the retired() check
   // and before dispatch. Returns a release to call when the attempt has settled, or a no-op otherwise.
   claimTrial(id: string): () => void {
-    const backoff = this.observation.routingBackoff(id);
-    if (!backoff || this.textDuringToolHold(id) || backoff.streak < RETIRE_AFTER_FAILURES || this.trials.has(id)) return () => {};
+    if (!this.dueTrial(id) || this.trials.has(id)) return () => {};
     this.trials.add(id);
     return () => { this.trials.delete(id); };
   }
   private dueTrial(id: string) {
-    return !this.textDuringToolHold(id) && (this.observation.routingBackoff(id)?.streak ?? 0) >= RETIRE_AFTER_FAILURES;
+    const general = generalHold(this.observation.routingBackoff(id)), tool = this.applicableTool(id);
+    return Math.max(general?.streak ?? 0, tool?.streak ?? 0) >= RETIRE_AFTER_FAILURES;
   }
   private awaitingProbe(id: string) {
-    return this.dueTrial(id) || this.observation.schedulesRecovery && !this.textDuringToolHold(id) && !!this.observation.routingBackoff(id);
+    return this.dueTrial(id) || this.observation.schedulesRecovery && !!(generalHold(this.observation.routingBackoff(id)) || this.applicableTool(id));
   }
-  needsHealthCheck(id: string) { return this.bars.get(id) === Infinity; }
-  healthy(id: string) { if (this.bars.get(id) === Infinity) { this.bars.delete(id); this.barFailures.delete(id); } }
-  needsToolProbe(id: string) { return toolFailureSignature(this.observation.routingBackoff(id)?.signature); }
+  needsHealthCheck(id: string) { return this.barFailures.has(id); }
+  healthy(id: string) { this.barFailures.delete(id); }
+  needsToolProbe(id: string) { return !!toolHold(this.observation.routingBackoff(id)); }
   verified(id: string, provedTools = false) {
-    if (this.needsToolProbe(id) && !provedTools) return;
-    this.bars.delete(id); this.barFailures.delete(id); this.barAt.delete(id); this.observation.clearRoutingBackoff(id);
+    this.barFailures.delete(id);
+    this.observation.clearRoutingBackoff(id, provedTools);
   }
-  cooldown(id: string, clearRecovered = true) {
-    if (!this.needsHealthCheck(id) && this.textDuringToolHold(id)) {
-      const hold = this.observation.routingBackoff(id);
-      const until = this.observation.quotaRetryAt(id) ?? hold?.quotaUntil;
-      return until === undefined ? undefined : { until, code: 'quota' as const };
-    }
-    let until = this.bars.get(id), code = this.barFailures.get(id);
-    if (until !== undefined && Number.isFinite(until) && (this.observation.routingRecoveryAt(id) ?? 0) > (this.barAt.get(id) ?? Infinity)) {
-      if (clearRecovered) { this.bars.delete(id); this.barFailures.delete(id); this.barAt.delete(id); }
-      until = undefined; code = undefined;
-    }
-    const observedQuota = this.observation.quotaRetryAt(id);
-    if (observedQuota !== undefined && (until === undefined || observedQuota >= until)) {
-      return { until: observedQuota, code: 'quota' as const };
-    }
-    const persisted = this.observation.routingBackoff(id);
-    if (persisted && (until === undefined || persisted.until >= until)) return { until: persisted.until, code: persisted.code };
-    return until !== undefined ? { until, ...(code ? { code } : {}) } : undefined;
+  cooldown(id: string, _clearRecovered = true) {
+    const bar = this.barFailures.get(id);
+    if (bar) return { until: Infinity, code: bar };
+    const general = generalHold(this.observation.routingBackoff(id));
+    const tool = this.applicableTool(id);
+    const until = Math.max(general?.until ?? 0, tool?.until ?? 0);
+    const quota = this.observation.quotaRetryAt(id);
+    if (quota !== undefined && quota >= until) return { until: quota, code: 'quota' as const };
+    if (general && general.until >= (tool?.until ?? 0)) return { until: general.until, code: general.code };
+    if (tool) return { until: tool.until, code: 'upstream' as const };
   }
   private benched(id: string) { return this.retired(id) || (this.cooldown(id)?.until ?? 0) > this.now(); }
   // Consecutive slow upstream failures per source (SlowUpstreamPolicy). A success since the last one resets the
@@ -165,7 +153,7 @@ export class StickyRouter {
     this.slow.set(id, { count, at, until: at + seconds * 1000 });
     return seconds;
   }
-  async recordFailure(id: string, failure: SourceError) {
+  async recordFailure(id: string, failure: SourceError, toolProbe = false) {
     if (!this.registered(id) || failure.code === 'cancelled') return;
     // Our own bug or the request's shape, never provider health: no retirement count, no cooldown.
     if (localRequestRefusal(failure)) return;
@@ -173,9 +161,16 @@ export class StickyRouter {
     let until: number;
     if (failure.code === 'quota') {
       const seconds = failure.retryAfter ?? 3600;
-      until = (await this.observation.failureBackoff(id, failure, seconds, false)).until;
+      until = recoveryDeadline(await this.observation.failureBackoff(id, failure, seconds, false, toolProbe));
     }
-    else if (failure.code === 'logged_out' || failure.code === 'not_installed') until = Infinity;
+    else if (failure.code === 'logged_out' || failure.code === 'not_installed') {
+      until = Infinity;
+      const tool = toolHold(this.observation.routingBackoff(id));
+      if (toolProbe && tool && tool.streak >= RETIRE_AFTER_FAILURES && tool.until <= this.now()) {
+        const updated = await this.observation.failureBackoff(id, failure, 0, false, true);
+        this.options.scheduleRecovery?.(id, recoveryDeadline(updated));
+      }
+    }
     else {
       const status = failure.diagnostics?.httpStatus, retry = failure.retryAfter;
       const hasUpstreamHint = upstreamRetryHint(failure);
@@ -186,10 +181,9 @@ export class StickyRouter {
       const seconds = hasUpstreamHint ? Math.min(MAX_UPSTREAM_RETRY_SECONDS, Math.max(1, retry ?? 1))
         : badSample ? BAD_SAMPLE_COOLDOWN_SECONDS : policy ? this.slowUpstreamSeconds(id, policy) : DEFAULT_FAILURE_COOLDOWN_SECONDS;
       // The policy already scales its own delay across consecutive slow failures of any kind.
-      until = (await this.observation.failureBackoff(id, failure, seconds, !hasUpstreamHint && !policy)).until;
+      until = recoveryDeadline(await this.observation.failureBackoff(id, failure, seconds, !hasUpstreamHint && !policy, toolProbe));
     }
-    this.barAt.set(id, this.observation.routingBackoff(id)?.at ?? this.now());
-    this.bars.set(id, until); this.barFailures.set(id, this.observation.routingBackoff(id)?.code ?? failure.code);
+    if (until === Infinity) this.barFailures.set(id, failure.code);
     if (Number.isFinite(until)) this.options.scheduleRecovery?.(id, until);
     if (!wasBenched && this.benched(id)) try { this.options.dropped?.(id); } catch { /* Signup triggers cannot change routing. */ }
   }

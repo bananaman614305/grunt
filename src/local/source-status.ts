@@ -6,7 +6,7 @@ import type { MaintenanceEntry } from './maintenance.js';
 import { randomUUID } from 'node:crypto';
 import { currentDiagnosticContext, recordAttemptFailure, sanitizeSafeDiagnosticMetadata, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticEvent, DiagnosticsStore } from './diagnostics.js';
-import { routingFailureSignature, toolFailureSignature, currentRoutingWorkload, localRequestRefusal, nextRoutingPerformance, quotaAfterRecovery, mergeRoutingBackoff, nextRoutingBackoff, ROUTING_HISTORY_TTL_MS } from './routing-history.js';
+import { routingFailureSignature, toolFailureSignature, currentRoutingWorkload, localRequestRefusal, nextRoutingPerformance, afterRoutingSuccess, toolHold, recoveryDeadline, mergeRoutingBackoff, nextRoutingBackoff, ROUTING_HISTORY_TTL_MS } from './routing-history.js';
 import type { RoutingHistory, RoutingPerformance, RoutingWorkload, RoutingProfile, RoutingBackoff } from './routing-history.js';
 
 // Negative admission evidence may delay discovery, never authorize dispatch.
@@ -78,7 +78,7 @@ export class SourceStatus {
   get schedulesRecovery() { return this.notifyRestoredHold !== undefined; }
   onRestoredBackoff(notify: (id: string, at: number) => void) {
     this.notifyRestoredHold = notify;
-    for (const [id, hold] of this.backoffs) notify(id, hold.until);
+    for (const [id, hold] of this.backoffs) notify(id, recoveryDeadline(hold));
   }
   private backoffs = new Map<string, RoutingBackoff>();
   private availabilityObservers = new Set<(id: string, at: number) => void>();
@@ -227,17 +227,15 @@ export class SourceStatus {
         if (!entry) continue;
         this.mergePerformance(entry, row.profile, row.value);
       }
-      for (const [id, value] of this.backoffs) if ((this.routingRecoveryAt(id, value.signature) ?? 0) > value.at) {
-        if (value.code === 'quota') this.backoffs.set(id, quotaAfterRecovery(value));
-        else this.backoffs.delete(id);
-      }
-      for (const row of state.backoff) if (this.observations.has(row.source) && (row.value.code === 'quota' || (this.routingRecoveryAt(row.source, row.value.signature) ?? 0) <= row.value.at)) {
+      for (const [id, value] of this.backoffs) this.setBackoff(id, this.unrecovered(id, value));
+      for (const row of state.backoff) {
+        if (!this.observations.has(row.source)) continue;
+        const incoming = this.unrecovered(row.source, row.value);
+        if (!incoming) continue;
         const old = this.backoffs.get(row.source);
-        const incoming = row.value.code === 'quota' && (this.routingRecoveryAt(row.source, row.value.signature) ?? 0) > row.value.at
-          ? quotaAfterRecovery(row.value) : row.value;
         const merged = mergeRoutingBackoff(old, incoming);
-        this.backoffs.set(row.source, merged);
-        if (old?.until !== merged.until) this.notifyRestoredHold?.(row.source, merged.until);
+        this.setBackoff(row.source, merged);
+        if (!old || recoveryDeadline(old) !== recoveryDeadline(merged)) this.notifyRestoredHold?.(row.source, recoveryDeadline(merged));
       }
     } catch { /* Durable observations must not make a source available or break requests. */ }
   }
@@ -256,35 +254,40 @@ export class SourceStatus {
     return entry.performance?.lastSuccessAt;
   }
   routingBackoff(id: string) { return this.backoffs.get(id); }
-  clearRoutingBackoff(id: string) {
-    this.backoffs.delete(id);
-    void this.history?.clear(id).catch(() => {});
+  private setBackoff(id: string, value: RoutingBackoff | undefined) {
+    if (value) this.backoffs.set(id, value);
+    else this.backoffs.delete(id);
   }
-  async failureBackoff(id: string, error: SourceError, seconds: number, adaptive: boolean) {
+  private unrecovered(id: string, value: RoutingBackoff) {
+    const entry = this.entry(id);
+    const toolsAt = Math.max(entry.profiles?.['interactive-tools']?.lastSuccessAt ?? -1, entry.profiles?.['background-tools']?.lastSuccessAt ?? -1);
+    return afterRoutingSuccess(value, entry.performance?.lastSuccessAt ?? -1, toolsAt);
+  }
+  clearRoutingBackoff(id: string, tools = true) {
+    const value = this.backoffs.get(id), at = this.now();
+    if (value) this.setBackoff(id, afterRoutingSuccess(value, at, tools ? at : -1, true));
+    void this.history?.clear(id, at, tools).catch(() => {});
+  }
+  async failureBackoff(id: string, error: SourceError, seconds: number, adaptive: boolean, toolProbe = false) {
     const at = this.now();
     const recovered = error.code !== 'quota' && (this.routingRecoveryAt(id, routingFailureSignature(error)) ?? 0) > at;
     const candidate = recovered
       ? { code: error.code, signature: '', streak: 1, at, until: at }
-      : nextRoutingBackoff(this.backoffs.get(id), error, seconds, adaptive, at);
+      : nextRoutingBackoff(this.backoffs.get(id), error, seconds, adaptive, at, toolProbe);
     if (!recovered) this.backoffs.set(id, candidate);
     let value = candidate;
-    try { if (this.history) value = await this.history.failure(id, error, seconds, adaptive, at); }
+    try { if (this.history) value = await this.history.failure(id, error, seconds, adaptive, at, toolProbe); }
     catch { /* Keep the bounded in-memory backoff when private storage is unavailable. */ }
-    const current = this.backoffs.get(id), recovery = this.routingRecoveryAt(id, value.signature) ?? 0;
-    if (value.code === 'quota' && recovery > value.at) value = quotaAfterRecovery(value);
-    if (value.code !== 'quota' && recovery > value.at) {
-      if (current && (current.code === 'quota' || current.at >= recovery)) return current;
-      this.backoffs.delete(id);
-      return { ...value, until: value.at };
+    const current = this.backoffs.get(id);
+    const remaining = this.unrecovered(id, value);
+    if (remaining && (remaining.until > remaining.at || remaining.tool)) {
+      value = current && current !== candidate ? mergeRoutingBackoff(current, remaining) : remaining;
+      this.setBackoff(id, value);
+      return value;
     }
-    if (current === candidate || !current) {
-      if (value.until <= value.at) this.backoffs.delete(id);
-      else this.backoffs.set(id, value);
-    } else {
-      value = mergeRoutingBackoff(current, value);
-      this.backoffs.set(id, value);
-    }
-    return value;
+    if (current && current !== candidate) return current;
+    this.setBackoff(id, undefined);
+    return { ...value, until: value.at };
   }
 
   routingWeight(id: string, background = false, workload?: RoutingWorkload) {
@@ -314,10 +317,7 @@ export class SourceStatus {
     entry.profiles ??= {};
     entry.profiles[profile] = nextRoutingPerformance(entry.profiles[profile], success, latencyMs, at);
     const backoff = this.backoffs.get(id);
-    if (success && backoff && at > backoff.at && (!toolFailureSignature(backoff.signature) || profile.endsWith('-tools'))) {
-      if (backoff.code === 'quota') this.backoffs.set(id, quotaAfterRecovery(backoff));
-      else this.backoffs.delete(id);
-    }
+    if (success && backoff) this.setBackoff(id, this.unrecovered(id, backoff));
     try {
       const rows = await this.history?.record(id, profile, success, latencyMs, at);
       if (entry.revision === revision) for (const row of rows ?? []) this.mergePerformance(entry, row.profile, row.value);
@@ -486,7 +486,7 @@ export class SourceStatus {
       const cooldown = options.cooldown?.(id);
       // A recent plain reply can make the source ready for text while its tools still need verification.
       const hold = this.routingBackoff(id);
-      if (hold && toolFailureSignature(hold.signature) && !row.errorCode) row.errorCode = hold.code;
+      if (toolHold(hold) && !row.errorCode) row.errorCode = 'upstream';
       if (options.disabled.has(id) || options.listed && !options.listed(id)) row.state = 'disabled';
       else if (options.pending.has(id)) row.state = options.verifying.has(id) ? 'verifying' : 'connecting';
       else if (entry.active) row.state = 'answering';

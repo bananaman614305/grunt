@@ -178,7 +178,9 @@ no longer accepted; operators who previously used it must set
   hours. A parallel failure inside the delay does not extend the slow cooldown.
   Alternating outage symptoms share one retirement streak. Invalid function
   calls have their own escalating tool hold. Text successes preserve it until
-  a tool turn succeeds or a synthetic function probe returns the requested valid call. Quota failures use the provider's reset time instead;
+  a tool turn succeeds or a synthetic function probe returns the requested valid call.
+  An overlapping outage or quota hold keeps its own deadline. Text turns can
+  resume when that deadline passes while tool turns still await tool recovery. Quota failures use the provider's reset time instead;
   successful recovery preserves that quota deadline. Missing installations
   and expired logins stay barred until a successful health check.
   On the first upgrade to Kilo's free-model rotation, routing history clears

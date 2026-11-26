@@ -478,6 +478,7 @@ export class Sources {
     this.checking.add(id);
     let cwd: string | undefined;
     let guard: ObservationGuard | undefined;
+    let probeTools = false;
     const newerEvidence = (): MaintenanceResult | undefined => {
       if (!guard || !this.observation.changed(id, guard)) return;
       const state = this.status().sources.find(source => source.id === id)!;
@@ -507,7 +508,7 @@ export class Sources {
       const changed = eligible();
       this.checking.add(id);
       if (changed) return changed;
-      const probeTools = this.registeredRouter?.needsToolProbe(id) === true;
+      probeTools = this.registeredRouter?.needsToolProbe(id) === true;
       if (probeTools && !toolCapable(source)) return { outcome: 'deferred', code: 'upstream' };
       const name = 'check_access';
       const tools: Tool[] = probeTools ? [{ type: 'function', function: { name, parameters: { type: 'object', properties: {}, additionalProperties: false } } }] : [];
@@ -546,7 +547,7 @@ export class Sources {
       this.observation.failed(id, failure.code, retryAfter);
       // A failed recovery trial extends its existing hold. Routine access
       // checks keep their observation and can recover on fresh availability.
-      if (this.observation.routingBackoff(id)) await this.registeredRouter?.recordFailure(id, failure);
+      if (this.observation.routingBackoff(id)) await this.registeredRouter?.recordFailure(id, failure, probeTools);
       const retryAt = retryAfter === undefined ? undefined : now() + retryAfter * 1000;
       return { outcome: 'failed', code: failure.code, ...(retryAt !== undefined && Number.isFinite(retryAt) ? { retryAt } : {}) };
     } finally {
