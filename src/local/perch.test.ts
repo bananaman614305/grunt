@@ -108,6 +108,16 @@ it('rejects global Perch memory, global native agents and ancestor instructions 
   await rm(join(directory, 'AGENTS.md')); await mkdir(join(state.personalHome, '.perch', 'agents'), { recursive: true }); await writeFile(join(state.personalHome, '.perch', 'agents', 'secret.md'), 'not sent');
   await expect(verifyPerchStartupIsolation(perchPaths(directory).work)).rejects.toMatchObject({ code: 'refused' });
 });
+it('checks Claude agents at the isolated project root without blocking home-folder Claude agents', async () => {
+  const root = perchPaths(directory).work;
+  const homeAgents = join(state.personalHome, '.claude', 'agents'), projectAgents = join(root, '.claude', 'agents');
+  await mkdir(homeAgents, { recursive: true });
+  await writeFile(join(homeAgents, 'private.md'), 'synthetic home agent');
+  await expect(verifyPerchStartupIsolation(root)).resolves.toBeUndefined();
+  await mkdir(projectAgents, { recursive: true });
+  await writeFile(join(projectAgents, 'private.md'), 'synthetic project agent');
+  await expect(verifyPerchStartupIsolation(root)).rejects.toMatchObject({ code: 'refused' });
+});
 it('discards personal skills, including colliding vendor names, while keeping workspace metadata absent', async () => {
   const content = 'SYNTHETIC_PRIVATE_SKILL_MUST_NOT_REACH_THE_CALLER';
   const folder = join(state.personalHome, '.agents', 'skills', 'spreadsheets'); await mkdir(folder, { recursive: true }); await writeFile(join(folder, 'SKILL.md'), content);

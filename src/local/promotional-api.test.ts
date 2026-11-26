@@ -12,6 +12,7 @@ import { withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticEvent, DiagnosticsStore } from './diagnostics.js';
 import { Sources, SourceError, endingOf } from './source.js';
 import { bundledRegistry, localOptInAdapters } from '../registry.js';
+import { setupPromotionalApi } from './promotional-setup.js';
 
 const now = Date.parse('2026-11-20T03:00:00Z');
 let directory: string;
@@ -43,6 +44,14 @@ function source(id: PromotionalProvider, fetcher: typeof fetch, clock = () => no
   return new PromotionalApi(id, { directory, fetcher, now: clock, loadGrant: async () => access });
 }
 beforeEach(async () => { vi.spyOn(Date, 'now').mockReturnValue(now); directory = await mkdtemp(join(tmpdir(), 'promotional-api-')); });
+it('reports a locally expired Fikra promotion before connecting to Squire', async () => {
+  vi.mocked(Date.now).mockReturnValue(Date.parse(PROMOTIONAL_PROVIDERS.fikra.expires));
+  const connect = vi.fn();
+  await expect(setupPromotionalApi('fikra', {
+    directory, squire: { credentials: { list: vi.fn(), grant: vi.fn() } }, notify: vi.fn(), connect, background: false
+  })).rejects.toMatchObject({ reason: 'free promotion expired' });
+  expect(connect).not.toHaveBeenCalled();
+});
 afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllGlobals(); await rm(directory, { recursive: true, force: true }); });
 
 it.each(['fikra', 'openference'] as const)('%s sends nothing without provider-specific approval', async id => {

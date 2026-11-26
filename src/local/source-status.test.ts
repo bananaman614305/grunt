@@ -3,6 +3,11 @@ import { Sources, SourceError } from './source.js';
 import type { Completion, ModelRequest, Source } from './source.js';
 import { bundledRegistry } from '../registry.js';
 import { createLocalApp } from './api.js';
+import { SourceRecovery } from './recovery.js';
+import { recordDataSharingConsent } from './data-sharing.js';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 const request: ModelRequest = { model: 'grunt', messages: [{ role: 'user', content: 'private prompt contents' }], cwd: '/tmp', tools: [], stream: false };
 const fake = (id: string): Source => ({ id, available: vi.fn(async () => true), healthCheck: vi.fn(async () => true), complete: vi.fn(async () => ({ text: 'private response' })) });
@@ -31,6 +36,69 @@ it('keeps the existing host and origin protections on cached status', async () =
   expect((await app.request('http://attacker.invalid:8788/v1/status')).status).toBe(403);
   expect((await app.request('http://127.0.0.1:8788/v1/status', { headers: { origin: 'https://attacker.invalid' } })).status).toBe(403);
   expect(source.available).not.toHaveBeenCalled();
+});
+
+it('names skipped routes and safe reasons in a streamed tool request’s 429 body', async () => {
+  const ids = ['beatapi', 'perch', 'mistral-vibe', 'reflection-beam', 'opencode'];
+  const adapters = ids.map(id => bundledRegistry.adapters.find(adapter => adapter.id === id)!);
+  const [beatapi, perch, vibe, reflection, opencode] = ids.map(id => ({ ...fake(id), supportsFunctionTools: id !== 'opencode' })) as [Source, Source, Source, Source, Source];
+  vi.mocked(beatapi.available).mockResolvedValue(false);
+  vi.mocked(perch.available).mockResolvedValue(false);
+  vi.mocked(vibe.complete).mockRejectedValue(new SourceError('refused', 'private refusal detail'));
+  vi.mocked(reflection.complete).mockRejectedValue(new SourceError('quota', 'private quota detail', 45));
+  const sources = new Sources([beatapi, perch, vibe, reflection, opencode], { registry: () => ({ ...bundledRegistry, adapters }) });
+  sources.setSetupFailure('beatapi', 'browser could not continue; private browser detail');
+  sources.setSetupFailure('perch', 'startup isolation check failed');
+  const app = createLocalApp(sources);
+  try {
+    const response = await app.request('http://127.0.0.1:8788/v1/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'grunt', stream: true, messages: request.messages,
+        tools: [{ type: 'function', function: { name: 'probe', parameters: { type: 'object', properties: {} } } }] }) });
+    expect(response.status).toBe(429);
+    const { error } = await response.json();
+    expect(error.message).toContain('beatapi (setup incomplete: Squire could not finish; check Squire and rerun usegrunt setup)');
+    expect(error.message).toContain('perch (startup isolation check failed; inspect startup config and rerun usegrunt setup)');
+    expect(error.message).toContain('mistral-vibe (route refused the request; check provider access or select another route)');
+    expect(error.message).toContain('reflection-beam (free quota or rate limit reached)');
+    expect(error.message).toContain('opencode (function tools unsupported)');
+    expect(error.message).not.toContain('private');
+  } finally { await sources.close(); }
+});
+
+it('shows failed background setup in owner status and clears it when the route becomes available', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'grunt-setup-status-'));
+  const source = fake('beatapi');
+  vi.mocked(source.available).mockResolvedValue(false);
+  let now = 1000;
+  const sources = new Sources([source], { registry: () => bundledRegistry, now: () => now });
+  await sources.available(source);
+  const recovery = new SourceRecovery({ directory, candidates: async () => ['beatapi'], open: async () => 0,
+    setup: async options => {
+      await options.onSettled?.('beatapi', false, 'provider refused; private browser detail');
+      return { unavailable: ['beatapi'] };
+    },
+    settled: (id, reason) => sources.setSetupFailure(id, reason),
+    notify: () => {} });
+  try {
+    // BeatAPI needs the existing grouped consent to be eligible for recovery.
+    await recordDataSharingConsent(directory, ['beatapi']);
+    recovery.trigger();
+    const app = createLocalApp(sources);
+    await vi.waitFor(async () => {
+      const response = await app.request('http://127.0.0.1:8788/v1/status');
+      const body = await response.json();
+      expect(body.sources[0].detail).toContain('setup incomplete: provider refused access; check provider access and rerun usegrunt setup');
+      expect(body.sources[0].detail).not.toContain('private');
+    });
+    now += 31000;
+    vi.mocked(source.available).mockResolvedValue(true);
+    await sources.available(source);
+    expect(sources.status().sources[0]).toMatchObject({ state: 'available', detail: expect.not.stringContaining('setup incomplete') });
+  } finally {
+    await recovery.close();
+    await sources.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 it('distinguishes availability from a verified reply and tracks concurrent activity without storing text', async () => {

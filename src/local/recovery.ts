@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import { beginSetupSession } from './setup-session.js';
 import { setupFallbacks } from './fallback-setup.js';
 import { approveDataSharing, requiresDataSharing } from './data-sharing.js';
+import { setupFailureReason } from './setup-failure.js';
 import type { SignupAgent } from './signup-mcp.js';
 import type { Registry } from '../registry.js';
 
@@ -30,6 +31,7 @@ export interface RecoveryOptions {
   registry?: () => Registry;
   // Each finished background signup, for the registry's route feedback.
   signedUp?: (id: string, ok: boolean) => void;
+  settled?: (id: string, reason: string | undefined) => void;
 }
 
 // One greedy pass over the registry's recommended routes (docs/router.md): sign
@@ -94,15 +96,21 @@ export class SourceRecovery {
         attempts++;
         notify(`grunt routes: opening ${id}${agent ? ' with the fallback operator' : ''}`);
         this.options.opening?.(id);
+        let reason: string | undefined;
         const outcome = await (this.options.setup ?? setupFallbacks)({
           directory: this.options.directory, adapters: [id], background: true, acquire: true, notify, signal,
+          onSettled: (_id, available, failure) => { if (!available) reason = failure; },
           ...(agent ? { agent } : {}), ...(this.options.registry ? { registry: this.options.registry } : {}),
           ...(this.options.signedUp ? { signedUp: this.options.signedUp } : {}),
           run: async (binary, args, interactive) => {
             if (interactive) throw new Error(`${binary} needs an interactive terminal; run usegrunt setup`);
             await exec(binary, args, { timeout: RUN_TIMEOUT_MS, maxBuffer: 2 * 1024 * 1024, signal });
           },
-        }).catch(() => ({ unavailable: [id] })).finally(() => this.options.opening?.(undefined));
+        }).catch(error => {
+          reason ??= setupFailureReason(error);
+          return { unavailable: [id] };
+        }).finally(() => this.options.opening?.(undefined));
+        if (!signal.aborted) this.options.settled?.(id, outcome.unavailable.includes(id) ? reason ?? 'setup failed' : undefined);
         this.failed.delete(id);
         this.failedSinceSync.delete(id);
         if (outcome.unavailable.includes(id)) {

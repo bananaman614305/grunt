@@ -252,7 +252,7 @@ export class StickyRouter {
     if (!previous || previous.from !== current.source.id || previous.source !== best.source.id || estimate.samples < previous.samples || estimate.at <= previous.at) return;
     return best;
   }
-  async complete(request: ModelRequest, signal: AbortSignal, fallback?: (reason: SourceError, signal: AbortSignal) => Promise<Completion>): Promise<Completion> {
+  async complete(request: ModelRequest, signal: AbortSignal, fallback?: (reason: SourceError, signal: AbortSignal) => Promise<Completion>, skipped = new Map<string, string>()): Promise<Completion> {
     signal = AbortSignal.any([signal, this.shutdown.signal]);
     signal.throwIfAborted();
     await this.observation.refreshRoutingHistory();
@@ -287,7 +287,12 @@ export class StickyRouter {
     };
     let yieldedMetadata = false, idleWaitEnds: number | undefined;
     const observation = this.observation;
-    const skip = (source: string, reason: NonNullable<DiagnosticEvent['reason']>) => this.options.observe?.(source, reason, true);
+    const skip = (source: string, reason: NonNullable<DiagnosticEvent['reason']>) => {
+      this.options.observe?.(source, reason, true);
+      const code = reason === 'cooldown' || reason === 'retired' ? this.cooldown(source)?.code : undefined;
+      const detail = observation.routeSkip(source, reason, code);
+      if (detail) skipped.set(source, detail);
+    };
     const dispatchBlockReason = (id: string): DiagnosticEvent['reason'] => {
       const adapter = this.options.registry().adapters.find(a => a.id === id
         && this.registered(a.id));
@@ -468,7 +473,12 @@ export class StickyRouter {
           const failure = error instanceof SourceError ? error : new SourceError('upstream', 'Adapter request failed');
           if (failure.output) task.output = failure.output;
           if (failure.code === 'cancelled') throw failure;
-          if (localRequestRefusal(failure)) refused.add(selected.source.id);
+          if (localRequestRefusal(failure)) {
+            refused.add(selected.source.id);
+            skipped.set(selected.source.id, 'rejected the tool definitions or tool history');
+          } else {
+            skipped.set(selected.source.id, observation.routeFailure(selected.source.id, failure.code) ?? 'request failed');
+          }
           await this.recordFailure(selected.source.id, failure);
           signal.throwIfAborted();
           if (!canReplay(failure)) throw failure;
