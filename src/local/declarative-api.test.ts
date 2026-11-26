@@ -624,3 +624,46 @@ it('rejects nonzero monetary fields in catalog offers even alongside a free flag
     .rejects.toMatchObject({ code: 'refused', message: expect.stringContaining('non-zero usage cost') });
   await source.close();
 });
+
+it.each(['expires', 'inactive', 'mutated'] as const)('rechecks registry entry and expiry after pending DNS lookup before opening catalog or completion HTTPS (%s)', async change => {
+  // 1) Catalog (/models) DNS pending while promo expires, retires, or mutates.
+  let clock = Date.parse('2026-12-31T23:59:59Z');
+  let catalogAdapter = promoAdapter({ expires: '2026-12-31' });
+  await approve(catalogAdapter);
+  let resolveCatalogDns!: (records: { address: string; family: number }[]) => void;
+  const catalogLookup = vi.fn(() => new Promise<{ address: string; family: number }[]>(resolve => { resolveCatalogDns = resolve; })) as unknown as typeof declarativeTransport.lookup;
+  const catalogHttps = vi.fn() as unknown as typeof declarativeTransport.request;
+  const catalogSource = new DeclarativeApi(catalogAdapter.id, {
+    directory, adapter: () => catalogAdapter, lookup: catalogLookup, httpsRequest: catalogHttps, now: () => clock,
+    loadGrant: async () => ({ base_url: PROMO_ORIGIN, token: 'synthetic-key' })
+  });
+  const pendingCatalog = catalogSource.complete(sampleRequest(), AbortSignal.timeout(3000));
+  await vi.waitFor(() => expect(catalogLookup).toHaveBeenCalledOnce());
+  if (change === 'expires') clock = Date.parse('2027-01-01T00:00:00Z');
+  if (change === 'inactive') catalogAdapter = promoAdapter({ expires: '2026-12-31', status: 'inactive' });
+  if (change === 'mutated') catalogAdapter = promoAdapter({ expires: '2026-12-31', model: 'swapped-model' });
+  resolveCatalogDns([{ address: '93.184.216.34', family: 4 }]);
+  await expect(pendingCatalog).rejects.toMatchObject({ code: 'refused', message: expect.stringContaining('expired or changed before connection') });
+  expect(catalogHttps).not.toHaveBeenCalled();
+  await catalogSource.close();
+
+  // 2) Completion (/chat/completions) DNS pending while promo expires, retires, or mutates.
+  clock = Date.parse('2026-12-31T23:59:59Z');
+  let completionAdapter = promoAdapter({ expires: '2026-12-31', declarative: { ...promoAdapter().declarative, zeroPriceCheck: 'none' } });
+  let resolveCompletionDns!: (records: { address: string; family: number }[]) => void;
+  const completionLookup = vi.fn(() => new Promise<{ address: string; family: number }[]>(resolve => { resolveCompletionDns = resolve; })) as unknown as typeof declarativeTransport.lookup;
+  const completionHttps = vi.fn() as unknown as typeof declarativeTransport.request;
+  const completionSource = new DeclarativeApi(completionAdapter.id, {
+    directory, adapter: () => completionAdapter, lookup: completionLookup, httpsRequest: completionHttps, now: () => clock,
+    loadGrant: async () => ({ base_url: PROMO_ORIGIN, token: 'synthetic-key' })
+  });
+  const pendingCompletion = completionSource.complete(sampleRequest(), AbortSignal.timeout(3000));
+  await vi.waitFor(() => expect(completionLookup).toHaveBeenCalledOnce());
+  if (change === 'expires') clock = Date.parse('2027-01-01T00:00:00Z');
+  if (change === 'inactive') completionAdapter = promoAdapter({ expires: '2026-12-31', status: 'expiring', declarative: { ...promoAdapter().declarative, zeroPriceCheck: 'none' } });
+  if (change === 'mutated') completionAdapter = promoAdapter({ expires: '2026-12-31', declarative: { ...promoAdapter().declarative, zeroPriceCheck: 'none', apiPath: '/v2/paid/completions' } });
+  resolveCompletionDns([{ address: '93.184.216.34', family: 4 }]);
+  await expect(pendingCompletion).rejects.toMatchObject({ code: 'refused', message: expect.stringContaining('expired or changed before connection') });
+  expect(completionHttps).not.toHaveBeenCalled();
+  await completionSource.close();
+});

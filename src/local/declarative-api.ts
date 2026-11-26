@@ -69,6 +69,7 @@ export const declarativeTransport = {
 export function createPublicHttpsFetcher(options: {
   lookup?: typeof dnsLookup;
   request?: typeof httpsRequest;
+  beforeConnect?: () => void;
 } = {}): typeof fetch {
   return async (input, init) => {
     const signal = init?.signal ?? undefined;
@@ -87,6 +88,9 @@ export function createPublicHttpsFetcher(options: {
     if (!addresses.length || addresses.some(record => !isPublicResolvedAddress(record.address))) {
       throw new SourceError('refused', 'Resolved host address is not a public IP');
     }
+    // Recheck registry state and expiry synchronously after DNS resolves,
+    // immediately before opening the HTTPS socket.
+    options.beforeConnect?.();
     const pinned = addresses[0]!;
     const headers: Record<string, string> = {};
     new Headers(init?.headers).forEach((value, key) => { headers[key] = value; });
@@ -374,11 +378,19 @@ export class DeclarativeApi implements Source {
     return (this.options.now ?? Date.now)();
   }
 
-  private transport(): typeof fetch {
+  private transport(beforeConnect?: () => void): typeof fetch {
     return this.options.fetcher ?? createPublicHttpsFetcher({
       ...(this.options.lookup ? { lookup: this.options.lookup } : {}),
-      ...(this.options.httpsRequest ? { request: this.options.httpsRequest } : {})
+      ...(this.options.httpsRequest ? { request: this.options.httpsRequest } : {}),
+      ...(beforeConnect ? { beforeConnect } : {})
     });
+  }
+
+  private assertActiveEntry(expected: DeclarativeAdapter): void {
+    const current = this.entry();
+    if (!current || declarativeRetired(current, this.now) || !sameDeclarativeEntry(expected, current)) {
+      throw new SourceError('refused', `${this.id} declarative free offer expired or changed before connection`);
+    }
   }
 
   private entry(): DeclarativeAdapter | undefined {
@@ -415,7 +427,7 @@ export class DeclarativeApi implements Source {
       const modelsPath = adapter.declarative.modelsEndpoint;
       if (!safeApiPath(modelsPath)) return undefined;
       const signal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(5000), ...(caller ? [caller] : [])]);
-      const response = await diagnosticFetch(this.transport(), this.id, 'models')(`${grant.base_url}${modelsPath}`, {
+      const response = await diagnosticFetch(this.transport(() => this.assertActiveEntry(adapter)), this.id, 'models')(`${grant.base_url}${modelsPath}`, {
         method: 'GET',
         redirect: 'error',
         signal,
@@ -487,7 +499,7 @@ export class DeclarativeApi implements Source {
     let completionFailure: FailureReason | undefined;
     try {
       observeAttemptDispatch({ model: current.model, account: 'vaulted', maxOutputTokens: request.maxTokens });
-      const response = await diagnosticFetch(this.transport(), this.id, 'chat.completions')(`${grant.base_url}${current.declarative.apiPath}`, {
+      const response = await diagnosticFetch(this.transport(() => this.assertActiveEntry(current)), this.id, 'chat.completions')(`${grant.base_url}${current.declarative.apiPath}`, {
         method: 'POST',
         redirect: 'error',
         signal,
