@@ -5,8 +5,10 @@ Grunt uses `usegrunt`, the `grunt` model/provider ID, `GRUNT_*` settings and
 
 ## Compatibility with existing installations
 
-The former `milo`/`milo-local` commands, `MILO_*` settings, model and MCP aliases
-remain accepted for existing clients. `GRUNT_*` settings take precedence. Existing
+The former `milo`/`milo-local` commands, pre-rename `MILO_*` settings, model and MCP aliases
+remain accepted for existing clients. `GRUNT_*` settings take precedence, and newer
+Grunt-era settings (such as `GRUNT_BACKGROUND_ACCOUNT_ACQUISITION`, `GRUNT_FLEET_REPORTING`,
+and `GRUNT_OPT_IN_SOURCES`) only accept the `GRUNT_*` prefix. Existing
 private configuration under `~/.config/milo` and an installed `milo.service` are
 reused so saved logins, custom ports and consent receipts are preserved. New
 installations use Grunt names. These are migration aliases, not current branding.
