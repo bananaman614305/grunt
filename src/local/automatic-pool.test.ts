@@ -24,10 +24,10 @@ it('adds newly curated sources only for the matching managed service anchor', as
   expect(await readFile(join(path, AUTOMATIC_POOL_FILE), 'utf8')).not.toMatch(/token|consent|key|grant|approved/);
 });
 
-it('preserves supported explicit additions and the custom API router on an older managed service', async () => {
+it('preserves supported explicit additions on an older managed service', async () => {
   const path = await directory();
-  await writeAutomaticPool(path, configured, ['kilo', 'antseed-vikey', 'freellmapi']);
-  expect(automaticPoolSelection(path, configured, curated, true).sources).toEqual(['opencode', 'kilo', 'antseed-vikey', 'freellmapi', 'reflection-beam']);
+  await writeAutomaticPool(path, configured, ['kilo', 'antseed-vikey']);
+  expect(automaticPoolSelection(path, configured, curated, true).sources).toEqual(['opencode', 'kilo', 'antseed-vikey', 'reflection-beam']);
   expect(automaticPoolSelection(path, ['opencode'], curated, true).sources).toEqual(['opencode']);
   await expect(writeAutomaticPool(path, configured, ['https://example.test/v1'])).rejects.toThrow('Invalid managed');
 });
@@ -36,7 +36,7 @@ it('keeps old receipt compatibility without treating malformed selected source d
   const path = await directory(), file = join(path, AUTOMATIC_POOL_FILE);
   await writeFile(file, JSON.stringify({ version: 1, mode: 'automatic', serviceSources: configured }), { mode: 0o600 });
   expect(automaticPoolSelection(path, configured, curated, true).sources).toEqual(curated);
-  for (const value of [[], ['antseed-vikey', 'antseed-vikey'], ['unknown-source'], ['clixad', 'unknown-source'], ['https://example.test/v1'], 'antseed-vikey']) {
+  for (const value of [['antseed-vikey', 'antseed-vikey'], ['https://example.test/v1'], 'antseed-vikey']) {
     await writeFile(file, JSON.stringify({ version: 1, mode: 'automatic', serviceSources: configured, selectedSources: value }));
     expect(automaticPoolSelection(path, configured, curated, true).sources).toEqual(configured);
   }
@@ -64,6 +64,20 @@ it.each([
   expect(await readFile(file, 'utf8')).toBe(saved);
   const after = await stat(file);
   expect([after.dev, after.ino, after.mtimeMs]).toEqual([before.dev, before.ino, before.mtimeMs]);
+});
+
+it('ignores removed sources recorded by an older managed service and keeps its supported routes', async () => {
+  const path = await directory();
+  const serviceSources = ['opencode', 'freellmapi', 'dots'];
+  await writeFile(join(path, AUTOMATIC_POOL_FILE), JSON.stringify({
+    version: 1, mode: 'automatic', serviceSources,
+    selectedSources: ['opencode', 'freellmapi', 'dots', 'antseed-vikey']
+  }), { mode: 0o600 });
+  const sources = configure({ GRUNT_CONFIG_DIR: path, GRUNT_DAEMON: '1', GRUNT_SOURCES: serviceSources.join(',') },
+    () => ({ ...bundledRegistry, adapters: bundledRegistry.adapters.filter(adapter => curated.includes(adapter.id)) }));
+  try {
+    expect(sources.sources.map(source => source.id)).toEqual(['opencode', 'antseed-vikey', 'kilo', 'reflection-beam']);
+  } finally { await sources.close(); }
 });
 
 it('does not re-enroll removed Clixad or unknown IDs in newly written explicit source selections', async () => {

@@ -100,7 +100,7 @@ it('never launches Codex for default-config API requests', async () => {
   const fetcher = vi.fn(async () => Response.json({ choices: [{ message: { content: 'free answer' } }] }));
   vi.stubGlobal('fetch', fetcher);
   try {
-    const sources = configure({ GRUNT_FREELLMAPI_KEY: 'test' });
+    const sources = configure({});
     for (const source of sources.sources) { vi.spyOn(source, 'available').mockResolvedValue(true); vi.spyOn(source, 'complete').mockResolvedValue({ text: 'free answer' }); }
     const app = createLocalApp(sources);
     for (const model of ['grunt', 'codex']) {
@@ -113,6 +113,6 @@ it('never launches Codex for default-config API requests', async () => {
     }
     expect(sources.sources.map(s => s.id)).toEqual(bundledRegistry.adapters.map(adapter => adapter.id));
     expect(fs.existsSync(join(dir, 'calls'))).toBe(false);
-    expect(configure({ GRUNT_SOURCES: 'opencode,codex,freellmapi' }).sources.map(s => s.id)).toEqual(['opencode', 'codex', 'freellmapi']);
+    expect(configure({ GRUNT_SOURCES: 'opencode,codex' }).sources.map(s => s.id)).toEqual(['opencode', 'codex']);
   } finally { vi.unstubAllGlobals(); }
 });

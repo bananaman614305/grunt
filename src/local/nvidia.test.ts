@@ -6,7 +6,7 @@ import { createLocalApp } from './api.js';
 import { Sources } from './source.js';
 import { configure } from './main.js';
 import { Nvidia, NVIDIA_DEEPSEEK, readNvidiaGrant, writeNvidiaGrant } from './nvidia.js';
-import { BrowserSquire, FreeLLMAdmin, setup } from './setup.js';
+import { BrowserSquire, setup } from './setup.js';
 import { setupFallbacks } from './fallback-setup.js';
 import { bundledRegistry, validateRegistry } from '../registry.js';
 
@@ -68,7 +68,6 @@ it.each(['http://grant.test', 'https://user:pass@grant.test', 'https://grant.tes
 
 it('provisions NVIDIA without a local aggregator and reuses valid access', async () => {
   const path = await directory(); vi.stubEnv('GRUNT_CONFIG_DIR', path);
-  const backend = vi.spyOn(FreeLLMAdmin.prototype, 'call').mockRejectedValue(new Error('must not contact any aggregator'));
   const output: string[] = [];
   const squire = {
     credentials: { list: vi.fn(async () => [{ service: 'nvidia', reference: 'vault://nvidia', field_names: ['NVIDIA_API_KEY'] }]), grant: vi.fn(async () => grant) },
@@ -78,7 +77,7 @@ it('provisions NVIDIA without a local aggregator and reuses valid access', async
   for (let i = 0; i < 2; i++) await setup(line => output.push(line), ['nvidia'], { squire });
   expect(squire.runs.start).not.toHaveBeenCalled(); expect(squire.credentials.grant).toHaveBeenCalledOnce();
   expect(await readNvidiaGrant(path)).toEqual(grant); expect(await readdir(path)).toEqual(['nvidia.json']);
-  expect(backend).not.toHaveBeenCalled(); expect(JSON.stringify(output)).not.toContain('synthetic-grant');
+  expect(JSON.stringify(output)).not.toContain('synthetic-grant');
   expect(output.some(line => line.startsWith('kilo:'))).toBe(false);
   expect(JSON.parse(await readFile(join(path, 'nvidia.json'), 'utf8'))).toEqual(grant);
 });

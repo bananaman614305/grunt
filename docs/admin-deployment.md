@@ -193,7 +193,7 @@ cached local diagnostics and uploads only the approved projection.
    diagnostics arrive. Invalid ingestion credentials and unlisted instance IDs
    must be denied. A machine read token must not authorize ingestion or logout.
 6. Restart the backend in a controlled window and verify persistent diagnostic
-   history remains. Check the existing relay, `/health` and registry routes.
+   history remains. Check `/health` and the registry routes.
 7. Confirm viewing the dashboard does not consume inference allowance. Inspect
    exports for the absence of keys, cookies, OAuth codes, signed handoff URLs,
    prompt text, source code and raw upstream error payloads.

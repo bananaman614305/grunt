@@ -27,7 +27,9 @@ import { automaticPoolSelection } from './automatic-pool.js';
 let directory: string;
 const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
 beforeEach(async () => {
-  vi.clearAllMocks(); fixture.holdNpm = false; fixture.child = undefined; fixture.abortAt = undefined;
+  vi.clearAllMocks();
+  vi.stubGlobal('fetch', vi.fn(async () => new Response('ok')));
+  fixture.holdNpm = false; fixture.child = undefined; fixture.abortAt = undefined;
   fixture.serviceEnvironment = '';
   fixture.execFile.mockImplementation(async () => ({ stdout: fixture.serviceEnvironment, stderr: '' }));
   fixture.controller = new AbortController();
@@ -52,7 +54,7 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   Object.defineProperty(process, 'platform', platform);
-  vi.unstubAllEnvs(); vi.restoreAllMocks();
+  vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.restoreAllMocks();
   await rm(directory, { recursive: true, force: true });
 });
 
@@ -145,62 +147,81 @@ it('keeps the no-options installation API compatible', async () => {
 });
 
 it('writes Grunt service identity and primary environment names for a fresh install', async () => {
-  vi.stubEnv('GRUNT_FREELLMAPI_URL', 'http://127.0.0.1:3301/v1');
   await installService(['kilo']);
   const unit = await readFile(join(directory, 'xdg/systemd/user/grunt.service'), 'utf8');
   expect(unit).toContain('GRUNT_CONFIG_DIR='); expect(unit).toContain('GRUNT_PORT=18792');
-  expect(unit).toContain('GRUNT_SOURCES=kilo'); expect(unit).toContain('GRUNT_FREELLMAPI_URL=http://127.0.0.1:3301/v1');
+  expect(unit).toContain('GRUNT_SOURCES=kilo');
   expect(unit).not.toContain('MILO_');
   const runtimePkg = JSON.parse(await readFile(join(directory, 'grunt/runtime/package.json'), 'utf8'));
   expect(runtimePkg.name).toBe('grunt-runtime');
   expect(runtimePkg.dependencies).toHaveProperty('hono');
   expect(runtimePkg.dependencies).not.toHaveProperty('standardwebhooks');
-  expect(runtimePkg.dependencies).not.toHaveProperty('ipaddr.js');
+  expect(runtimePkg.dependencies).toHaveProperty('ipaddr.js');
   expect(runtimePkg.dependencies).not.toHaveProperty('@trusty-squire/sdk');
 });
 
-it.each(['milo', 'grunt'])('preserves the installed %s unit, custom drop-in and effective port without creating a duplicate', async identity => {
+it.each(['milo', 'grunt'])('uses grunt.service and keeps the effective port and overrides when setup finds %s', async identity => {
   const units = join(directory, 'xdg/systemd/user'), unit = join(units, `${identity}.service`), dropIn = join(units, `${identity}.service.d/custom.conf`);
   const prefix = identity.toUpperCase();
   const entry = join(directory, 'grunt/runtime/dist/local/main.js');
   const original = `[Service]\nExecStart="${process.execPath}" "${entry}"\nEnvironment="${prefix}_CONFIG_DIR=${join(directory, 'grunt')}"\nEnvironment="${prefix}_PORT=8788"\n`;
-  const custom = `[Service]\nEnvironment="${prefix}_PORT=8792"\nEnvironment="${prefix}_FREELLMAPI_URL=http://127.0.0.1:3301/v1"\n`;
+  const custom = `[Service]\nEnvironment="${prefix}_PORT=8792"\nEnvironment="${prefix}_OPENCODE_URL=http://127.0.0.1:3301/v1"\n`;
   await mkdir(join(units, `${identity}.service.d`), { recursive: true });
   await writeFile(unit, original, { mode: 0o600 }); await writeFile(dropIn, custom, { mode: 0o600 });
-  fixture.serviceEnvironment = `${prefix}_CONFIG_DIR=${join(directory, 'grunt')} ${prefix}_PORT=8792 ${prefix}_SOURCES=opencode,kilo ${prefix}_FREELLMAPI_URL=http://127.0.0.1:3301/v1`;
-  await installService(['kilo', 'antseed-vikey', 'freellmapi']);
-  expect(await readFile(unit, 'utf8')).toBe(original); expect(await readFile(dropIn, 'utf8')).toBe(custom);
-  expect(fixture.spawn.mock.calls.map(([binary, args]) => [binary, args])).toEqual([
-    ['npm', expect.any(Array)], ['systemctl', ['--user', 'enable', `${identity}.service`]],
-    ['loginctl', ['--no-ask-password', 'enable-linger']], ['systemctl', ['--user', 'restart', `${identity}.service`]]
-  ]);
+  fixture.serviceEnvironment = `${prefix}_CONFIG_DIR=${join(directory, 'grunt')} ${prefix}_PORT=8792 ${prefix}_SOURCES=opencode,kilo ${prefix}_OPENCODE_URL=http://127.0.0.1:3301/v1`;
+  await installService(['kilo', 'antseed-vikey']);
+  const current = await readFile(join(units, 'grunt.service'), 'utf8');
+  expect(await readFile(join(units, 'grunt.service.d/custom.conf'), 'utf8')).toBe(custom);
+  if (identity === 'milo') {
+    expect(current).toContain('Environment="GRUNT_PORT=8792"');
+    expect(current).toContain('Environment="GRUNT_OPENCODE_URL=http://127.0.0.1:3301/v1"');
+    expect(fixture.spawn.mock.calls.map(([, args]) => args)).toContainEqual(['--user', 'stop', 'milo.service']);
+    expect(fixture.execFile.mock.calls.map(([, args]) => args)).toEqual(expect.arrayContaining([
+      ['--user', 'disable', 'milo.service'], ['--user', 'enable', 'grunt.service'], ['--user', 'start', 'grunt.service']
+    ]));
+  } else {
+    expect(current).toBe(original);
+    expect(fixture.spawn.mock.calls.map(([, args]) => args)).toContainEqual(['--user', 'restart', 'grunt.service']);
+  }
   expect(JSON.parse(await readFile(join(directory, 'grunt/installed-port.json'), 'utf8'))).toBe(8792);
   // The owned service file can keep its old source environment while setup
   // enrolls newly curated sources through a private, matching selection anchor.
-  expect(automaticPoolSelection(join(directory, 'grunt'), ['opencode', 'kilo'], ['opencode', 'kilo', 'reflection-beam'], true).sources).toEqual(['opencode', 'kilo', 'antseed-vikey', 'freellmapi', 'reflection-beam']);
+  expect(automaticPoolSelection(join(directory, 'grunt'), ['opencode', 'kilo'], ['opencode', 'kilo', 'reflection-beam'], true).sources).toEqual(['opencode', 'kilo', 'antseed-vikey', 'reflection-beam']);
   expect(automaticPoolSelection(join(directory, 'grunt'), ['kilo'], ['opencode', 'kilo', 'reflection-beam'], true).sources).toEqual(['kilo']);
-  expect(JSON.parse(await readFile(join(directory, 'grunt/installed-sources.json'), 'utf8'))).toEqual(['kilo', 'antseed-vikey', 'freellmapi']);
-  await expect(readFile(join(units, `${identity === 'grunt' ? 'milo' : 'grunt'}.service`), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(JSON.parse(await readFile(join(directory, 'grunt/installed-sources.json'), 'utf8'))).toEqual(['kilo', 'antseed-vikey']);
+  await expect(readFile(join(units, 'milo.service'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
-it('preserves the legacy native router service identity and saved environment', async () => {
-  const unit = join(directory, 'xdg/systemd/user/milo-router.service'), entry = join(directory, 'grunt/runner.mjs');
-  const original = `[Service]\nExecStart="${process.execPath}" "${entry}"\nEnvironment="MILO_ROUTER_ENTRY=/saved/router/server.js"\n`;
-  await mkdir(join(directory, 'xdg/systemd/user'), { recursive: true }); await writeFile(unit, original, { mode: 0o600 });
-  await installBackgroundService('grunt-router', entry, { GRUNT_ROUTER_ENTRY: '/new/router/server.js' });
-  expect(await readFile(unit, 'utf8')).toBe(original);
-  expect(fixture.spawn.mock.calls.map(([, args]) => args)).toEqual([
-    ['--user', 'enable', 'milo-router.service'], ['--no-ask-password', 'enable-linger'], ['--user', 'restart', 'milo-router.service']
-  ]);
-  await expect(readFile(join(directory, 'xdg/systemd/user/grunt-router.service'))).rejects.toMatchObject({ code: 'ENOENT' });
+it('restores the old runtime before restarting the legacy unit when migration cannot start Grunt', async () => {
+  const units = join(directory, 'xdg/systemd/user'), oldUnit = join(units, 'milo.service');
+  const state = join(directory, 'grunt'), runtime = join(state, 'runtime');
+  const entry = join(runtime, 'dist/local/main.js');
+  const original = `[Service]\nExecStart="${process.execPath}" "${entry}"\n`;
+  await mkdir(units, { recursive: true });
+  await writeFile(oldUnit, original, { mode: 0o600 });
+  await mkdir(runtime, { mode: 0o700 });
+  const oldRuntime = join(runtime, 'previous-runtime');
+  await writeFile(oldRuntime, 'old runtime');
+  fixture.execFile.mockImplementation(async (_binary: string, args: string[]) => {
+    if (args.includes('Environment')) return { stdout: `MILO_CONFIG_DIR=${state} MILO_PORT=8792 MILO_SOURCES=opencode` };
+    if (args.includes('ActiveState')) return { stdout: 'active' };
+    if (args.includes('UnitFileState')) return { stdout: 'enabled' };
+    if (args.includes('start') && args.includes('grunt.service')) throw new Error('Synthetic start failure');
+    if (args.includes('start') && args.includes('milo.service')) expect(await readFile(oldRuntime, 'utf8')).toBe('old runtime');
+    return { stdout: '' };
+  });
+  await expect(installService(['kilo'])).rejects.toThrow('Synthetic start failure');
+  expect(await readFile(oldUnit, 'utf8')).toBe(original);
+  await expect(readFile(join(units, 'grunt.service'))).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(fixture.execFile.mock.calls.map(([, args]) => args)).toContainEqual(['--user', 'start', 'milo.service']);
 });
 
 it('does not start either identity when duplicate legacy and Grunt services are installed', async () => {
-  const units = join(directory, 'xdg/systemd/user'), entry = join(directory, 'grunt/runner.mjs');
+  const units = join(directory, 'xdg/systemd/user'), entry = join(directory, 'grunt/runtime/dist/local/main.js');
   const original = `[Service]\nExecStart="${process.execPath}" "${entry}"\n`;
   await mkdir(units, { recursive: true });
-  for (const name of ['grunt-router', 'milo-router']) await writeFile(join(units, `${name}.service`), original, { mode: 0o600 });
-  await expect(installBackgroundService('grunt-router', entry, {})).rejects.toThrow('Multiple Grunt service identities');
+  for (const name of ['grunt', 'milo']) await writeFile(join(units, `${name}.service`), original, { mode: 0o600 });
+  await expect(installBackgroundService(entry, {})).rejects.toThrow('Multiple Grunt service identities');
   expect(fixture.spawn).not.toHaveBeenCalled();
 });
 
@@ -213,22 +234,24 @@ it('writes a primary Grunt launch agent for a fresh macOS installation', async (
   expect(fixture.spawn.mock.calls.at(-1)![1]).toEqual(['bootstrap', `gui/${process.getuid!()}`, join(directory, 'home/Library/LaunchAgents/ai.grunt.service.plist')]);
 });
 
-it('reuses the legacy macOS launch agent and preserves its port and endpoint settings', async () => {
+it('replaces the legacy macOS launch agent and preserves its port and endpoint settings', async () => {
   Object.defineProperty(process, 'platform', { ...platform, value: 'darwin' });
   const file = join(directory, 'home/Library/LaunchAgents/ai.milo.service.plist');
   const entry = join(directory, 'grunt/runtime/dist/local/main.js');
-  const original = `<plist><array><string>${process.execPath}</string><string>${entry}</string></array><dict><key>MILO_PORT</key><string>8792</string><key>MILO_FREELLMAPI_URL</key><string>http://127.0.0.1:3301/v1</string></dict></plist>`;
+  const original = `<plist><array><string>${process.execPath}</string><string>${entry}</string></array><dict><key>MILO_PORT</key><string>8792</string><key>MILO_OPENCODE_URL</key><string>http://127.0.0.1:3301/v1</string></dict></plist>`;
   await mkdir(join(directory, 'home/Library/LaunchAgents'), { recursive: true }); await writeFile(file, original, { mode: 0o600 });
   fixture.execFile.mockImplementation(async (_binary: string, args: string[]) => {
-    if (args.includes('EnvironmentVariables.MILO_CONFIG_DIR')) return { stdout: join(directory, 'grunt') + '\n' };
-    if (args.includes('EnvironmentVariables.MILO_PORT')) return { stdout: '8792\n' };
-    throw new Error('Synthetic primary plist variable is absent');
+    if (args.includes('EnvironmentVariables')) return { stdout: JSON.stringify({
+      MILO_CONFIG_DIR: join(directory, 'grunt'), MILO_PORT: '8792', MILO_OPENCODE_URL: 'http://127.0.0.1:3301'
+    }) };
+    return { stdout: '' };
   });
   await installService(['kilo']);
-  expect(await readFile(file, 'utf8')).toBe(original);
-  expect(fixture.spawn.mock.calls.slice(1).map(([, args]) => args)).toEqual([
-    ['bootout', `gui/${process.getuid!()}/ai.milo.service`], ['bootstrap', `gui/${process.getuid!()}`, file]
-  ]);
+  const replacement = join(directory, 'home/Library/LaunchAgents/ai.grunt.service.plist');
+  expect(await readFile(replacement, 'utf8')).toContain('<key>GRUNT_OPENCODE_URL</key><string>http://127.0.0.1:3301</string>');
+  expect(fixture.execFile.mock.calls.map(([, args]) => args)).toEqual(expect.arrayContaining([
+    ['bootout', `gui/${process.getuid!()}/ai.milo.service`], ['bootstrap', `gui/${process.getuid!()}`, replacement]
+  ]));
   expect(JSON.parse(await readFile(join(directory, 'grunt/installed-port.json'), 'utf8'))).toBe(8792);
-  await expect(readFile(join(directory, 'home/Library/LaunchAgents/ai.grunt.service.plist'))).rejects.toMatchObject({ code: 'ENOENT' });
+  await expect(readFile(file)).rejects.toMatchObject({ code: 'ENOENT' });
 });

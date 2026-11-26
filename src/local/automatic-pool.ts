@@ -10,11 +10,11 @@ interface AutomaticPool { version: 1; mode: 'automatic'; serviceSources: string[
 const ids = (value: unknown): value is string[] => Array.isArray(value) && value.length > 0 && value.length <= 100
   && value.every(id => typeof id === 'string' && /^[a-z][a-z0-9-]{0,63}$/.test(id)) && new Set(value).size === value.length;
 const same = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((id, i) => b[i] === id);
-const selected = (value: unknown, allowRetired = false): value is string[] => ids(value) && value.every(id => knownAdapters.has(id) || localOptInAdapterIds.has(id) || id === 'freellmapi' || allowRetired && disabledAdapters.has(id));
+const supported = (id: string) => (knownAdapters.has(id) || localOptInAdapterIds.has(id)) && !disabledAdapters.has(id);
 const owned = (stat: Stats, mode: number) => !stat.isSymbolicLink() && stat.uid === process.getuid?.() && (stat.mode & 0o777) === mode;
 const serialized = (serviceSources: readonly string[], selectedSources: readonly string[] = serviceSources) => {
-  if (!ids(serviceSources) || !selected(selectedSources)) throw new Error('Invalid managed Grunt source selection');
-  return JSON.stringify({ version: 1, mode: 'automatic', serviceSources, selectedSources } satisfies AutomaticPool);
+  if (!ids(serviceSources) || (selectedSources.length > 0 && !ids(selectedSources)) || selectedSources.some(id => !supported(id))) throw new Error('Invalid managed Grunt source selection');
+  return JSON.stringify({ version: 1, mode: 'automatic', serviceSources, selectedSources: [...selectedSources] } satisfies AutomaticPool);
 };
 
 // This receipt changes source discovery only. It never grants provider access,
@@ -30,12 +30,13 @@ export function automaticPoolSelection(directory: string, configured: readonly s
     if (!info.isFile() || !owned(info, 0o600) || info.size > 16384) return { sources: [...configured], automatic: false };
     const value = JSON.parse(readFileSync(fd, 'utf8')) as Partial<AutomaticPool>;
     if (value.version !== 1 || value.mode !== 'automatic' || !ids(value.serviceSources) || !same(value.serviceSources, configured)) return { sources: [...configured], automatic: false };
-    // An upgrade can remove a formerly selected provider. Its retired ID remains
-    // valid receipt history, not access authority; configure still filters it.
-    if (value.selectedSources !== undefined && !selected(value.selectedSources, true)) return { sources: [...configured], automatic: false };
-    // Setup may explicitly add a supported source outside the curated pool.
-    // Keep that selection even when the owned service still has its old env.
-    return { sources: [...new Set([...configured, ...(value.selectedSources ?? []), ...curated])], automatic: true, explicit: [...new Set([...configured, ...(value.selectedSources ?? [])])] };
+    if (value.selectedSources !== undefined && (!Array.isArray(value.selectedSources)
+      || value.selectedSources.length > 0 && !ids(value.selectedSources))) return { sources: [...configured], automatic: false };
+    // The old selection can contain removed adapters and supported opt-ins.
+    // Keep the service's anchor intact and ignore unsupported saved additions.
+    const selectedSources = (value.selectedSources ?? []).filter(id => supported(id) || disabledAdapters.has(id));
+    const explicit = [...new Set([...configured, ...selectedSources])];
+    return { sources: [...new Set([...explicit, ...curated])], automatic: true, explicit };
   } catch { return { sources: [...configured], automatic: false }; }
   finally { if (fd !== undefined) closeSync(fd); }
 }
@@ -71,8 +72,9 @@ export async function migrateAutomaticPool(directory: string, serviceSources: re
     if (!ids(installed) || !same(installed, serviceSources)) return;
   } catch { return; }
   finally { await handle?.close(); }
-  await writeAutomaticPool(directory, serviceSources);
-  const written = serialized(serviceSources);
+  const selectedSources = serviceSources.filter(supported);
+  await writeAutomaticPool(directory, serviceSources, selectedSources);
+  const written = serialized(serviceSources, selectedSources);
   return async () => {
     // Preserve any user change made during activation instead of rolling it back.
     let current: string;
