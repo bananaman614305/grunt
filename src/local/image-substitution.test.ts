@@ -156,3 +156,71 @@ it('still reports a real quota wait as quota when nothing is wrong with the moda
   const failure = await sources.complete({ model: 'grunt', messages: [{ role: 'user', content: 'x' }], tools: [], cwd: '/tmp', stream: false }, AbortSignal.timeout(2000)).catch(error => error);
   expect(failure).toMatchObject({ code: 'quota' }); expect(failure).not.toBeInstanceOf(RequestError);
 });
+
+it('preserves structured image content parts across Chat Completions, Responses, and Anthropic Messages when omitImages is false', () => {
+  const chat = decode({ model: 'grunt', messages: [
+    { role: 'user', content: 'plain text stays a string' },
+    { role: 'user', content: [{ type: 'text', text: 'inspect' }, { type: 'image_url', image_url: { url: `data:image/png;base64,${png}`, detail: 'high' } }, { type: 'image_url', image_url: 'https://example.com/diagram.png' }] }
+  ] }, 'chat', '/tmp');
+  expect(chat.imageInput).toBe(true);
+  expect(chat.messages).toEqual([
+    { role: 'user', content: 'plain text stays a string' },
+    { role: 'user', content: [
+      { type: 'text', text: 'inspect' },
+      { type: 'image_url', image_url: { url: `data:image/png;base64,${png}`, detail: 'high' } },
+      { type: 'image_url', image_url: { url: 'https://example.com/diagram.png' } }
+    ] }
+  ]);
+
+  const responses = decode({ model: 'grunt', input: [
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'plain only' }] },
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'see this' }, { type: 'input_image', image_url: `data:image/png;base64,${png}`, detail: 'low' }] },
+    { type: 'function_call', call_id: 'c1', name: 'capture', arguments: '{}' },
+    { type: 'function_call_output', call_id: 'c1', output: [{ type: 'input_text', text: 'captured' }, responsesImage] }
+  ] }, 'responses', '/tmp');
+  expect(responses.imageInput).toBe(true);
+  expect(responses.messages).toEqual([
+    { role: 'user', content: 'plain only' },
+    { role: 'user', content: [
+      { type: 'text', text: 'see this' },
+      { type: 'image_url', image_url: { url: `data:image/png;base64,${png}`, detail: 'low' } }
+    ] },
+    { role: 'assistant', content: '', tool_calls: [{ id: 'c1', type: 'function', function: { name: 'capture', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'c1', content: [
+      { type: 'text', text: 'captured' },
+      { type: 'image_url', image_url: { url: `data:image/png;base64,${png}` } }
+    ] }
+  ]);
+
+  const messages = decode({ model: 'grunt', messages: [
+    { role: 'user', content: [image] },
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: { path: 'a.png' } }] },
+    { role: 'user', content: [
+      { type: 'tool_result', tool_use_id: 'toolu_1', content: [{ type: 'text', text: 'shot' }, image] },
+      { type: 'image', source: { type: 'url', url: 'https://example.com/photo.jpg' } }
+    ] }
+  ] }, 'messages', '/tmp');
+  expect(messages.imageInput).toBe(true);
+  expect(messages.messages).toEqual([
+    { role: 'user', content: [{ type: 'image_url', image_url: { url: `data:image/png;base64,${png}` } }] },
+    { role: 'assistant', content: '', tool_calls: [{ id: 'toolu_1', type: 'function', function: { name: 'Read', arguments: '{"path":"a.png"}' } }] },
+    { role: 'tool', tool_call_id: 'toolu_1', content: [{ type: 'text', text: 'shot' }, { type: 'image_url', image_url: { url: `data:image/png;base64,${png}` } }] },
+    { role: 'user', content: [{ type: 'image_url', image_url: { url: 'https://example.com/photo.jpg' } }] }
+  ]);
+
+  // Tool arguments containing {"type":"image"} never flag imageInput even when omitImages is false.
+  const toolArg = decode({ model: 'grunt', messages: [{ role: 'assistant', content: [{ type: 'tool_use', id: 't', name: 'Read', input: { type: 'image' } }] }] }, 'messages', '/tmp');
+  expect(toolArg.imageInput).toBeUndefined();
+});
+
+it('substitutes unforwardable image block references with deterministic notes on both image-capable and text-only routes', async () => {
+  const unsupported = { type: 'input_image', file_id: 'file_123' };
+  const payload = { model: 'grunt', input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'look' }, unsupported] }] };
+  expect(decode(payload, 'responses', '/tmp').messages).toEqual([{ role: 'user', content: 'look' }]);
+  for (const p of [pool({ image: ['kilo'] }), pool()]) {
+    const ok = await post(p.app, 'responses', payload);
+    expect(ok.status).toBe(200);
+    expect(p.items.flatMap(seen)[0]!.messages[0]!.content).toContain('[image omitted:');
+    expect(p.items.flatMap(seen)[0]!.imageInput).toBeUndefined();
+  }
+});

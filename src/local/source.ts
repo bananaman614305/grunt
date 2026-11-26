@@ -39,7 +39,19 @@ export const requestRefusal = (message: string, failureReason: 'request_tools' |
 export class RequestError extends SourceError {
   constructor(message: string) { super('refused', message); }
 }
-export interface Message { role: string; content: string; tool_call_id?: string; tool_calls?: ToolCall[] }
+export interface TextContentPart { type: 'text'; text: string }
+export interface ImageContentPart { type: 'image_url'; image_url: { url: string; detail?: 'auto' | 'low' | 'high' } }
+export type ContentPart = TextContentPart | ImageContentPart;
+export type MessageContent = string | ContentPart[];
+export function messageText(content: MessageContent): string {
+  return typeof content === 'string' ? content
+    : content.filter((part): part is TextContentPart => part.type === 'text').map(part => part.text).join('\n');
+}
+export function messageBytes(content: MessageContent): number {
+  return typeof content === 'string' ? Buffer.byteLength(content)
+    : content.reduce((total, part) => total + Buffer.byteLength(part.type === 'text' ? part.text : part.image_url.url), 0);
+}
+export interface Message { role: string; content: MessageContent; tool_call_id?: string; tool_calls?: ToolCall[] }
 export interface ToolCall { id: string; type: 'function'; function: { name: string; arguments: string } }
 export type Tool = { type: 'function'; function: { name: string; description?: string; parameters: unknown } } | { type: string; [key: string]: unknown };
 export interface ModelRequest {
@@ -129,7 +141,7 @@ export function observeRequestInput(request: ModelRequest) {
   const current = currentDiagnosticContext();
   current?.sink?.record({ version: 1, id: randomUUID(), at: Date.now(), type: 'request.input',
     requestId: current.requestId, kind: current.kind, model: request.model,
-    promptBytes: request.messages.reduce((total, message) => total + Buffer.byteLength(message.content), 0),
+    promptBytes: request.messages.reduce((total, message) => total + messageBytes(message.content), 0),
     ...(request.maxTokens === undefined ? {} : { maxOutputTokens: request.maxTokens }) });
 }
 // Names the adapter that produced each completion; setup checks it against the requested adapter.

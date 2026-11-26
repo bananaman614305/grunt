@@ -4,7 +4,7 @@ import { readDataSharingConsent } from './data-sharing.js';
 import { providerGrantDirectory, readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
 import { JsonToolBridge } from './json-tool-bridge.js';
 import { readPromotionalStream } from './promotional-api.js';
-import { completionEnding, emitStreamText, endingOf, hasEmittedStreamText, resetUncommittedStreamReply, withEnding, lengthLimited, truncatedCompletion, needsFunctionTools, SourceError } from './source.js';
+import { completionEnding, emitStreamText, endingOf, hasEmittedStreamText, messageText, resetUncommittedStreamReply, withEnding, lengthLimited, truncatedCompletion, needsFunctionTools, SourceError } from './source.js';
 import { diagnosticFetch, observeAttemptDispatch, recordAttemptFailure } from './diagnostics.js';
 import type { SafeDiagnosticMetadata } from './diagnostics.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
@@ -12,6 +12,9 @@ import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 export const KILO_PARTICLE = 'particle-ai/particle-1:free';
 export const KILO_BEAM = 'reflection/beam-free';
 export const KILO_CATALOG_CACHE_MS = 60000;
+export const KILO_TEXT_MAX_BYTES = 2 * 1024 * 1024;
+// Image-bearing payloads carry base64 screenshots/photos; keep them bounded without clipping realistic screenshots.
+export const KILO_IMAGE_MAX_BYTES = 16 * 1024 * 1024;
 // Free models left out of the rotation for requests that carry function tools, for lack of credibility as a coding
 // agent. Each needs evidence, not a hunch; everything else stays. Checked against Kilo's public catalog and the
 // vendors' own cards on 2026-11-25.
@@ -63,14 +66,19 @@ function status(response: Response) {
     `Kilo returned HTTP ${response.status}`, response.status === 429 ? Math.max(1, Number.isFinite(seconds) ? Math.ceil(seconds) : 60) : undefined, undefined,
     { httpStatus: response.status, transport: 'http' });
 }
+export interface KiloCatalog {
+  models: string[];
+  imageModels: string[];
+}
 /** Nonbillable public metadata only. No account, API key, or paid fallback is used.
- * Returns the verified free models this route may use, in try order. Kilo rotates
- * across verified exact `:free` models and Reflection Beam: Particle first,
+ * Returns the verified free models this route may use, in try order, together with
+ * the subset of verified `$0` `:free` models declaring `'image'` input modality.
+ * Kilo rotates across verified exact `:free` models and Reflection Beam: Particle first,
  * then Reflection Beam, then the rest in catalog order.
- * Reflection Beam's own route keeps its single model.
+ * Reflection Beam's own route keeps its single text-only model.
  * Router aliases such as kilo-auto/free are never used because their completions
  * cannot be verified as one exact model. */
-export async function verifyKiloAccess(options: { fetcher?: typeof fetch; signal?: AbortSignal; reflectionBeam?: boolean } = {}): Promise<string[]> {
+export async function verifyKiloCatalog(options: { fetcher?: typeof fetch; signal?: AbortSignal; reflectionBeam?: boolean } = {}): Promise<KiloCatalog> {
   const name = options.reflectionBeam ? 'reflection-beam' : 'kilo';
   const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(5000)]);
   try {
@@ -85,13 +93,20 @@ export async function verifyKiloAccess(options: { fetcher?: typeof fetch; signal
         && Number.isSafeInteger(model.context_length) && Number(model.context_length) >= 200000
         && Array.isArray(parameters) && ['tools', 'max_tokens'].every(key => parameters.includes(key));
     };
+    const supportsImage = (model: Record<string, unknown>) => {
+      const modalities = object(model.architecture).input_modalities;
+      return Array.isArray(modalities) && modalities.includes('image');
+    };
     const eligible = (id: unknown): id is string => typeof id === 'string' && (options.reflectionBeam ? id === KILO_BEAM : id === KILO_BEAM || id.endsWith(':free'));
     const ids = rows.map(row => row.id).filter(eligible), unique = ids.filter(id => ids.indexOf(id) === ids.lastIndexOf(id));
-    const models = unique.filter(id => verified(rows.find(row => row.id === id)!));
+    const rowById = new Map(unique.map(id => [id, rows.find(row => row.id === id)!]));
+    const models = unique.filter(id => verified(rowById.get(id)!));
     const order = (id: string) => id === KILO_PARTICLE ? 0 : id === KILO_BEAM ? 1 : 2;
     if (!models.length) throw new SourceError('refused', options.reflectionBeam ? `${KILO_BEAM} is not currently a verified free model with at least 200K context`
       : 'No Kilo :free model is currently verified free with at least 200K context');
-    return models.sort((a, b) => order(a) - order(b));
+    models.sort((a, b) => order(a) - order(b));
+    const imageModels = options.reflectionBeam ? [] : models.filter(id => id.endsWith(':free') && supportsImage(rowById.get(id)!));
+    return { models, imageModels };
   } catch (error) {
     if (options.signal?.aborted) throw new SourceError('cancelled', 'Kilo access check cancelled');
     if (signal.aborted) throw new SourceError('timeout', 'Kilo access check timed out');
@@ -99,8 +114,36 @@ export async function verifyKiloAccess(options: { fetcher?: typeof fetch; signal
     throw new SourceError('upstream', 'Kilo free model metadata is unavailable');
   }
 }
+export async function verifyKiloAccess(options: { fetcher?: typeof fetch; signal?: AbortSignal; reflectionBeam?: boolean; imageInput?: boolean } = {}): Promise<string[]> {
+  const catalog = await verifyKiloCatalog(options);
+  if (options.imageInput) {
+    if (!catalog.imageModels.length) {
+      throw new SourceError('refused', 'No Kilo :free model currently supports image input with at least 200K context');
+    }
+    return catalog.imageModels;
+  }
+  return catalog.models;
+}
+function validContentPart(value: unknown): boolean {
+  const part = object(value);
+  if (part.type === 'text') return typeof part.text === 'string';
+  if (part.type === 'image_url') {
+    const ref = object(part.image_url);
+    return typeof ref.url === 'string' && ref.url.length > 0
+      && (ref.detail === undefined || ['auto', 'low', 'high'].includes(String(ref.detail)));
+  }
+  return false;
+}
+function hasImageParts(messages: readonly ModelRequest['messages'][number][]): boolean {
+  return messages.some(message => Array.isArray(message.content) && message.content.some(part => part.type === 'image_url'));
+}
 function conversation(request: ModelRequest) {
   const messages: ModelRequest['messages'] = [];
+  for (const message of request.messages) {
+    if (typeof message.content !== 'string' && (!Array.isArray(message.content) || !message.content.length || !message.content.every(validContentPart))) {
+      throw requestFailure('Kilo rejected invalid message content', 'request_body');
+    }
+  }
   try {
     for (const message of request.messages) {
       const previous = messages.at(-1);
@@ -129,7 +172,8 @@ function conversation(request: ModelRequest) {
         });
       }
     }
-    new JsonToolBridge({ ...request, messages }); // Validate roles and actual correlated results; no JSON bridge or tool execution.
+    // Validate roles and actual correlated results; no JSON bridge or tool execution.
+    new JsonToolBridge({ ...request, messages: messages.map(message => ({ ...message, content: messageText(message.content) })) });
   } catch { throw requestFailure('Kilo rejected invalid function tools or an uncorrelated tool conversation', 'request_tools'); }
   return { messages, validators: compileToolSchemas(request.tools, 'Kilo rejected a function tool schema') };
 }
@@ -140,21 +184,21 @@ export class Kilo implements Source {
   readonly id: 'kilo' | 'reflection-beam'; readonly supportsFunctionTools = true;
   // The model that answered last is tried first; a quota reply moves on to the next.
   private preferred: string | undefined;
-  private cachedModels: { models: string[]; at: number } | undefined;
+  private cachedModels: { catalog: KiloCatalog; at: number } | undefined;
   private shutdown = new AbortController(); private pending = new Set<Promise<unknown>>();
   constructor(private options: { directory?: string; fetcher?: typeof fetch; timeout?: number; anonymous?: () => boolean; reflectionBeam?: boolean; now?: () => number } = {}) {
     this.id = options.reflectionBeam ? 'reflection-beam' : 'kilo';
   }
   private get now() { return (this.options.now ?? Date.now)(); }
-  private async verify(signal: AbortSignal) {
+  private async verify(signal: AbortSignal): Promise<KiloCatalog> {
     const now = this.now;
     if (this.cachedModels && now >= this.cachedModels.at && now - this.cachedModels.at < KILO_CATALOG_CACHE_MS) {
-      return this.cachedModels.models;
+      return this.cachedModels.catalog;
     }
     this.cachedModels = undefined;
-    const models = await verifyKiloAccess({ ...(this.options.fetcher ? { fetcher: this.options.fetcher } : {}), reflectionBeam: this.id === 'reflection-beam', signal });
-    this.cachedModels = { models, at: this.now };
-    return models;
+    const catalog = await verifyKiloCatalog({ ...(this.options.fetcher ? { fetcher: this.options.fetcher } : {}), reflectionBeam: this.id === 'reflection-beam', signal });
+    this.cachedModels = { catalog, at: this.now };
+    return catalog;
   }
   private async approved() { return (await readDataSharingConsent(this.options.directory ?? providerGrantDirectory(), [this.id])).includes(this.id); }
   private async grant() {
@@ -185,20 +229,24 @@ export class Kilo implements Source {
     const timeout = this.options.timeout, signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(typeof timeout === 'number' && Number.isFinite(timeout) && timeout > 0 ? Math.min(180000, Math.ceil(timeout)) : 180000)]);
     try {
       signal.throwIfAborted();
-      if (request.imageInput) throw requestFailure('This Kilo route supports text inputs', 'request_body');
+      const wantsImage = request.imageInput === true || hasImageParts(request.messages);
+      if (this.id === 'reflection-beam' && wantsImage) throw requestFailure('This Kilo route supports text inputs', 'request_body');
       if (request.maxTokens !== undefined && (!Number.isSafeInteger(request.maxTokens) || request.maxTokens < 1)) throw requestFailure('Kilo requires a positive integer output-token budget', 'request_body');
       const limit = request.maxTokens, { messages, validators } = conversation(request);
       if (!await this.approved()) throw new SourceError('refused', 'Kilo data sharing is not approved; rerun usegrunt setup');
       signal.throwIfAborted();
+      const maxBytes = wantsImage ? KILO_IMAGE_MAX_BYTES : KILO_TEXT_MAX_BYTES;
       const wire = (model: string) => {
         const body = JSON.stringify({ model, messages, ...(request.tools.length ? { tools: request.tools } : {}),
           stream: true, stream_options: { include_usage: true }, max_tokens: limit });
-        if (Buffer.byteLength(body) > 2 * 1024 * 1024) throw requestFailure('Kilo prompt exceeds the supported input size', 'request_size');
+        if (Buffer.byteLength(body) > maxBytes) throw requestFailure('Kilo prompt exceeds the supported input size', 'request_size');
         return body;
       };
       wire(''); // Refuse an oversized prompt before any network call.
-      const models = await this.verify(signal);
+      const catalog = await this.verify(signal);
       signal.throwIfAborted();
+      const models = wantsImage ? catalog.imageModels : catalog.models;
+      if (wantsImage && !models.length) throw new SourceError('refused', 'No Kilo :free model currently supports image input with at least 200K context');
       const grant = this.id === 'reflection-beam' || this.options.anonymous?.() ? undefined : await this.grant();
       const origin = grant ? `${grant.base_url}/api/gateway` : KILO_ORIGIN;
       const agentic = needsFunctionTools(request) ? models.filter(id => !KILO_NOT_FOR_TOOL_WORK.has(id)) : models;

@@ -291,17 +291,32 @@ it.each([false, true])('returns HTTP 429 with earliest retry when all candidates
   const response = await app.request('http://localhost:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...request, stream }) });
   expect(response.status).toBe(429); expect(Number(response.headers.get('retry-after'))).toBeGreaterThan(0); expect(Number(response.headers.get('retry-after'))).toBeLessThanOrEqual(30);
 });
-it('filters disabled, unavailable and unsupported image adapters before drawing', async () => {
+it('routes image requests only to image-capable adapters and substitutes when only text-only adapters exist', async () => {
   const { a, b, sources } = routed();
-  vi.mocked(a.available).mockResolvedValue(false);
-  expect(await sources.complete(request, AbortSignal.timeout(1000))).toEqual({ text: 'kilo done' });
-  expect(a.complete).not.toHaveBeenCalled();
   const app = createLocalApp(sources);
-  const response = await app.request('http://localhost:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...request, messages: [{ role: 'user', content: [{ type: 'text', text: 'describe' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } }] }] }) });
-  // No registry adapter lists images, so the image becomes a text note and the conversation is served instead of failing.
-  expect(response.status).toBe(200); expect(b.complete).toHaveBeenCalledTimes(2);
-  expect(vi.mocked(b.complete).mock.calls.at(-1)![0]).toMatchObject({ messages: [{ content: expect.stringContaining('[image omitted (image/png, 1 bytes)') }] });
-  expect(vi.mocked(b.complete).mock.calls.at(-1)![0].imageInput).toBeUndefined();
+  const imagePayload = { ...request, messages: [{ role: 'user', content: [{ type: 'text', text: 'describe' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } }] }] };
+  // First turn binds the task to text-only opencode (a).
+  expect(await sources.complete(request, AbortSignal.timeout(1000))).toEqual({ text: 'opencode done' });
+  expect(a.complete).toHaveBeenCalledTimes(1);
+  // Second turn attaches an image: routing skips text-only opencode and sends the structured image only to kilo (b).
+  const vision = await app.request('http://localhost:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(imagePayload) });
+  expect(vision.status).toBe(200);
+  expect(a.complete).toHaveBeenCalledTimes(1);
+  expect(b.complete).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(b.complete).mock.calls[0]![0]).toMatchObject({
+    imageInput: true,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'describe' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } }] }]
+  });
+
+  // When only text-only adapters exist in the pool, the image becomes a deterministic text note and never leaks image parts.
+  const textOnly = source('opencode'), textOnly2 = source('runcrate');
+  const textSources = new Sources([textOnly, textOnly2], { registry: () => bundledRegistry, random: () => 0 });
+  try {
+    const fallback = await createLocalApp(textSources).request('http://localhost:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(imagePayload) });
+    expect(fallback.status).toBe(200);
+    expect(vi.mocked(textOnly.complete).mock.calls[0]![0]).toMatchObject({ messages: [{ content: expect.stringContaining('[image omitted (image/png, 1 bytes)') }] });
+    expect(vi.mocked(textOnly.complete).mock.calls[0]![0].imageInput).toBeUndefined();
+  } finally { await textSources.close(); }
 });
 it('hands off the live working tree against a dirty task-start checkpoint', async () => {
   const cwd = await mkdtemp(join(tmpdir(), 'grunt-handoff-'));
