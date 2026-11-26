@@ -292,6 +292,36 @@ it.each([
   expect(backup.complete).not.toHaveBeenCalled();
 });
 
+async function kiloWithStream(reply: () => Response) {
+  const directory = await mkdtemp(join(tmpdir(), 'grunt-stream-recovery-'));
+  dirs.push(directory);
+  await recordDataSharingConsent(directory, ['kilo']);
+  return new Kilo({ directory, anonymous: () => true, fetcher: async url => String(url) === `${KILO_ORIGIN}/models`
+    ? Response.json({ data: [{ id: KILO_PARTICLE, isFree: true, pricing: { prompt: '0', completion: '0' }, context_length: 1048576, supported_parameters: ['tools', 'max_tokens'] }] })
+    : reply() });
+}
+
+it.each(['kilo', 'runcrate'])('cuts off an open %s stream after its first token', async id => {
+  const reply = () => new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      const frame = { model: KILO_PARTICLE, choices: [{ index: 0, delta: { content: 'Hello' }, finish_reason: null }] };
+      controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(frame)}\n\n`));
+    }
+  }), { headers: { 'Content-Type': 'text/event-stream' } });
+  const source = id === 'kilo' ? await kiloWithStream(reply) : new FreeApi('runcrate', {
+    loadGrant: async () => ({ base_url: 'https://grant.test/p', token: 'synthetic' }), fetcher: async () => reply()
+  });
+  const local = await startLocal(new Sources([source], undefined, new Set(), 150));
+  const response = await fetch(local.url('chat/completions'), {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(2000),
+    body: JSON.stringify({ model: id, stream: true, messages: [{ role: 'user', content: 'hi' }] })
+  });
+  const wire = await response.text();
+  expect(wire).toContain('Hello');
+  expect(wire).toContain('"code":"timeout"');
+  expect(wire).not.toContain('data: [DONE]');
+});
+
 it.each([
   ['cost', { cost: 0.01 }, 'first'],
   ['total_cost', { total_cost: 0.02 }, 'first'],

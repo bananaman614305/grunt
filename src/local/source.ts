@@ -294,7 +294,8 @@ export class Sources {
     return source.idleMs ?? source.firstOutputMs ?? this.firstOutputMs ?? DEFAULT_IDLE_MS;
   }
   private firstOutput(source: Source, request: ModelRequest, caller: AbortSignal, output?: () => void): Promise<Completion> {
-    const watchdog = source.reportsOutput || source.reportsProgress || source.inferenceOnly && request.model !== source.id;
+    const watchIdle = source.reportsProgress || source.inferenceOnly && request.stream;
+    const watchdog = source.reportsOutput || watchIdle || source.inferenceOnly && request.model !== source.id;
     const promptCancellation = source.inferenceOnly || source.reportsProgress;
     if (!watchdog && !promptCancellation) return source.complete(request, caller);
     caller.throwIfAborted();
@@ -323,7 +324,7 @@ export class Sources {
       output?.();
       outputStarted = true;
       clearTimeout(timer); timer = undefined;
-      if (source.reportsProgress) arm();
+      if (watchIdle) arm();
     };
     const cancel = () => {
       finished = true;
@@ -387,7 +388,7 @@ export class Sources {
       defaultFirstOutputMs: this.firstOutputMs ?? FIRST_OUTPUT_MS,
       configuredSources: this.sources.map(source => ({
         id: source.id, firstOutputMs: source.reportsOutput || source.reportsProgress || source.inferenceOnly ? source.firstOutputMs ?? this.firstOutputMs ?? FIRST_OUTPUT_MS : null,
-        idleMs: source.reportsProgress ? this.idleTimeout(source) : null
+        idleMs: source.reportsProgress || source.inferenceOnly ? this.idleTimeout(source) : null
       }))
     };
   }
