@@ -1,111 +1,129 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { execFile } from 'node:child_process';
-import { createRequire } from 'node:module';
-import { promisify } from 'node:util';
-import { pathToFileURL } from 'node:url';
+import { realpathSync } from 'node:fs';
+import { mkdtemp, rm, symlink } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-const require = createRequire(import.meta.url);
-const exec = promisify(execFile);
-const moduleUrl = (name: string) => pathToFileURL(require.resolve(name).replace('/dist/cjs/', '/dist/esm/')).href;
+import {
+  SignupProfileIsolationError,
+  SignupSessionIsolationError,
+  writeSignupSession
+} from '@trusty-squire/mcp/signup';
+import type { SignupSession } from '@trusty-squire/mcp/signup';
+import { BrowserSquire } from './setup.js';
+import { GRUNT_BROWSER_PROFILE_DIR, GRUNT_SIGNUP_SESSION_FILE, gruntSignupPaths } from './signup-mcp.js';
 
 let dir: string;
-const instruction = 'Connect Trusty Squire separately, then rerun usegrunt setup';
+const sampleSession: SignupSession = {
+  apiBaseUrl: 'https://trusty-squire-api.fly.dev',
+  accountId: 'acct_embedded_test',
+  agentSessionToken: 'tok_embedded_session_secret_value',
+  machineToken: 'mach_embedded_token_secret_value',
+  savedAt: '2026-11-26T00:00:00.000Z',
+  consentOperatorInboxOtp: true
+};
+
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'grunt-squire-connection-'));
-  vi.stubEnv('GRUNT_SQUIRE_HOME', '');
-  vi.stubEnv('GRUNT_SQUIRE_XDG_CONFIG_HOME', '');
+  vi.stubEnv('GRUNT_CONFIG_DIR', dir);
+  vi.stubEnv('GRUNT_SETUP_NO_HUMAN', '');
 });
+
 afterEach(async () => {
-  vi.restoreAllMocks(); vi.unstubAllEnvs();
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   await rm(dir, { recursive: true, force: true });
 });
 
-async function stubChild(body: string) {
-  const bin = join(dir, 'bin.mjs');
-  await writeFile(bin, body);
-}
-
-async function connection() {
-  const driver = join(dir, 'driver.mjs');
-  await writeFile(driver, `
-    import { BrowserSquire } from ${JSON.stringify(pathToFileURL(join(process.cwd(), 'src/local/setup.ts')).href)};
-    import { StdioClientTransport } from ${JSON.stringify(moduleUrl('@modelcontextprotocol/sdk/client/stdio.js'))};
-    const start = StdioClientTransport.prototype.start;
-    StdioClientTransport.prototype.start = function() {
-      if (this._serverParams.args[1] !== 'server') throw new Error('Unexpected Squire command');
-      this._serverParams.args = [${JSON.stringify(join(dir, 'bin.mjs'))}];
-      return start.call(this);
+it('connects in-process using Grunt-owned isolated browser-profile and signup-session.json paths', async () => {
+  const canonicalDir = realpathSync(dir);
+  const ensureSession = vi.fn(async options => {
+    expect(options.profileDir).toBe(join(canonicalDir, GRUNT_BROWSER_PROFILE_DIR));
+    expect(options.sessionPath).toBe(join(canonicalDir, GRUNT_SIGNUP_SESSION_FILE));
+    expect(options.agentIdentity).toBe('grunt');
+    return {
+      status: 'already_connected' as const,
+      session: sampleSession,
+      providers: ['google' as const],
+      browserLocation: { kind: 'none' as const }
     };
-    const squire = new BrowserSquire();
-    try { await squire.connect(); }
-    catch (error) { console.log(JSON.stringify(error.message)); }
-    finally { await squire.close(); }
-  `);
-  const { stdout } = await exec(process.execPath, ['--import', moduleUrl('tsx/esm'), driver], { timeout: 10000, env: { ...process.env } });
-  return JSON.parse(stdout.trim()) as string;
-}
+  });
 
-it.each(['derived', 'explicit'])('points only the Squire child at its own home ($0 config)', async config => {
-  const parentHome = homedir(), parentConfig = process.env.XDG_CONFIG_HOME;
-  const squireHome = join(dir, 'own-squire');
-  const configHome = config === 'explicit' ? join(dir, 'explicit-config') : join(squireHome, '.config');
-  vi.stubEnv('GRUNT_SQUIRE_HOME', squireHome);
-  if (config === 'explicit') vi.stubEnv('GRUNT_SQUIRE_XDG_CONFIG_HOME', configHome);
-  const record = join(dir, 'spawn.json');
-  await stubChild(`
-    import { writeFileSync } from 'node:fs';
-    writeFileSync(${JSON.stringify(record)}, JSON.stringify({ home: process.env.HOME, config: process.env.XDG_CONFIG_HOME }));
-    process.exit(1);
-  `);
-  await connection();
-  expect(JSON.parse(await readFile(record, 'utf8'))).toEqual({ home: squireHome, config: configHome });
-  expect(homedir()).toBe(parentHome);
-  expect(process.env.XDG_CONFIG_HOME).toBe(parentConfig);
+  const squire = new BrowserSquire({ directory: dir, embeddedRuntime: { ensureSession } });
+  await squire.connect();
+  expect(squire.connectState).toBe('existing');
+  expect(ensureSession).toHaveBeenCalledOnce();
+  await squire.close();
 });
 
-const secrets = ['sk-fake-short', 'gsk_fake_short', 'ghp_fake_short', 'eyJfake.short.signature',
-  'fake-bearer', 'a'.repeat(40), 'aB09+/'.repeat(8) + '=='];
-it.each(['normal', 'long', 'chunked'])('shows the last stderr reason, redacted and bounded ($0)', async mode => {
-  const reason = `Trusty Squire broker not running: ${secrets.slice(0, 4).join(' ')} Bearer ${secrets[4]} ${secrets.slice(5).join(' ')}`;
-  const padding = mode === 'long' ? ' more detail'.repeat(100) : '';
-  await stubChild(`
-    process.stderr.write('earlier diagnostic\\n');
-    const line = ${JSON.stringify(reason + padding)};
-    ${mode === 'chunked'
-      ? "process.stderr.write(line.slice(0, 42)); setTimeout(() => { process.stderr.write(line.slice(42) + '\\n\\n'); process.exit(1); }, 20);"
-      : "process.stderr.write(line + '\\n\\n'); process.exit(1);"}
-  `);
-  const message = await connection();
-  expect(message).toMatch(new RegExp(`^${instruction}: Trusty Squire broker not running:`));
-  expect(message).toContain('[redacted]');
-  expect(message).not.toContain('earlier diagnostic');
-  expect(message).not.toMatch(/[\r\n]/);
-  expect(message.length).toBeLessThanOrEqual(300);
-  for (const secret of secrets) expect(message).not.toContain(secret);
+it('refuses paths aliasing Trusty Squire personal Chrome profile or personal session store', async () => {
+  const personalSquireConfig = join(homedir(), '.config', 'trusty-squire');
+  expect(() => gruntSignupPaths(personalSquireConfig)).toThrow(SignupSessionIsolationError);
+
+  const symlinkDir = await mkdtemp(join(tmpdir(), 'grunt-squire-symlink-'));
+  try {
+    await symlink(join(homedir(), '.trusty-squire', 'chrome-profile'), join(symlinkDir, GRUNT_BROWSER_PROFILE_DIR));
+    expect(() => gruntSignupPaths(symlinkDir)).toThrow(SignupProfileIsolationError);
+  } finally {
+    await rm(symlinkDir, { recursive: true, force: true });
+  }
 });
 
-it.each(['rpc-error', 'tool-error', 'rpc-error-with-banner', 'initialize-error-with-banner'])('keeps the MCP connection reason ($0)', async mode => {
-  await stubChild(`
-    import { Server } from ${JSON.stringify(moduleUrl('@modelcontextprotocol/sdk/server/index.js'))};
-    import { StdioServerTransport } from ${JSON.stringify(moduleUrl('@modelcontextprotocol/sdk/server/stdio.js'))};
-    import { CallToolRequestSchema, InitializeRequestSchema, McpError, ErrorCode } from ${JSON.stringify(moduleUrl('@modelcontextprotocol/sdk/types.js'))};
-    if (${JSON.stringify(mode)}.endsWith('with-banner')) process.stderr.write('[trusty-squire] server v1.1.39\\n');
-    const server = new Server({ name: 'offline Squire', version: '1' }, { capabilities: { tools: {} } });
-    if (${JSON.stringify(mode)} === 'initialize-error-with-banner') server.setRequestHandler(InitializeRequestSchema, async () => {
-      throw new McpError(ErrorCode.ConnectionClosed, 'Trusty Squire broker not running: sk-fake-short');
-    });
-    server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
-      if (params.name !== 'list_credentials') throw new Error('Unexpected provider or approval call');
-      const reason = 'Trusty Squire broker not running: sk-fake-short';
-      if (${JSON.stringify(mode)}.startsWith('rpc-error')) throw new McpError(ErrorCode.InternalError, reason);
-      return { isError: true, content: [{ type: 'text', text: reason }] };
-    });
-    await server.connect(new StdioServerTransport());
-  `);
-  const message = await connection();
-  expect(message).toContain(`${instruction}: `);
-  expect(message).toContain('Trusty Squire broker not running: [redacted]');
-  expect(message).not.toContain('sk-fake-short');
+it('stops before interactive sign-in when GRUNT_SETUP_NO_HUMAN=1 and no saved session exists', async () => {
+  vi.stubEnv('GRUNT_SETUP_NO_HUMAN', '1');
+  const ensureSession = vi.fn();
+  const squire = new BrowserSquire({ directory: dir, embeddedRuntime: { ensureSession } });
+  await expect(squire.connect()).rejects.toThrow('Squire login needs human verification; stopped before onboarding');
+  expect(ensureSession).not.toHaveBeenCalled();
+  await squire.close();
+});
+
+it('reuses a saved isolated session when GRUNT_SETUP_NO_HUMAN=1 without starting a browser ceremony', async () => {
+  vi.stubEnv('GRUNT_SETUP_NO_HUMAN', '1');
+  const { sessionPath } = gruntSignupPaths(dir);
+  await writeSignupSession(sessionPath, sampleSession);
+
+  const ensureSession = vi.fn(async (_options, runtime) => {
+    expect(runtime?.issueMachineToken).toBeTypeOf('function');
+    return {
+      status: 'already_connected' as const,
+      session: sampleSession,
+      providers: ['google' as const],
+      browserLocation: { kind: 'none' as const }
+    };
+  });
+  const squire = new BrowserSquire({ directory: dir, embeddedRuntime: { ensureSession } });
+  await squire.connect();
+  expect(squire.connectState).toBe('existing');
+  expect(ensureSession).toHaveBeenCalledOnce();
+  await squire.close();
+});
+
+const secrets = [
+  'sk-fake-short-secret',
+  'gsk_fake_short_secret',
+  'ghp_fake_short_secret',
+  'eyJfake.short.signature.payload',
+  'fake-bearer-token',
+  'a'.repeat(40)
+];
+
+it('redacts secrets and bounds embedded sign-in errors to a single clean line', async () => {
+  const dirtyReason = `Embedded sign-in failed:\n${secrets.slice(0, 4).join(' ')} Bearer ${secrets[4]} ${secrets[5]} ${'more detail '.repeat(40)}`;
+  const ensureSession = vi.fn(async () => ({
+    status: 'timed_out' as const,
+    confirmUrl: 'https://trusty-squire.example/confirm',
+    browserLocation: { kind: 'host_screen' as const },
+    reason: dirtyReason
+  }));
+  const squire = new BrowserSquire({ directory: dir, embeddedRuntime: { ensureSession } });
+  const error = await squire.connect().then(() => undefined, err => err as Error);
+  expect(error).toBeInstanceOf(Error);
+  expect(error!.message).toContain('Could not connect Grunt embedded signup session');
+  expect(error!.message).toContain('[redacted]');
+  expect(error!.message).not.toMatch(/[\r\n]/);
+  expect(error!.message.length).toBeLessThanOrEqual(300);
+  for (const secret of secrets) {
+    expect(error!.message).not.toContain(secret);
+  }
+  await squire.close();
 });
