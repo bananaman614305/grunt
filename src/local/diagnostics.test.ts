@@ -320,7 +320,8 @@ it('records known eligibility, replayable failure, backup dispatch and accepted 
     // Seed successful availability evidence for both routes before dispatch.
     await pool.available(primary);
     await pool.available(backup);
-    await pool.complete({ ...request, cwd: await directory() }, AbortSignal.timeout(5000));
+    primary.supportsFunctionTools = backup.supportsFunctionTools = true;
+    await pool.complete({ ...request, tools: [{ type: 'function', function: { name: 'read', parameters: {} } }], cwd: await directory() }, AbortSignal.timeout(5000));
     const { events } = await value.list();
     const details = events.filter(e => ['route.eligible', 'attempt.start', 'attempt.failure', 'request.output'].includes(e.type));
     expect(details.map(e => [e.type, e.source])).toEqual([
@@ -328,6 +329,7 @@ it('records known eligibility, replayable failure, backup dispatch and accepted 
       ['attempt.start', 'kilo'], ['attempt.failure', 'kilo'],
       ['attempt.start', 'livekit'], ['request.output', 'livekit']
     ]);
+    expect(events.filter(e => e.type === 'attempt.finish').map(e => e.codingToolTurn)).toEqual([true, true]);
     expect(details[3]).toMatchObject({ attemptId: details[2]!.attemptId, replaySafe: true, failureReason: 'response_empty' });
     expect(JSON.stringify(events)).not.toContain('PRIVATE');
   } finally { await pool.close(); }

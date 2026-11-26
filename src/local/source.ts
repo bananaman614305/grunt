@@ -297,7 +297,7 @@ export class Sources {
   // (not a cancellation) is logged and reported to the source.
   private attempt = async (source: Source, request: ModelRequest, signal: AbortSignal): Promise<Completion> => {
     if (this.retired(source.id)) throw new SourceError('not_installed', `${source.id} routing is retired`);
-    const timed: Source = { id: source.id, available: () => source.available(), complete: (r, s, output) => this.firstOutput(source, r, s, output) };
+    const timed: Source = { id: source.id, supportsFunctionTools: toolCapable(source), available: () => source.available(), complete: (r, s, output) => this.firstOutput(source, r, s, output) };
     try {
       const result = await withAttemptStream(source.id, () => this.observation.complete(timed, request, signal));
       signal.throwIfAborted();
