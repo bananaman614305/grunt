@@ -1,5 +1,5 @@
 import type { Completion, ErrorCode, ModelRequest, QuotaWindow, Source } from './source.js';
-import { SourceError, endingOf, guardToolCalls, isOutputDeadlineFailure } from './source.js';
+import { SourceError, needsFunctionTools, toolCapable, endingOf, guardToolCalls, isOutputDeadlineFailure } from './source.js';
 import type { providerQuotaPolicy, SellerQuota } from './quota-policy.js';
 import { routingOutputProgress, acceptRoutingCompletion } from './routing.js';
 import type { MaintenanceEntry } from './maintenance.js';
@@ -391,17 +391,21 @@ export class SourceStatus {
     this.diagnostics.record({ ...base, id: randomUUID(), at: started, type: 'attempt.start',
       ...(request.maxTokens === undefined ? {} : { maxOutputTokens: request.maxTokens }) });
     return withDiagnosticContext({ ...parent, attemptId, sink: this.diagnostics! }, async () => {
+      const codingToolTurn = needsFunctionTools(request) && toolCapable(source) && !request.publicContext;
+      let firstProgressAt: number | undefined;
       let lastProgressAt: number | undefined, settled = false;
       const output = () => {
         if (settled || signal.aborted) return;
         const at = this.now();
         if (lastProgressAt === undefined) this.diagnostics!.record({ ...base, id: randomUUID(), at, type: 'attempt.progress' });
+        firstProgressAt ??= at;
         lastProgressAt = at;
         this.diagnostics!.setAttemptProgress(base.requestId, attemptId, at);
       };
       try {
         const result = await this.observedComplete(source, request, signal, guard, output), ending = endingOf(result);
-        this.diagnostics!.record({ ...sanitizeSafeDiagnosticMetadata(result.diagnostics), ...base, id: randomUUID(), at: this.now(), type: 'attempt.finish',
+        this.diagnostics!.record({ ...sanitizeSafeDiagnosticMetadata(result.diagnostics), ...base, id: randomUUID(), at: this.now(), type: 'attempt.finish', codingToolTurn,
+          ...(firstProgressAt === undefined ? {} : { firstOutputMs: Math.max(0, firstProgressAt - started) }),
           outcome: signal.aborted ? 'cancelled' : 'passed', durationMs: Math.max(0, performance.now() - startedMono),
           responseBytes: Buffer.byteLength(result.text),
           ...(lastProgressAt === undefined ? {} : { lastProgressAt }),
@@ -412,7 +416,7 @@ export class SourceStatus {
           ...(result.outputTokens === undefined ? {} : { outputTokens: result.outputTokens }),
           ...(ending?.finish ? { finishReason: ending.finish } : {}),
           ...(ending?.providerFinish ? { providerFinishReason: ending.providerFinish } : {}),
-          ...(ending?.toolCalls === undefined ? {} : { hadToolCalls: ending.toolCalls }),
+          ...(ending?.toolCalls === undefined && !result.calls?.length ? {} : { hadToolCalls: Boolean(result.calls?.length || ending?.toolCalls) }),
           ...(ending?.reasoningTokens === undefined ? {} : { reasoningTokens: ending.reasoningTokens }) });
         return result;
       } catch (error) {
@@ -421,7 +425,8 @@ export class SourceStatus {
         if (!signal.aborted && error instanceof SourceError && error.replay !== undefined) {
           recordAttemptFailure(source.id, metadata, error.replay === 'safe');
         }
-        this.diagnostics!.record({ ...metadata, ...base, id: randomUUID(), at: this.now(), type: 'attempt.finish',
+        this.diagnostics!.record({ ...metadata, ...base, id: randomUUID(), at: this.now(), type: 'attempt.finish', codingToolTurn,
+          ...(firstProgressAt === undefined ? {} : { firstOutputMs: Math.max(0, firstProgressAt - started) }),
           outcome: signal.aborted ? 'cancelled' : 'failed', errorCode: signal.aborted ? 'cancelled' : failureCode(error),
           ...(lastProgressAt === undefined ? {} : { lastProgressAt }),
           durationMs: Math.max(0, performance.now() - startedMono), ...(typeof value.retryAfter === 'number' ? { retryAfterSeconds: value.retryAfter } : {}) });
