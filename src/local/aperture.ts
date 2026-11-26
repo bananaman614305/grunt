@@ -2,10 +2,11 @@ import { configRoot } from '../brand.js';
 import { readDataSharingConsent } from './data-sharing.js';
 import { observeAttemptDispatch, diagnosticFetch } from './diagnostics.js';
 import type { FreeApiGrant } from './free-api.js';
+import { readPromotionalStream } from './promotional-api.js';
 import { calendarQuotaDelay } from './quota-policy.js';
 import { nousQuotaDelay, readQuotaError } from './quota-timing.js';
 import { readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
-import { lengthLimited, truncatedCompletion, withObservedEnding, SourceError } from './source.js';
+import { emitStreamText, lengthLimited, truncatedCompletion, withObservedEnding, SourceError } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 
 export const APERTURE_ID = 'aperture-ai';
@@ -39,6 +40,8 @@ async function json(response: Response, signal: AbortSignal, limit: number): Pro
 // a Free account and fresh zero-price model metadata before every dispatch.
 export class Aperture implements Source {
   readonly inferenceOnly = true;
+  readonly reportsOutput = true;
+  readonly reportsProgress = true;
   readonly id = APERTURE_ID;
   readonly supportsFunctionTools = true;
   private readonly shutdown = new AbortController();
@@ -89,7 +92,7 @@ export class Aperture implements Source {
     try { return !!await this.freeGrant(); }
     catch (error) { if (error instanceof SourceError && error.code === 'quota') throw error; return false; }
   }
-  async complete(request: ModelRequest, caller: AbortSignal): Promise<Completion> {
+  async complete(request: ModelRequest, caller: AbortSignal, output?: () => void): Promise<Completion> {
     caller.throwIfAborted();
     if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Aperture source closed');
     if (![this.id, 'grunt'].includes(request.model) || request.tools.some(tool => tool.type !== 'function')) throw new SourceError('refused', 'Unsupported Aperture request');
@@ -105,9 +108,20 @@ export class Aperture implements Source {
         method: 'POST', redirect: 'error', signal,
         headers: { Authorization: `Bearer ${grant.token}`, 'Content-Type': 'application/json', 'User-Agent': 'grunt' },
         body: JSON.stringify({ model: APERTURE_MODEL, messages: request.messages, tools: request.tools.length ? request.tools : undefined,
-          stream: false, max_tokens: request.maxTokens })
+          stream: true, stream_options: { include_usage: true }, max_tokens: request.maxTokens })
       });
       if (!response.ok) return await this.responseFailure(response, 'chat.completions');
+      if (response.headers.get('content-type')?.includes('text/event-stream')) {
+        const reply = await readPromotionalStream(response, APERTURE_MODEL, signal, {
+          ...(output ? { progress: output } : {}),
+          ...(request.stream ? { text: emitStreamText } : {}),
+          strictToolArgs: false,
+          failure: () => {},
+          cleanup: () => {}
+        });
+        if (reply.calls && !validCalls(reply.calls)) throw new Error('Invalid completion');
+        return reply;
+      }
       const body = await json(response, signal, 4 * 1024 * 1024);
       if (body.model !== APERTURE_MODEL || !Array.isArray(body.choices) || body.choices.length !== 1) throw new Error('Unexpected completion');
       const choice = object(body.choices[0]), message = object(choice.message), usage = object(body.usage);

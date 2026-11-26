@@ -20,7 +20,7 @@ import { Perch, PERCH_VERSION, PERCH_MODEL_ID, PERCH_MODEL_LABEL, PERCH_NPM_INTE
 import { openPerchACP, runPerchCommand, runPerchMemorySettings, verifyPerchCoreFiles } from './perch-process.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 import { decode, encode } from './api.js';
-import { SourceError } from './source.js';
+import { SourceError, Sources } from './source.js';
 
 let directory: string;
 const own: Perch[] = [];
@@ -248,10 +248,16 @@ it('shuts down in-flight native work without deleting valid account verification
   await vi.waitFor(() => expect(f.requests.some(r => r.method === 'session/prompt')).toBe(true)); await s.close(); await rejected;
   expect((await readPerchFreePlanReceipt(directory)).plan).toBe('Starter'); expect(await s.available()).toBe(false);
 });
-it('times out a native turn while preserving account verification and cleaning its workspace', async () => {
-  const f = fake({ pause: true }), s = source(f.processes, 100);
-  await expect(s.complete(request(), AbortSignal.timeout(2000))).rejects.toMatchObject({ code: 'timeout' });
-  expect((await readPerchFreePlanReceipt(directory)).plan).toBe('Starter'); expect(await readdir(perchPaths(directory).work)).toEqual([]);
+it('fails over after a native turn times out and cleans its workspace', async () => {
+  const f = fake({ pause: true }), s = source(f.processes, 200);
+  const backup = { id: 'backup', available: async () => true, complete: vi.fn(async () => ({ text: 'backup reply' })) };
+  const pool = new Sources([s, backup]);
+  try {
+    await expect(pool.complete(request({ model: 'grunt' }), AbortSignal.timeout(2000))).resolves.toEqual({ text: 'backup reply' });
+    expect(f.requests.filter(r => r.method === 'session/prompt')).toHaveLength(1);
+    expect(backup.complete).toHaveBeenCalledOnce();
+    expect((await readPerchFreePlanReceipt(directory)).plan).toBe('Starter'); expect(await readdir(perchPaths(directory).work)).toEqual([]);
+  } finally { await pool.close(); }
 });
 
 it('executes commands without a shell, handles split UTF-8, and allows a distinct login deadline', async () => {

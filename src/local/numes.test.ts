@@ -6,6 +6,7 @@ import { NUMES_DEEPSEEK_FLASH_CONSENT, recordDataSharingConsent } from './data-s
 import { FREE_API_PROVIDERS } from './free-api.js';
 import { configure } from './main.js';
 import { Numes, NUMES_DEEPSEEK_FLASH_MODEL } from './numes.js';
+import { Sources } from './source.js';
 
 const { model } = FREE_API_PROVIDERS.numes;
 const request = {
@@ -26,6 +27,17 @@ function exactEndpoint(details = endpoint, capturedAt = Date.now(), stale = fals
   return Response.json({ data: { id: NUMES_DEEPSEEK_FLASH_MODEL, endpoints: [details] } }, {
     headers: { 'X-Catalogue-Supply-Captured-At': new Date(capturedAt).toISOString(), 'X-Catalogue-Stale': String(stale) }
   });
+}
+
+function streamResponse(responseModel: string, usages: Record<string, unknown>[]) {
+  const frames = [
+    { model: responseModel, choices: [{ index: 0, delta: { reasoning_content: 'thinking' } }], usage: null },
+    { choices: [{ index: 0, delta: { content: 'Hello' } }] },
+    { choices: [{ index: 0, finish_reason: 'stop' }] },
+    ...usages.map(usage => ({ usage }))
+  ];
+  const wire = frames.map(frame => `data: ${JSON.stringify(frame)}\n\n`).join('') + 'data: [DONE]\n\n';
+  return new Response(wire, { headers: { 'content-type': 'text/event-stream' } });
 }
 
 beforeEach(async () => { directory = await mkdtemp(join(tmpdir(), 'numes-test-')); });
@@ -99,6 +111,42 @@ it('rejects model mismatch and nonzero settled cost', async () => {
   const numes = source(fetcher);
   await expect(numes.complete(request, new AbortController().signal)).rejects.toThrow('HTTP 502');
   await expect(numes.complete(request, new AbortController().signal)).rejects.toThrow('HTTP 502');
+});
+
+it.each([false, true])('reports upstream progress and accepts zero-cost SSE for the selected route (DeepSeek: %s)', async deepSeekFlash => {
+  await recordDataSharingConsent(directory, [deepSeekFlash ? NUMES_DEEPSEEK_FLASH_CONSENT : 'numes']);
+  const selected = deepSeekFlash ? NUMES_DEEPSEEK_FLASH_MODEL : model;
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({ data: zeroCap }));
+  if (deepSeekFlash) fetcher.mockResolvedValueOnce(exactEndpoint());
+  fetcher.mockResolvedValueOnce(streamResponse(selected.slice(0, -':free'.length), [{ cost: 0, prompt_tokens: 24, completion_tokens: 10 }]));
+  const adapter = source(fetcher, deepSeekFlash), progress = vi.fn();
+  try {
+    await expect(adapter.complete(request, AbortSignal.timeout(1000), progress))
+      .resolves.toEqual({ text: 'Hello', inputTokens: 24, outputTokens: 10 });
+    expect(progress).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(fetcher.mock.calls.at(-1)?.[1]?.body))).toMatchObject({
+      model: selected, stream: true, stream_options: { include_usage: true }
+    });
+  } finally { await adapter.close(); }
+});
+
+it.each([
+  { responseModel: model, usages: [{ cost: 0 }], accepted: true },
+  { responseModel: model, usages: [], accepted: false },
+  { responseModel: model, usages: [{ cost: '0' }], accepted: false },
+  { responseModel: model, usages: [{ cost: 0.001 }, { cost: 0 }], accepted: false },
+  { responseModel: NUMES_DEEPSEEK_FLASH_MODEL, usages: [{ cost: 0 }], accepted: false }
+])('buffers client text until the model and every reported cost pass verification (%j)', async ({ responseModel, usages, accepted }) => {
+  await recordDataSharingConsent(directory, ['numes']);
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(Response.json({ data: zeroCap }))
+    .mockResolvedValueOnce(streamResponse(responseModel, usages));
+  const pool = new Sources([source(fetcher)]), onText = vi.fn();
+  try {
+    const pending = pool.complete({ ...request, stream: true }, AbortSignal.timeout(1000), onText);
+    if (accepted) await expect(pending).resolves.toMatchObject({ text: 'Hello' });
+    else await expect(pending).rejects.toMatchObject({ code: 'upstream' });
+    expect(onText).not.toHaveBeenCalled();
+  } finally { await pool.close(); }
 });
 
 it('allows the private Flash selector only in an exact Numes configuration', async () => {
