@@ -151,6 +151,10 @@ export function emitStreamText(text: string): boolean {
 export function currentStreamReplyId(): symbol | undefined {
   return attemptStreamStorage.getStore()?.replyId;
 }
+export function resetUncommittedStreamReply(): void {
+  const attempt = attemptStreamStorage.getStore();
+  if (attempt?.active && !attempt.emitted) attempt.replyId = Symbol(attempt.source);
+}
 export function hasEmittedStreamText(): boolean {
   return attemptStreamStorage.getStore()?.emitted === true;
 }

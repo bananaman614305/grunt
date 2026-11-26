@@ -301,6 +301,30 @@ async function kiloWithStream(reply: () => Response) {
     : reply() });
 }
 
+it('discards the rejected Kilo sample before buffering the retry preamble', async () => {
+  const rejected = 'x'.repeat(200), accepted = 'y'.repeat(200);
+  let samples = 0;
+  const kilo = await kiloWithStream(() => {
+    const first = ++samples === 1;
+    return sse([
+      JSON.stringify({ model: KILO_PARTICLE, choices: [{ index: 0, delta: { content: first ? rejected : accepted }, finish_reason: first ? 'tool_calls' : 'stop' }] }),
+      JSON.stringify({ model: KILO_PARTICLE, choices: [], usage: { prompt_tokens: 3, completion_tokens: 1, cost: 0, cost_details: { upstream_inference_cost: 0, upstream_inference_prompt_cost: 0, upstream_inference_completions_cost: 0 } } }),
+      '[DONE]'
+    ]);
+  });
+  const local = await startLocal(new Sources([kilo]));
+  const response = await fetch(local.url('chat/completions'), {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'kilo', stream: true, messages: [{ role: 'user', content: 'hi' }],
+      tools: [{ type: 'function', function: { name: 'read_file', parameters: { type: 'object', properties: {} } } }] })
+  });
+  const wire = await response.text();
+  expect(samples).toBe(2);
+  expect(wire).not.toContain(rejected);
+  expect(wire).toContain(accepted);
+  expect(wire).toContain('data: [DONE]');
+});
+
 it.each(['kilo', 'runcrate'])('cuts off an open %s stream after its first token', async id => {
   const reply = () => new Response(new ReadableStream<Uint8Array>({
     start(controller) {
