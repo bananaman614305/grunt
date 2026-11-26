@@ -563,7 +563,8 @@ the user's machine without routing prompts, source code or tool results through
 
 - Manage stored keys with `usegrunt vault set <provider>` (reads the key from stdin
   or a hidden prompt, never from command arguments), `usegrunt vault list [--json]`
-  (metadata only, never prints keys), and `usegrunt vault remove <provider>`.
+  (metadata only, never prints keys), `usegrunt vault export <provider>` (explicitly
+  opts into Trusty Squire passkey export), and `usegrunt vault remove <provider>`.
 - Environment overrides use `GRUNT_VAULT_<PROVIDER>_KEY` (for example
   `GRUNT_VAULT_BEATAPI_KEY`). Every local vault key and env override is strictly
   pinned to that provider's allowlisted HTTPS origin(s); optional
@@ -571,17 +572,22 @@ the user's machine without routing prompts, source code or tool results through
 - Trusty Squire remains the browser signup engine. In `@trusty-squire/mcp`,
   `operate_extract` writes captured keys directly into Squire's vault without
   returning plaintext, and raw key export (`fetch_credential`) requires an explicit
-  human passkey approval. Foreground setup attempts `BrowserSquire.materializeDirectVaultGrant`
-  after signup to store the key directly in `vault.json` and falls back cleanly to a
-  Squire egress grant when passkey export is unavailable or declined (background
-  setup falls back immediately without waiting on passkey approval).
-- BeatAPI, Pollinations, Runcrate, APInex and Zro bind their free-account
-  verification receipts to a SHA-256 fingerprint of the verified credential and
-  never copy raw direct keys into provider receipt files. Removing a key with
-  `usegrunt vault remove <provider>` immediately revokes direct access, and
-  replacing a key invalidates the prior receipt until fresh verification succeeds.
-  Existing Squire egress grants remain supported as a backwards-compatible fallback,
-  and no key or token enters diagnostics, logs, terminal output or harness configs.
+  human passkey approval. Default silent `npx usegrunt setup` never calls
+  `fetch_credential` or blocks on passkey approval: it uses existing verified local
+  vault keys or env overrides when present and Squire egress grants otherwise.
+  Passkey-gated export into `vault.json` is strictly opt-in via
+  `usegrunt vault export <provider>` (or explicit `exportToVault: true`).
+- BeatAPI, Pollinations, Runcrate and Zro bind their free-account verification
+  receipts to a SHA-256 fingerprint of the verified credential and never copy raw
+  direct keys into provider receipt files. Direct Runcrate local-vault keys are
+  verified against Runcrate's pinned billing endpoints (`www.runcrate.ai/api/v1/billing/balance`,
+  `auto-recharge`, and `payment-methods`) plus `/v1/models` before writing a receipt;
+  unverified vault keys are never certified and setup falls back cleanly to Squire.
+  Removing a key with `usegrunt vault remove <provider>` immediately revokes direct
+  access, and replacing a key invalidates the prior vault receipt until fresh
+  verification succeeds. Existing and refreshed Squire egress grants remain supported
+  as a backwards-compatible fallback, and no key or token enters diagnostics, logs,
+  terminal output or harness configs.
 
 Setup helpers can cancel one provider without stopping other jobs or the shared
 broker. A pending initial browser operation may finish before its owned tab can

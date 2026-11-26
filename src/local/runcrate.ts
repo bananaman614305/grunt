@@ -3,12 +3,14 @@ import { FreeApi } from './free-api.js';
 import type { FreeApiGrant } from './free-api.js';
 import { verifiedDeepSeekFetch } from './deepseek-response.js';
 import { readDataSharingConsent } from './data-sharing.js';
-import { providerGrantDirectory, readPrivateProviderGrant, readPrivateProviderGrantFile, validateProviderGrant, writePrivateProviderGrant } from './provider-grant.js';
+import { providerGrantDirectory, readPrivateProviderGrant, validateProviderGrant, writePrivateProviderGrant } from './provider-grant.js';
 import { credentialFingerprint, isCredentialFingerprint, readVaultGrant, validateDirectOrigin } from './vault.js';
 import { SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
 
 export const RUNCRATE_DEEPSEEK = 'deepseek-ai/DeepSeek-V4.1-Flash';
+export const RUNCRATE_ORIGIN = 'https://api.runcrate.ai';
+export const RUNCRATE_BILLING_ORIGIN = 'https://www.runcrate.ai';
 export interface RuncrateVerification {
   free_account_verified: true;
   key_topups_disabled: true;
@@ -56,29 +58,148 @@ export function validateRuncrateVerification(grant: FreeApiGrant, verification: 
     verified_at: proof.verified_at
   };
 }
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+
+function unwrapObject(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value)) return undefined;
+  return isRecord(value.data) ? value.data : value;
+}
+
+async function fetchRuncrateJson(
+  fetcher: typeof fetch,
+  operation: 'account' | 'models',
+  label: string,
+  url: string,
+  token: string,
+  signal: AbortSignal
+): Promise<unknown> {
+  let response: Response;
+  try {
+    response = await diagnosticFetch(fetcher, 'runcrate', operation)(url, {
+      headers: { Authorization: `Bearer ${token}` },
+      redirect: 'error',
+      signal
+    });
+  } catch (error) {
+    signal.throwIfAborted();
+    throw new RuncrateVerificationError(
+      error instanceof Error ? `Runcrate verification failed: ${error.message}` : 'Runcrate verification request failed'
+    );
+  }
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new RuncrateVerificationError(`Runcrate ${label} verification returned HTTP ${response.status}`);
+  }
+  try {
+    return await response.json();
+  } catch {
+    throw new RuncrateVerificationError(`Runcrate ${label} verification returned invalid JSON`);
+  }
+}
+
+/**
+ * Verifies a direct local-vault Runcrate API key against Runcrate's pinned
+ * billing and model endpoints, proving zero prepaid credit balance, zero saved
+ * payment methods, disabled auto-recharge/top-ups, and availability of the
+ * pinned free DeepSeek model for that exact credential.
+ */
+export async function verifyRuncrateDirectGrant(
+  grant: FreeApiGrant,
+  options: { fetcher?: typeof fetch; signal?: AbortSignal } = {}
+): Promise<RuncrateVerification> {
+  const access = validateProviderGrant(grant);
+  let origin: string;
+  try {
+    origin = validateDirectOrigin('runcrate', access.base_url);
+  } catch {
+    throw new RuncrateVerificationError('Runcrate direct verification requires the pinned Runcrate HTTPS origin');
+  }
+  const normalized = { base_url: origin, token: access.token };
+  const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(15_000)]);
+  const fetcher = options.fetcher ?? fetch;
+
+  const balanceRaw = await fetchRuncrateJson(
+    fetcher,
+    'account',
+    'billing_balance',
+    `${RUNCRATE_BILLING_ORIGIN}/api/v1/billing/balance`,
+    normalized.token,
+    signal
+  );
+  const balance = unwrapObject(balanceRaw);
+  if (!balance) throw new RuncrateVerificationError('Runcrate balance verification returned an invalid response');
+  const balanceFields = ['creditsBalance', 'credits_balance', 'balance_usd', 'floating_balance_usd'] as const;
+  const presentBalances = balanceFields.filter(field => balance[field] !== undefined);
+  if (!presentBalances.length) {
+    throw new RuncrateVerificationError('Runcrate balance verification did not report credit balance');
+  }
+  for (const field of [...balanceFields, 'activeUsageCost', 'active_usage_cost'] as const) {
+    if (balance[field] !== undefined && (typeof balance[field] !== 'number' || !Number.isFinite(balance[field]) || balance[field] !== 0)) {
+      throw new RuncrateVerificationError('Runcrate account has a non-zero paid balance or active paid usage');
+    }
+  }
+
+  const autoRechargeRaw = await fetchRuncrateJson(
+    fetcher,
+    'account',
+    'billing_auto_recharge',
+    `${RUNCRATE_BILLING_ORIGIN}/api/v1/billing/auto-recharge`,
+    normalized.token,
+    signal
+  );
+  const autoRecharge = unwrapObject(autoRechargeRaw);
+  if (!autoRecharge || autoRecharge.enabled !== false) {
+    throw new RuncrateVerificationError('Runcrate automatic top-ups must be disabled before using this key');
+  }
+
+  const paymentMethodsRaw = await fetchRuncrateJson(
+    fetcher,
+    'account',
+    'billing_payment_methods',
+    `${RUNCRATE_BILLING_ORIGIN}/api/v1/billing/payment-methods`,
+    normalized.token,
+    signal
+  );
+  const methods = Array.isArray(paymentMethodsRaw)
+    ? paymentMethodsRaw
+    : isRecord(paymentMethodsRaw) && Array.isArray(paymentMethodsRaw.payment_methods)
+      ? paymentMethodsRaw.payment_methods
+      : isRecord(paymentMethodsRaw) && Array.isArray(paymentMethodsRaw.paymentMethods)
+        ? paymentMethodsRaw.paymentMethods
+        : isRecord(paymentMethodsRaw) && Array.isArray(paymentMethodsRaw.data)
+          ? paymentMethodsRaw.data
+          : undefined;
+  if (!methods || methods.length > 0) {
+    throw new RuncrateVerificationError('Runcrate account must have no saved payment methods');
+  }
+
+  const modelsRaw = await fetchRuncrateJson(
+    fetcher,
+    'models',
+    'models',
+    `${normalized.base_url}/v1/models`,
+    normalized.token,
+    signal
+  );
+  const models = isRecord(modelsRaw) && Array.isArray(modelsRaw.data) ? modelsRaw.data : [];
+  if (!models.some(model => isRecord(model) && model.id === RUNCRATE_DEEPSEEK)) {
+    throw new RuncrateVerificationError(`Runcrate key does not have access to ${RUNCRATE_DEEPSEEK}`);
+  }
+
+  return validateRuncrateVerification(normalized, {
+    free_account_verified: true,
+    key_topups_disabled: true,
+    credential_sha256: credentialFingerprint(normalized),
+    verified_at: new Date().toISOString()
+  });
+}
+
 function isWriteOptions(value: NodeJS.ProcessEnv | WriteRuncrateGrantOptions): value is WriteRuncrateGrantOptions {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Record<string, unknown>;
   return ('verification' in candidate && typeof candidate.verification !== 'string')
     || ('env' in candidate && typeof candidate.env !== 'string');
-}
-async function readExistingReceiptFingerprint(location: string): Promise<{ exists: boolean; fingerprint?: string }> {
-  try {
-    const saved = await readPrivateProviderGrantFile('runcrate', location);
-    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return { exists: true };
-    const record = saved as Record<string, unknown>;
-    if (isCredentialFingerprint(record.credential_sha256)) {
-      return { exists: true, fingerprint: record.credential_sha256 };
-    }
-    try {
-      return { exists: true, fingerprint: credentialFingerprint(validateProviderGrant(record)) };
-    } catch {
-      return { exists: true };
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { exists: false };
-    return { exists: true };
-  }
 }
 function validate(value: unknown): RuncrateGrant {
   const grant = value as Partial<RuncrateGrant> | null;
@@ -104,8 +225,9 @@ export async function readRuncrateGrant(
   return validate(await readPrivateProviderGrant('runcrate', location, env));
 }
 // Setup calls this only after confirming free access and disabling key top-ups.
-// Direct vault keys and any replacement of an existing receipt require an explicit
-// verification proof bound to the exact credential fingerprint.
+// Direct local-vault keys always require an explicit verification proof bound to
+// the exact credential fingerprint. Refreshed Squire egress grants remain
+// supported cleanly without blocking on a changed egress fingerprint.
 // Like Zro's setup receipt, this does not freeze future account changes at Runcrate.
 export async function writeRuncrateGrant(
   grant: FreeApiGrant,
@@ -118,9 +240,7 @@ export async function writeRuncrateGrant(
   const fingerprint = credentialFingerprint(access);
   let isDirect = false;
   try { validateDirectOrigin('runcrate', access.base_url); isDirect = true; } catch { /* Legacy egress or test URL. */ }
-  const existing = await readExistingReceiptFingerprint(location);
-  const isReplacement = existing.exists && existing.fingerprint !== fingerprint;
-  const verified = (isDirect || isReplacement || options.verification !== undefined)
+  const verified = (isDirect || options.verification !== undefined)
     ? validateRuncrateVerification(access, options.verification)
     : {
       free_account_verified: true as const,

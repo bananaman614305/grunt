@@ -36,6 +36,7 @@ export interface PollinationsSetupOptions {
   notify?(line: string): void;
   fetcher?: typeof fetch;
   background?: boolean;
+  exportToVault?: boolean;
 }
 const failure = () => new Error('Pollinations free signup or key guard verification did not complete; rerun usegrunt setup');
 const foregroundNeeded = () => new Error('Pollinations needs foreground setup; run usegrunt setup to verify or reconnect access');
@@ -124,6 +125,7 @@ export async function setupPollinations(options: PollinationsSetupOptions): Prom
       directory: options.directory,
       signal,
       ...(options.background !== undefined ? { background: options.background } : {}),
+      ...(options.exportToVault !== undefined ? { exportToVault: options.exportToVault } : {}),
       ...(options.notify ? { notify: options.notify } : {})
     }), signal);
     await bounded(() => verifyPollinationsAccess(grant, guards), signal);

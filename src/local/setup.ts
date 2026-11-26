@@ -27,7 +27,7 @@ import { BROWSER_CONCURRENCY } from './parallel.js';
 import { Nvidia, writeNvidiaGrant } from './nvidia.js';
 import { Zro, writeZroGrant } from './zro.js';
 import { TokenHarbor, writeTokenHarborGrant } from './tokenharbor.js';
-import { Runcrate, RuncrateVerificationError, validateRuncrateVerification, writeRuncrateGrant } from './runcrate.js';
+import { Runcrate, RuncrateVerificationError, readRuncrateGrant, validateRuncrateVerification, verifyRuncrateDirectGrant, writeRuncrateGrant } from './runcrate.js';
 import type { RuncrateGrantVerifier, RuncrateVerification } from './runcrate.js';
 import { setupMistralVibe } from './mistral-vibe-setup.js';
 import { setupLiveKit } from './livekit-setup.js';
@@ -53,6 +53,7 @@ import { DATA_SHARING_POLICIES, dataSharingPolicies, readDataSharingConsent, reg
 import { resolveSquireGrant, writePrivateProviderGrant } from './provider-grant.js';
 import type { SquireGrantSource } from './provider-grant.js';
 import {
+  credentialFingerprint,
   defaultProviderOrigin,
   deleteVaultEntry,
   extractCredentialSecret,
@@ -215,7 +216,7 @@ async function probeGrant(source: Source, location: string, caller?: AbortSignal
   } catch (error) { await rm(join(location, `${source.id}.json`), { force: true }); signal.throwIfAborted(); throw error; }
 }
 
-export async function setupProviders(squire: SetupSquire, router: { addGrant(platform: string, grant: { base_url: string; token: string }): Promise<void>; hasKey?(platform: string): Promise<boolean> }, options: { providers?: Provider[]; notify: (line: string) => void; reuseSaved?: boolean; dataSharingApproved?: readonly string[]; signal?: AbortSignal | undefined; directory?: string; background?: boolean; allowDirectVault?: boolean } ) {
+export async function setupProviders(squire: SetupSquire, router: { addGrant(platform: string, grant: { base_url: string; token: string }): Promise<void>; hasKey?(platform: string): Promise<boolean> }, options: { providers?: Provider[]; notify: (line: string) => void; reuseSaved?: boolean; dataSharingApproved?: readonly string[]; signal?: AbortSignal | undefined; directory?: string; background?: boolean; exportToVault?: boolean } ) {
   const pending: string[] = [];
   const dropped: string[] = [];
   const drop = (provider: string, reason?: string, diagnostic?: SquireDiagnostic) => {
@@ -239,21 +240,20 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
       try { vaulted = await readVaultGrant(provider, options.directory ?? configRoot()); }
       catch (error) { rememberFailure(error); }
       if (vaulted) {
-        if (provider === 'runcrate' && options.allowDirectVault !== true) {
-          throw new RuncrateVerificationError(
-            'Runcrate local vault replacement key requires fresh free-account and top-ups-disabled verification before writing a receipt'
-          );
-        }
         try {
           await router.addGrant(provider, { base_url: vaulted.base_url, token: vaulted.token });
           options.signal?.throwIfAborted();
           options.notify(`${provider}: connected through local Grunt vault`);
           continue;
         } catch (error) {
-          if (error instanceof RuncrateVerificationError) throw error;
-          const status = rejectedStatus(error);
-          if (!status) rememberFailure(error);
-          else { options.signal?.throwIfAborted(); options.notify(`${provider}: local vault key rejected (HTTP ${status})`); }
+          if (error instanceof RuncrateVerificationError) {
+            options.signal?.throwIfAborted();
+            options.notify(`${provider}: local vault key could not be verified as free with top-ups disabled; falling back to Squire`);
+          } else {
+            const status = rejectedStatus(error);
+            if (!status) rememberFailure(error);
+            else { options.signal?.throwIfAborted(); options.notify(`${provider}: local vault key rejected (HTTP ${status})`); }
+          }
         }
       }
     }
@@ -267,7 +267,7 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
             directory: options.directory ?? configRoot(),
             ...(options.signal ? { signal: options.signal } : {}),
             ...(options.background !== undefined ? { background: options.background } : {}),
-            ...(provider === 'runcrate' && options.allowDirectVault !== true ? { allowDirectExport: false } : {}),
+            ...(options.exportToVault !== undefined ? { exportToVault: options.exportToVault } : {}),
             notify: options.notify
           });
           materialized = resolved.transport === 'direct';
@@ -281,7 +281,11 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
           if (materialized && isVaultProvider(provider)) {
             await deleteVaultEntry(provider, options.directory ?? configRoot()).catch(() => {});
           }
-          if (error instanceof RuncrateVerificationError) throw error;
+          if (error instanceof RuncrateVerificationError) {
+            options.signal?.throwIfAborted();
+            options.notify(`${provider}: exported key failed free/top-up verification; trying Squire egress`);
+            continue;
+          }
           const status = rejectedStatus(error);
           if (!status) rememberFailure(error);
           else { options.signal?.throwIfAborted(); options.notify(`${provider}: saved key rejected (HTTP ${status})`); }
@@ -325,6 +329,7 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
       directory: options.directory ?? configRoot(),
       ...(options.signal ? { signal: options.signal } : {}),
       ...(options.background !== undefined ? { background: options.background } : {}),
+      ...(options.exportToVault !== undefined ? { exportToVault: options.exportToVault } : {}),
       notify: options.notify
     });
     await router.addGrant(provider, { base_url: resolved.base_url, token: resolved.token });
@@ -1351,7 +1356,7 @@ export async function bootstrapKilo(squire: SetupSquire, directory: string, noti
   if (result.dropped.length) throw new SetupFailure('no verified Kilo credential');
 }
 
-export async function setup(notify = console.log, providers: string[] = ['groq'], options: { squire?: SetupSquire; signal?: AbortSignal; directory?: string; background?: boolean; dataSharingApproved?: readonly string[]; connect?: () => Promise<void>; upgradeBeatAPI?: boolean; registry?: () => Registry; verifyRuncrateGrant?: RuncrateGrantVerifier } = {}) {
+export async function setup(notify = console.log, providers: string[] = ['groq'], options: { squire?: SetupSquire; signal?: AbortSignal; directory?: string; background?: boolean; dataSharingApproved?: readonly string[]; connect?: () => Promise<void>; upgradeBeatAPI?: boolean; registry?: () => Registry; exportToVault?: boolean; verifyRuncrateGrant?: RuncrateGrantVerifier } = {}) {
   const retired = providers.find(provider => disabledAdapters.has(provider));
   if (retired) throw new Error(`${retired} routing is disabled`);
   const location = options.directory ?? configRoot();
@@ -1483,6 +1488,7 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
       if (typeof browser.signup !== 'function') throw new Error(`${provider} signup requires a browser-capable Squire client`);
       await (provider === 'pollinations' ? setupPollinations : provider === 'beatapi' ? setupBeatAPI : setupPerch)({ directory: location, squire: browser,
         dataSharingApproved: approved, notify, ...(options.signal ? { signal: options.signal } : {}),
+        ...(provider !== 'perch' && options.exportToVault !== undefined ? { exportToVault: options.exportToVault } : {}),
         ...(provider === 'beatapi' && options.upgradeBeatAPI ? { upgradeExisting: true } : {}) });
       providers = providers.filter(id => id !== provider);
     }
@@ -1500,16 +1506,28 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
     }
     if (providers.includes('runcrate')) {
       const source = new Runcrate({ directory: location });
+      const verifyDirect: RuncrateGrantVerifier = options.verifyRuncrateGrant
+        ?? ((grant, signal) => verifyRuncrateDirectGrant(grant, signal ? { signal } : {}));
       try {
         const result = await setupProviders(squire, {
-          hasKey: async id => id === 'runcrate' && await source.available(),
+          hasKey: async id => {
+            if (id !== 'runcrate') return false;
+            const vaulted = await readVaultGrant('runcrate', location).catch(() => undefined);
+            if (vaulted) {
+              const saved = await readRuncrateGrant(location).catch(() => undefined);
+              if (!saved || credentialFingerprint(saved) !== credentialFingerprint(vaulted)) return false;
+            }
+            return source.available();
+          },
           addGrant: async (id, grant) => {
             if (id !== 'runcrate') throw new Error('Unexpected runcrate credential');
+            let isDirect = false;
+            try { validateDirectOrigin('runcrate', grant.base_url); isDirect = true; } catch { /* Squire egress grant. */ }
             let verification: RuncrateVerification | undefined;
-            if (options.verifyRuncrateGrant) {
+            if (isDirect) {
               let raw: unknown;
               try {
-                raw = await options.verifyRuncrateGrant(grant, options.signal);
+                raw = await verifyDirect(grant, options.signal);
               } catch (error) {
                 options.signal?.throwIfAborted();
                 if (error instanceof RuncrateVerificationError) throw error;
@@ -1528,7 +1546,7 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
           reuseSaved: false,
           signal: options.signal,
           directory: location,
-          allowDirectVault: Boolean(options.verifyRuncrateGrant),
+          ...(options.exportToVault !== undefined ? { exportToVault: options.exportToVault } : {}),
           ...(options.background !== undefined ? { background: options.background } : {})
         });
         if (result.dropped.length) throw new Error('runcrate setup incomplete; rerun usegrunt setup');
@@ -1586,7 +1604,7 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
     const router = await readyRouter(options.signal);
     options.signal?.throwIfAborted();
     for (const provider of providers) if (providerURL(provider)) await setupURL(squire as BrowserSquire, router, provider, notify);
-    const result = await setupProviders(squire, router, { providers: providers.filter(provider => !providerURL(provider)) as Provider[], notify, dataSharingApproved: approved, directory: location, ...(options.background !== undefined ? { background: options.background } : {}) });
+    const result = await setupProviders(squire, router, { providers: providers.filter(provider => !providerURL(provider)) as Provider[], notify, dataSharingApproved: approved, directory: location, ...(options.exportToVault !== undefined ? { exportToVault: options.exportToVault } : {}), ...(options.background !== undefined ? { background: options.background } : {}) });
     const dropped = new Set(result.dropped);
     if (dropped.size) throw new Error(`Provider setup incomplete: ${[...dropped].join(', ')}`);
     await router.configureChain([...dropped], approved);

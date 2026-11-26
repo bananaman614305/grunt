@@ -28,8 +28,9 @@ import {
 import type { PollinationsGrant } from './pollinations.js';
 import { setupPollinations } from './pollinations-setup.js';
 import { materializeDirectGrant, readPrivateProviderGrant, validatePinnedProviderGrant, writePrivateProviderGrant } from './provider-grant.js';
-import { Runcrate, RUNCRATE_DEEPSEEK, RuncrateVerificationError, readRuncrateGrant, writeRuncrateGrant } from './runcrate.js';
+import { Runcrate, RUNCRATE_BILLING_ORIGIN, RUNCRATE_DEEPSEEK, RUNCRATE_ORIGIN, RuncrateVerificationError, readRuncrateGrant, writeRuncrateGrant } from './runcrate.js';
 import { BrowserSquire, setup, setupProviders } from './setup.js';
+import { wizard } from './wizard.js';
 import {
   SQUIRE_EGRESS_ORIGIN,
   credentialFingerprint,
@@ -622,13 +623,13 @@ it('binds Runcrate key_topups_disabled and Zro receipts to the verified credenti
   await deleteVaultEntry('runcrate', directory);
   await expect(readRuncrateGrant(directory, {})).rejects.toThrow('Invalid runcrate vault-backed verification receipt');
 
-  // Legacy egress Runcrate receipt also refuses an unverified replacement vault key.
+  // Legacy egress Runcrate receipt never substitutes an unverified local vault key; it keeps using only its verified egress token.
   const legacyEgress = { base_url: `${SQUIRE_EGRESS_ORIGIN}/v1/egress/g_${'r'.repeat(24)}`, token: 'synthetic-egress-runcrate' };
   await rm(join(directory, 'runcrate.json'), { force: true });
   await writeRuncrateGrant(legacyEgress, directory);
   expect(await readRuncrateGrant(directory, {})).toMatchObject({ ...legacyEgress, key_topups_disabled: true });
   await writeVaultEntry('runcrate', { api_key: replacementKey, source: 'import' }, directory);
-  await expect(readRuncrateGrant(directory, {})).rejects.toThrow('does not match');
+  expect(await readRuncrateGrant(directory, {})).toMatchObject({ ...legacyEgress, key_topups_disabled: true });
   await source.close();
 
   // Zro receipts are likewise bound to the verified credential fingerprint.
@@ -641,29 +642,49 @@ it('binds Runcrate key_topups_disabled and Zro receipts to the verified credenti
   await expect(readZroGrant(directory, {})).rejects.toThrow('verification is missing');
 });
 
-it('requires fresh exact-key free-account and top-up verification during Runcrate setup for replacement vault and env keys', async () => {
+it('verifies Runcrate replacement keys through normal CLI setup, falls back to Squire when vault verification fails, and allows refreshed Squire egress grants', async () => {
+  vi.stubEnv('GRUNT_CONFIG_DIR', directory);
   await recordDataSharingConsent(directory, ['runcrate']);
   const verifiedKey = 'sk-runcrate-initial-verified-key';
-  const replacementKey = 'sk-runcrate-replacement-vault-key';
-  const envReplacementKey = 'sk-runcrate-replacement-env-key';
-  const verifiedGrant = { base_url: 'https://api.runcrate.ai', token: verifiedKey };
-  const replacementGrant = { base_url: 'https://api.runcrate.ai', token: replacementKey };
-  const envReplacementGrant = { base_url: 'https://api.runcrate.ai', token: envReplacementKey };
+  const safeReplacementKey = 'sk-runcrate-safe-replacement-key';
+  const unsafeReplacementKey = 'sk-runcrate-unsafe-topup-key';
+  const envReplacementKey = 'sk-runcrate-safe-env-key';
+  const oldEgressUrl = `${SQUIRE_EGRESS_ORIGIN}/v1/egress/g_${'1'.repeat(24)}`;
+  const newEgressUrl = `${SQUIRE_EGRESS_ORIGIN}/v1/egress/g_${'2'.repeat(24)}`;
+  const oldEgressToken = 'synthetic-egress-runcrate-old';
+  const newEgressToken = 'synthetic-egress-runcrate-new';
+
+  const verifiedGrant = { base_url: RUNCRATE_ORIGIN, token: verifiedKey };
+  const safeGrant = { base_url: RUNCRATE_ORIGIN, token: safeReplacementKey };
+  const envGrant = { base_url: RUNCRATE_ORIGIN, token: envReplacementKey };
 
   await writeVaultEntry('runcrate', { api_key: verifiedKey, source: 'import' }, directory);
-  const initialProof = {
-    free_account_verified: true as const,
-    key_topups_disabled: true as const,
-    credential_sha256: credentialFingerprint(verifiedGrant),
-    verified_at: new Date().toISOString()
-  };
-  await writeRuncrateGrant(verifiedGrant, directory, { verification: initialProof });
+  await writeRuncrateGrant(verifiedGrant, directory, {
+    verification: {
+      free_account_verified: true,
+      key_topups_disabled: true,
+      credential_sha256: credentialFingerprint(verifiedGrant),
+      verified_at: new Date().toISOString()
+    }
+  });
 
   const server = await startFakeUpstream(req => {
-    if (req.url === '/v1/models') {
+    const auth = req.authorization;
+    if (req.url === '/api/v1/billing/balance') {
+      return { body: { creditsBalance: 0, activeUsageCost: 0, floating_balance_usd: 0 } };
+    }
+    if (req.url === '/api/v1/billing/auto-recharge') {
+      return { body: { enabled: auth === `Bearer ${unsafeReplacementKey}` } };
+    }
+    if (req.url === '/api/v1/billing/payment-methods') {
+      return { body: { payment_methods: [] } };
+    }
+    if (req.url === '/v1/models' || req.url.endsWith('/v1/models')) {
+      if (auth === `Bearer ${oldEgressToken}`) return { status: 401, body: { error: 'expired' } };
       return { body: { data: [{ id: RUNCRATE_DEEPSEEK }] } };
     }
-    if (req.url === '/v1/chat/completions') {
+    if (req.url === '/v1/chat/completions' || req.url.endsWith('/v1/chat/completions')) {
+      if (auth === `Bearer ${oldEgressToken}`) return { status: 401, body: { error: 'expired' } };
       return { body: { model: RUNCRATE_DEEPSEEK, choices: [{ message: { content: 'ready' }, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 2 } } };
     }
     return { status: 404, body: { error: 'not found' } };
@@ -673,104 +694,100 @@ it('requires fresh exact-key free-account and top-up verification during Runcrat
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const requested = String(input);
     const parsed = new URL(requested);
-    expect(parsed.origin).toBe('https://api.runcrate.ai');
+    expect([RUNCRATE_ORIGIN, RUNCRATE_BILLING_ORIGIN, SQUIRE_EGRESS_ORIGIN]).toContain(parsed.origin);
     return realFetch(`${server.origin}${parsed.pathname}${parsed.search}`, init);
   });
 
-  const squire = {
-    credentials: {
-      list: vi.fn(async () => { throw new Error('Squire list must not bypass replacement verification'); }),
-      grant: vi.fn(async () => { throw new Error('Squire grant must not bypass replacement verification'); })
-    },
-    runs: {
-      start: vi.fn(async () => { throw new Error('Squire signup must not bypass replacement verification'); }),
-      get: vi.fn()
+  const squireCalls = vi.fn(async (name: string) => {
+    if (name === 'list_credentials') {
+      return { credentials: [{ service: 'runcrate', reference: 'vault://runcrate-squire', field_names: ['api_key'] }] };
     }
-  };
+    if (name === 'grant_app_access') {
+      return { base_url: newEgressUrl, token: newEgressToken };
+    }
+    throw new Error(`Unexpected Squire call: ${name}`);
+  });
+
+  const runCliAddRuncrate = () => wizard('runcrate', {
+    preflight: async () => {},
+    connectSquire: async () => ({}),
+    createSquire: () => {
+      const squire = new BrowserSquire();
+      vi.spyOn(squire, 'connect').mockResolvedValue();
+      vi.spyOn(squire, 'close').mockResolvedValue();
+      vi.spyOn(squire, 'call').mockImplementation(async name => squireCalls(name));
+      return squire;
+    },
+    approveDataSharing: async () => ({ approved: ['runcrate'], skipped: [] }),
+    installService: async () => {},
+    checkService: async () => {},
+    checkFallbackServices: async () => {},
+    smokeTest: async () => {},
+    resumeBackground: async () => {},
+    setupFallbacks: async () => ({ unavailable: [] }),
+    setup
+  });
 
   try {
-    // Replace key in vault.json without fresh verification: setup must refuse and preserve old receipt.
-    await writeVaultEntry('runcrate', { api_key: replacementKey, source: 'import' }, directory);
-    const notifications: string[] = [];
-    await expect(setup(line => notifications.push(line), ['runcrate'], { directory, squire }))
-      .rejects.toBeInstanceOf(RuncrateVerificationError);
-    expect(server.seen).toHaveLength(0);
-    expect(squire.credentials.list).not.toHaveBeenCalled();
-    expect(squire.runs.start).not.toHaveBeenCalled();
-    expect(JSON.parse(await readFile(join(directory, 'runcrate.json'), 'utf8'))).toMatchObject({
-      credential_sha256: credentialFingerprint(verifiedGrant)
-    });
-    expect(await new Runcrate({ directory }).available()).toBe(false);
-
-    // Stale proof bound to the old key or key_topups_disabled=false must also be rejected before probing.
-    await expect(setup(line => notifications.push(line), ['runcrate'], {
-      directory,
-      squire,
-      verifyRuncrateGrant: async () => initialProof
-    })).rejects.toBeInstanceOf(RuncrateVerificationError);
-    await expect(setup(line => notifications.push(line), ['runcrate'], {
-      directory,
-      squire,
-      verifyRuncrateGrant: async grant => ({
-        free_account_verified: true,
-        key_topups_disabled: false as unknown as true,
-        credential_sha256: credentialFingerprint(grant),
-        verified_at: new Date().toISOString()
-      })
-    })).rejects.toBeInstanceOf(RuncrateVerificationError);
-    await expect(setup(line => notifications.push(line), ['runcrate'], {
-      directory,
-      squire,
-      verifyRuncrateGrant: async () => { throw new Error('Auto top-ups are enabled on this key'); }
-    })).rejects.toBeInstanceOf(RuncrateVerificationError);
-    expect(server.seen).toHaveLength(0);
-    expect(JSON.parse(await readFile(join(directory, 'runcrate.json'), 'utf8'))).toMatchObject({
-      credential_sha256: credentialFingerprint(verifiedGrant)
-    });
-
-    // Fresh free-account + top-ups-disabled verification for the exact replacement key succeeds.
-    const verifiedCalls: string[] = [];
-    await setup(line => notifications.push(line), ['runcrate'], {
-      directory,
-      squire,
-      verifyRuncrateGrant: async grant => {
-        verifiedCalls.push(grant.token);
-        return {
-          free_account_verified: true,
-          key_topups_disabled: true,
-          credential_sha256: credentialFingerprint(grant),
-          verified_at: new Date().toISOString()
-        };
-      }
-    });
-    expect(verifiedCalls).toEqual([replacementKey]);
-    expect(server.seen).toEqual([{ method: 'POST', url: '/v1/chat/completions', authorization: `Bearer ${replacementKey}` }]);
-    expect(notifications.join('\n')).not.toContain(replacementKey);
-    const updatedReceipt = await readFile(join(directory, 'runcrate.json'), 'utf8');
-    expect(updatedReceipt).not.toContain(replacementKey);
-    expect(JSON.parse(updatedReceipt)).toMatchObject({
+    // 1. Safe local vault replacement key verified through normal CLI setup without injecting verifyRuncrateGrant.
+    await vaultCommand(['set', 'runcrate'], { directory, env: {}, log: () => {}, readSecret: async () => safeReplacementKey });
+    await runCliAddRuncrate();
+    expect(squireCalls).not.toHaveBeenCalled();
+    expect(server.seen.map(item => `${item.method} ${item.url}`)).toEqual([
+      'GET /api/v1/billing/balance',
+      'GET /api/v1/billing/auto-recharge',
+      'GET /api/v1/billing/payment-methods',
+      'GET /v1/models',
+      'POST /v1/chat/completions'
+    ]);
+    const savedDirectText = await readFile(join(directory, 'runcrate.json'), 'utf8');
+    expect(savedDirectText).not.toContain(safeReplacementKey);
+    expect(JSON.parse(savedDirectText)).toMatchObject({
       credential_source: 'vault',
-      credential_sha256: credentialFingerprint(replacementGrant),
+      credential_sha256: credentialFingerprint(safeGrant),
       free_account_verified: true,
       key_topups_disabled: true
     });
-    expect(await readRuncrateGrant(directory, {})).toMatchObject({ ...replacementGrant, key_topups_disabled: true });
+    expect(await readRuncrateGrant(directory, {})).toMatchObject({ ...safeGrant, key_topups_disabled: true });
+
+    // 2. Unsafe local vault replacement key (auto-recharge enabled) is rejected and normal CLI falls back cleanly to Squire egress without calling fetch_credential.
+    server.seen.length = 0;
+    squireCalls.mockClear();
+    await vaultCommand(['set', 'runcrate'], { directory, env: {}, log: () => {}, readSecret: async () => unsafeReplacementKey });
+    await runCliAddRuncrate();
+    expect(server.seen.some(item => item.authorization === `Bearer ${unsafeReplacementKey}` && item.url.includes('/chat/completions'))).toBe(false);
+    expect(squireCalls.mock.calls.some(([name]) => name === 'fetch_credential')).toBe(false);
+    expect(squireCalls.mock.calls.some(([name]) => name === 'grant_app_access')).toBe(true);
+    expect(await readRuncrateGrant(directory, {})).toMatchObject({
+      base_url: newEgressUrl,
+      token: newEgressToken,
+      credential_sha256: credentialFingerprint({ base_url: newEgressUrl, token: newEgressToken }),
+      key_topups_disabled: true
+    });
     expect(await new Runcrate({ directory }).available()).toBe(true);
 
-    // Env-var replacement key also requires fresh verification for that exact env key.
-    vi.stubEnv(vaultEnvKeyName('runcrate'), envReplacementKey);
-    await expect(setup(() => {}, ['runcrate'], { directory, squire })).rejects.toBeInstanceOf(RuncrateVerificationError);
-    await setup(() => {}, ['runcrate'], {
-      directory,
-      squire,
-      verifyRuncrateGrant: async grant => ({
-        free_account_verified: true,
-        key_topups_disabled: true,
-        credential_sha256: credentialFingerprint(grant),
-        verified_at: new Date().toISOString()
-      })
+    // 3. Refreshed Squire egress grant with a changed fingerprint replaces an expired egress receipt cleanly through normal CLI setup.
+    await deleteVaultEntry('runcrate', directory);
+    await writeRuncrateGrant({ base_url: oldEgressUrl, token: oldEgressToken }, directory);
+    server.seen.length = 0;
+    squireCalls.mockClear();
+    await runCliAddRuncrate();
+    expect(squireCalls.mock.calls.some(([name]) => name === 'fetch_credential')).toBe(false);
+    expect(squireCalls.mock.calls.some(([name]) => name === 'grant_app_access')).toBe(true);
+    expect(await readRuncrateGrant(directory, {})).toMatchObject({
+      base_url: newEgressUrl,
+      token: newEgressToken,
+      credential_sha256: credentialFingerprint({ base_url: newEgressUrl, token: newEgressToken })
     });
-    expect(await readRuncrateGrant(directory)).toMatchObject({ ...envReplacementGrant, key_topups_disabled: true });
+    expect(await new Runcrate({ directory }).available()).toBe(true);
+
+    // 4. Safe env-var replacement key also verifies end-to-end through normal CLI setup.
+    vi.stubEnv(vaultEnvKeyName('runcrate'), envReplacementKey);
+    server.seen.length = 0;
+    squireCalls.mockClear();
+    await runCliAddRuncrate();
+    expect(squireCalls).not.toHaveBeenCalled();
+    expect(await readRuncrateGrant(directory)).toMatchObject({ ...envGrant, key_topups_disabled: true });
   } finally {
     await server.close();
   }
@@ -832,10 +849,33 @@ it('keeps backwards compatibility with existing Squire egress grants and rejects
   });
 });
 
-it('wires passkey-approved export into production setupProviders and falls back to Squire egress when declined or unavailable', async () => {
+it('keeps default silent setupProviders non-blocking (never calling fetch_credential) and supports opt-in passkey export with egress fallback', async () => {
   const squire = new BrowserSquire();
   const secret = 'sk-groq-passkey-exported-secret';
+  const egressUrl = `${SQUIRE_EGRESS_ORIGIN}/v1/egress/g_${'e'.repeat(24)}`;
   const callSpy = vi.spyOn(squire, 'call').mockImplementation(async (name, args) => {
+    if (name === 'list_credentials') return { credentials: [{ service: 'groq', reference: 'vault://groq', field_names: ['api_key'] }] };
+    if (name === 'fetch_credential') throw new Error('default silent setup must never call fetch_credential');
+    if (name === 'grant_app_access') return { base_url: egressUrl, token: 'synthetic-egress-default' };
+    return { args };
+  });
+
+  const added: { platform: string; grant: { base_url: string; token: string } }[] = [];
+  const notifications: string[] = [];
+  await setupProviders(squire, {
+    addGrant: async (platform, grant) => { added.push({ platform, grant }); }
+  }, { providers: ['groq'], notify: line => notifications.push(line), reuseSaved: false, directory });
+
+  expect(added).toEqual([{ platform: 'groq', grant: { base_url: egressUrl, token: 'synthetic-egress-default' } }]);
+  expect(callSpy.mock.calls.some(([name]) => name === 'fetch_credential')).toBe(false);
+  expect(notifications.join('\n')).toContain('connected through Squire grant');
+  expect(notifications.join('\n')).not.toContain('synthetic-egress-default');
+
+  // Opt-in exportToVault: true invokes passkey-approved export and stores the key in vault.json.
+  added.length = 0;
+  notifications.length = 0;
+  callSpy.mockClear();
+  callSpy.mockImplementation(async (name, args) => {
     if (name === 'list_credentials') return { credentials: [{ service: 'groq', reference: 'vault://groq', field_names: ['api_key'] }] };
     if (name === 'fetch_credential' && args.action === 'start') {
       return { status: 'approval_pending', approval_id: 'apr_groq', approval_url: 'https://trusty-squire.example/approve/apr_groq' };
@@ -843,18 +883,16 @@ it('wires passkey-approved export into production setupProviders and falls back 
     if (name === 'fetch_credential' && args.action === 'resume') {
       return { status: 'credential_fetched', fields: { api_key: secret } };
     }
-    if (name === 'grant_app_access') throw new Error('must not mint egress grant when passkey export succeeds');
+    if (name === 'grant_app_access') throw new Error('must not mint egress grant when opt-in passkey export succeeds');
     return {};
   });
   vi.spyOn(squire, 'materializeDirectVaultGrant').mockImplementationOnce((provider, reference, opts) =>
     BrowserSquire.prototype.materializeDirectVaultGrant.call(squire, provider, reference, { ...opts, pollIntervalMs: 50 })
   );
 
-  const added: { platform: string; grant: { base_url: string; token: string } }[] = [];
-  const notifications: string[] = [];
   await setupProviders(squire, {
     addGrant: async (platform, grant) => { added.push({ platform, grant }); }
-  }, { providers: ['groq'], notify: line => notifications.push(line), reuseSaved: false, directory });
+  }, { providers: ['groq'], notify: line => notifications.push(line), reuseSaved: false, directory, exportToVault: true });
 
   expect(added).toEqual([{ platform: 'groq', grant: { base_url: 'https://api.groq.com', token: secret } }]);
   expect(await readVaultEntry('groq', directory)).toMatchObject({ api_key: secret, origin: 'https://api.groq.com', source: 'squire' });
@@ -863,32 +901,93 @@ it('wires passkey-approved export into production setupProviders and falls back 
   expect(notifications.join('\n')).toContain('connected through local Grunt vault');
   expect(notifications.join('\n')).not.toContain(secret);
 
-  // When passkey export is declined, setupProviders cleanly falls back to Squire egress.
+  // When opt-in passkey export is declined, setupProviders cleanly falls back to Squire egress.
   await deleteVaultEntry('groq', directory);
   added.length = 0;
   notifications.length = 0;
-  callSpy.mockImplementation(async name => {
-    if (name === 'list_credentials') return { credentials: [{ service: 'groq', reference: 'vault://groq', field_names: ['api_key'] }] };
+  const declinedSquire = new BrowserSquire();
+  vi.spyOn(declinedSquire, 'call').mockImplementation(async name => {
+    if (name === 'list_credentials') return { credentials: [{ service: 'groq', reference: 'vault://groq-declined', field_names: ['api_key'] }] };
     if (name === 'fetch_credential') return { status: 'credential_fetch_refused', reason: 'user_denied' };
-    if (name === 'grant_app_access') return { base_url: `${SQUIRE_EGRESS_ORIGIN}/v1/egress/g_${'e'.repeat(24)}`, token: 'synthetic-egress-fallback' };
+    if (name === 'grant_app_access') return { base_url: egressUrl, token: 'synthetic-egress-fallback' };
     return {};
   });
-  await setupProviders(squire, {
+  await setupProviders(declinedSquire, {
     addGrant: async (platform, grant) => { added.push({ platform, grant }); }
-  }, { providers: ['groq'], notify: line => notifications.push(line), reuseSaved: false, directory });
+  }, { providers: ['groq'], notify: line => notifications.push(line), reuseSaved: false, directory, exportToVault: true });
 
-  expect(added).toEqual([{ platform: 'groq', grant: { base_url: `${SQUIRE_EGRESS_ORIGIN}/v1/egress/g_${'e'.repeat(24)}`, token: 'synthetic-egress-fallback' } }]);
+  expect(added).toEqual([{ platform: 'groq', grant: { base_url: egressUrl, token: 'synthetic-egress-fallback' } }]);
   expect(notifications.join('\n')).toContain('connected through Squire grant');
   expect(notifications.join('\n')).not.toContain('synthetic-egress-fallback');
+
+  // Explicit CLI opt-in `usegrunt vault export <provider>` exports a key into vault.json without echoing secrets.
+  const cliLines: string[] = [];
+  callSpy.mockImplementation(async (name, args) => {
+    if (name === 'list_credentials') return { credentials: [{ service: 'groq', reference: 'vault://groq', field_names: ['api_key'] }] };
+    if (name === 'fetch_credential' && args.action === 'start') {
+      return { status: 'credential_fetched', fields: { api_key: secret } };
+    }
+    return {};
+  });
+  await vaultCommand(['export', 'groq'], { directory, env: {}, log: l => cliLines.push(l), squire });
+  expect(await readVaultEntry('groq', directory)).toMatchObject({ api_key: secret, origin: 'https://api.groq.com', source: 'squire' });
+  expect(cliLines.join('\n')).toContain('exported from Trusty Squire into local Grunt vault');
+  expect(cliLines.join('\n')).not.toContain(secret);
 });
 
-it('wires passkey-approved export into setupBeatAPI and setupPollinations after browser signup, with immediate egress fallback in background mode', async () => {
+it('keeps default setupBeatAPI and setupPollinations non-blocking on Squire egress and supports opt-in passkey export', async () => {
   await recordDataSharingConsent(directory, ['beatapi', 'pollinations']);
   const beatSecret = 'sk-beat-exported-via-signup';
   const pollSecret = 'sk-poll-exported-via-signup';
+  const beatEgressUrl = `${SQUIRE_EGRESS_ORIGIN}/v1/egress/g_${'a'.repeat(24)}`;
+  const pollEgressUrl = `${SQUIRE_EGRESS_ORIGIN}/v1/egress/g_${'b'.repeat(24)}`;
   const squire = new BrowserSquire();
   vi.spyOn(squire, 'signup').mockResolvedValue();
+
+  // Default signup uses Squire egress without calling fetch_credential.
   const callSpy = vi.spyOn(squire, 'call').mockImplementation(async (name, args) => {
+    if (name === 'list_credentials') {
+      return {
+        credentials: [
+          { service: 'beatapi', label: 'grunt', reference: 'vault://beatapi-new', field_names: ['value'], allowed_hosts: ['api.beatapi.io'] },
+          { service: 'pollinations', label: 'grunt-free-pollinations', reference: 'vault://poll-new', field_names: ['api_key'], allowed_hosts: ['gen.pollinations.ai'] }
+        ]
+      };
+    }
+    if (name === 'fetch_credential') throw new Error('default setup must never invoke fetch_credential');
+    if (name === 'grant_app_access') {
+      return args.reference === 'vault://beatapi-new'
+        ? { base_url: beatEgressUrl, token: 'synthetic-beat-egress' }
+        : { base_url: pollEgressUrl, token: 'synthetic-poll-egress' };
+    }
+    return {};
+  });
+
+  const defaultBeatFetcher = vi.fn<typeof fetch>(async url => {
+    expect(String(url).startsWith(beatEgressUrl)).toBe(true);
+    return String(url).endsWith('/v1/models')
+      ? Response.json({ data: BEATAPI_MODELS.map(id => ({ id })) })
+      : Response.json({ data: { object: 'usage', credit_balance: 0, credits_settled: 0 } });
+  });
+  await setupBeatAPI({ directory, squire, fetcher: defaultBeatFetcher });
+  expect(callSpy.mock.calls.some(([name]) => name === 'fetch_credential')).toBe(false);
+  expect(await readBeatAPIGrant(directory, {})).toMatchObject({ base_url: beatEgressUrl, token: 'synthetic-beat-egress', version: 2 });
+
+  const defaultPollFetcher = vi.fn<typeof fetch>(async url => {
+    expect(String(url).startsWith(pollEgressUrl)).toBe(true);
+    const route = String(url).slice(pollEgressUrl.length);
+    if (route === '/account/key') return Response.json({ valid: true, type: 'secret', expiresAt: null, pollenBudget: 0, questPollenOnly: true, permissions: { models: null, account: ['usage'] } });
+    if (route === '/account/balance') return Response.json({ balance: 0, accountBalance: { total: 0.25, tier: 0.25, paid: 0 } });
+    return Response.json({ id: POLLINATIONS_MODEL, object: 'model', owned_by: 'OSAII', category: 'text', community: true, paid_only: false, pricing: { currency: 'pollen' }, supported_endpoints: ['/v1/chat/completions'] });
+  });
+  await setupPollinations({ directory, squire, fetcher: defaultPollFetcher });
+  expect(callSpy.mock.calls.some(([name]) => name === 'fetch_credential')).toBe(false);
+  expect(await readPollinationsGrant(directory, {})).toMatchObject({ base_url: pollEgressUrl, token: 'synthetic-poll-egress' });
+
+  // Explicit opt-in exportToVault: true exports into vault.json and writes vault-backed receipts.
+  await rm(beatapiGrantPath(directory), { force: true });
+  await rm(pollinationsGrantPath(directory), { force: true });
+  callSpy.mockImplementation(async (name, args) => {
     if (name === 'list_credentials') {
       return {
         credentials: [
@@ -901,7 +1000,7 @@ it('wires passkey-approved export into setupBeatAPI and setupPollinations after 
       const secret = args.reference === 'vault://beatapi-new' ? beatSecret : pollSecret;
       return { status: 'credential_fetched', fields: { api_key: secret } };
     }
-    if (name === 'grant_app_access') throw new Error('must not call grant_app_access when export succeeds');
+    if (name === 'grant_app_access') throw new Error('must not call grant_app_access when opt-in export succeeds');
     return {};
   });
 
@@ -912,7 +1011,7 @@ it('wires passkey-approved export into setupBeatAPI and setupPollinations after 
       ? Response.json({ data: BEATAPI_MODELS.map(id => ({ id })) })
       : Response.json({ data: { object: 'usage', credit_balance: 0, credits_settled: 0 } });
   });
-  await setupBeatAPI({ directory, squire, fetcher: beatFetcher });
+  await setupBeatAPI({ directory, squire, fetcher: beatFetcher, exportToVault: true });
   expect(await readVaultEntry('beatapi', directory)).toMatchObject({ api_key: beatSecret, origin: BEATAPI_ORIGIN, source: 'squire' });
   expect(await readFile(beatapiGrantPath(directory), 'utf8')).not.toContain(beatSecret);
   expect(await readBeatAPIGrant(directory, {})).toMatchObject({ base_url: BEATAPI_ORIGIN, token: beatSecret, version: 2 });
@@ -925,12 +1024,12 @@ it('wires passkey-approved export into setupBeatAPI and setupPollinations after 
     if (route === '/account/balance') return Response.json({ balance: 0, accountBalance: { total: 0.25, tier: 0.25, paid: 0 } });
     return Response.json({ id: POLLINATIONS_MODEL, object: 'model', owned_by: 'OSAII', category: 'text', community: true, paid_only: false, pricing: { currency: 'pollen' }, supported_endpoints: ['/v1/chat/completions'] });
   });
-  await setupPollinations({ directory, squire, fetcher: pollFetcher });
+  await setupPollinations({ directory, squire, fetcher: pollFetcher, exportToVault: true });
   expect(await readVaultEntry('pollinations', directory)).toMatchObject({ api_key: pollSecret, origin: POLLINATIONS_ORIGIN, source: 'squire' });
   expect(await readFile(pollinationsGrantPath(directory), 'utf8')).not.toContain(pollSecret);
   expect(await readPollinationsGrant(directory, {})).toMatchObject({ base_url: POLLINATIONS_ORIGIN, token: pollSecret });
 
-  // In background mode, approval_pending falls back immediately to Squire egress without polling.
+  // Even with opt-in exportToVault: true, background mode falls back immediately to Squire egress without polling.
   await deleteVaultEntry('beatapi', directory);
   await rm(beatapiGrantPath(directory), { force: true });
   const egressUrl = `${SQUIRE_EGRESS_ORIGIN}/v1/egress/g_${'f'.repeat(24)}`;
@@ -950,7 +1049,7 @@ it('wires passkey-approved export into setupBeatAPI and setupPollinations after 
       ? Response.json({ data: BEATAPI_MODELS.map(id => ({ id })) })
       : Response.json({ data: { object: 'usage', credit_balance: 0, credits_settled: 0 } });
   });
-  await setupBeatAPI({ directory, squire, fetcher: bgFetcher, background: true });
+  await setupBeatAPI({ directory, squire, fetcher: bgFetcher, background: true, exportToVault: true });
   expect(await readBeatAPIGrant(directory, {})).toMatchObject({ base_url: egressUrl, token: 'synthetic-bg-egress-token' });
 });
 

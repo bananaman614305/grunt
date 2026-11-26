@@ -12,7 +12,7 @@ export interface BeatAPISetupSquire extends SquireGrantSource {
   credentials: { list(): Promise<Credential[]>; grant(reference: string): Promise<{ base_url: string; token: string }> };
   approveDataSharing?(providers: readonly string[]): void;
 }
-export interface BeatAPISetupOptions { directory: string; squire: BeatAPISetupSquire; signal?: AbortSignal; dataSharingApproved?: readonly string[]; notify?(line: string): void; fetcher?: typeof fetch; background?: boolean; upgradeExisting?: boolean }
+export interface BeatAPISetupOptions { directory: string; squire: BeatAPISetupSquire; signal?: AbortSignal; dataSharingApproved?: readonly string[]; notify?(line: string): void; fetcher?: typeof fetch; background?: boolean; upgradeExisting?: boolean; exportToVault?: boolean }
 const failure = () => new Error('BeatAPI free account or key verification did not complete; rerun usegrunt setup');
 const connected = 'BeatAPI: free-only DeepSeek V4.1 Flash and GLM 5.3 Flash connected; one successful request per minute across both models';
 const deepseekOnly = 'BeatAPI: free DeepSeek V4.1 Flash connected; GLM 5.3 Flash is unavailable on this key';
@@ -98,6 +98,7 @@ export async function setupBeatAPI(options: BeatAPISetupOptions): Promise<void> 
       directory: options.directory,
       signal,
       ...(options.background !== undefined ? { background: options.background } : {}),
+      ...(options.exportToVault !== undefined ? { exportToVault: options.exportToVault } : {}),
       ...(options.notify ? { notify: options.notify } : {})
     }), signal);
     const usage = await bounded(() => verifyBeatAPIAccess(grant, guards), signal);

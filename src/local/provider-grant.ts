@@ -88,9 +88,11 @@ function isDirectOrigin(provider: string, baseUrl: string): boolean {
   }
 }
 /**
- * Resolves a Squire credential reference into a direct local Grunt vault grant
- * via passkey-approved export when available, falling back seamlessly to a
- * Squire egress grant when direct export is unavailable or declined.
+ * Resolves a Squire credential reference into a Squire egress grant by default
+ * (never stalling silent setup on passkey prompts). When `exportToVault: true`
+ * is explicitly requested, attempts passkey-approved export into the local
+ * Grunt vault and falls back cleanly to a Squire egress grant if unavailable or
+ * declined.
  */
 export async function resolveSquireGrant(
   provider: string,
@@ -100,13 +102,13 @@ export async function resolveSquireGrant(
     directory?: string;
     signal?: AbortSignal;
     background?: boolean;
-    allowDirectExport?: boolean;
+    exportToVault?: boolean;
     notify?: (line: string) => void;
     onApproval?: (info: { approvalId: string; approvalUrl: string }) => Promise<void> | void;
   } = {}
 ): Promise<ResolvedSquireGrant> {
   options.signal?.throwIfAborted();
-  if (options.allowDirectExport !== false && isVaultProvider(provider) && typeof squire.materializeDirectVaultGrant === 'function') {
+  if (options.exportToVault === true && isVaultProvider(provider) && typeof squire.materializeDirectVaultGrant === 'function') {
     try {
       const direct = await squire.materializeDirectVaultGrant(provider, reference, {
         ...(options.directory ? { directory: options.directory } : {}),
@@ -196,14 +198,9 @@ export async function readPrivateProviderGrant(
       return { ...record, base_url: vaulted.base_url, token: vaulted.token };
     }
     const access = validateProviderGrant(record);
-    const expected = isCredentialFingerprint(record.credential_sha256)
-      ? record.credential_sha256
-      : credentialFingerprint(access);
-    if (record.credential_sha256 !== undefined && record.credential_sha256 !== credentialFingerprint(access)) {
+    if (record.credential_sha256 !== undefined
+      && (!isCredentialFingerprint(record.credential_sha256) || record.credential_sha256 !== credentialFingerprint(access))) {
       throw new Error(`${id} verification receipt does not match its saved credential`);
-    }
-    if (vaulted && credentialFingerprint(vaulted) !== expected) {
-      throw new Error(`${id} verification receipt does not match the current local vault credential`);
     }
     return record;
   }

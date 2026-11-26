@@ -2,7 +2,7 @@ import { chmod, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { Runcrate, RUNCRATE_DEEPSEEK, RuncrateVerificationError, readRuncrateGrant, writeRuncrateGrant } from './runcrate.js';
+import { Runcrate, RUNCRATE_BILLING_ORIGIN, RUNCRATE_DEEPSEEK, RUNCRATE_ORIGIN, RuncrateVerificationError, readRuncrateGrant, verifyRuncrateDirectGrant, writeRuncrateGrant } from './runcrate.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 import { Sources } from './source.js';
 import { createLocalApp } from './api.js';
@@ -92,12 +92,12 @@ it('propagates quota without retry or a paid model fallback', async () => {
   expect(fetcher).toHaveBeenCalledOnce();
 });
 
-it('requires exact-credential free-account and top-up verification for direct and replacement grants', async () => {
+it('requires exact-credential free-account and top-up verification for direct vault keys while allowing refreshed Squire egress grants', async () => {
   const path = await directory();
   const key1 = 'sk-runcrate-original-1';
   const key2 = 'sk-runcrate-replacement-2';
-  const direct1 = { base_url: 'https://api.runcrate.ai', token: key1 };
-  const direct2 = { base_url: 'https://api.runcrate.ai', token: key2 };
+  const direct1 = { base_url: RUNCRATE_ORIGIN, token: key1 };
+  const direct2 = { base_url: RUNCRATE_ORIGIN, token: key2 };
 
   await writeVaultEntry('runcrate', { api_key: key1, source: 'import' }, path);
   await expect(writeRuncrateGrant(direct1, path)).rejects.toBeInstanceOf(RuncrateVerificationError);
@@ -112,27 +112,65 @@ it('requires exact-credential free-account and top-up verification for direct an
   await writeRuncrateGrant(direct1, path, { verification: proof1 });
   expect(await readRuncrateGrant(path, {})).toMatchObject({ ...direct1, key_topups_disabled: true });
 
-  // Replacing the key in vault.json rejects unverified or stale-fingerprint receipt writes.
+  // Replacing the key in vault.json rejects unverified or stale-fingerprint direct receipt writes.
   await writeVaultEntry('runcrate', { api_key: key2, source: 'import' }, path);
   await expect(writeRuncrateGrant(direct2, path)).rejects.toBeInstanceOf(RuncrateVerificationError);
   await expect(writeRuncrateGrant(direct2, path, { verification: proof1 })).rejects.toBeInstanceOf(RuncrateVerificationError);
   await expect(writeRuncrateGrant(direct2, path, {
     verification: { ...proof1, credential_sha256: credentialFingerprint(direct2), key_topups_disabled: false as unknown as true }
   })).rejects.toBeInstanceOf(RuncrateVerificationError);
-  // Replacing a saved receipt with a different egress grant also requires fresh verification.
-  await expect(writeRuncrateGrant({ base_url: 'https://grant.test/runcrate', token: 'egress-replacement' }, path))
-    .rejects.toBeInstanceOf(RuncrateVerificationError);
   // Existing receipt remains bound to key1 until key2 is verified.
   expect(JSON.parse(await readFile(join(path, 'runcrate.json'), 'utf8'))).toMatchObject({
     credential_sha256: credentialFingerprint(direct1)
   });
 
-  const proof2 = {
-    free_account_verified: true as const,
-    key_topups_disabled: true as const,
-    credential_sha256: credentialFingerprint(direct2),
-    verified_at: new Date().toISOString()
-  };
-  await writeRuncrateGrant(direct2, path, { verification: proof2 });
+  // Built-in direct verifier checks balance=0, auto-recharge disabled, no payment methods, and model access.
+  const makeBillingFetcher = (overrides: { balance?: unknown; autoRecharge?: unknown; paymentMethods?: unknown; models?: unknown; billingStatus?: number } = {}) =>
+    vi.fn<typeof fetch>(async (url, init) => {
+      expect(new Headers(init?.headers).get('Authorization')).toBe(`Bearer ${key2}`);
+      const target = String(url);
+      if (target === `${RUNCRATE_BILLING_ORIGIN}/api/v1/billing/balance`) {
+        if (overrides.billingStatus) return new Response(null, { status: overrides.billingStatus });
+        return Response.json(overrides.balance ?? { creditsBalance: 0, activeUsageCost: 0, floating_balance_usd: 0 });
+      }
+      if (target === `${RUNCRATE_BILLING_ORIGIN}/api/v1/billing/auto-recharge`) {
+        return Response.json(overrides.autoRecharge ?? { enabled: false });
+      }
+      if (target === `${RUNCRATE_BILLING_ORIGIN}/api/v1/billing/payment-methods`) {
+        return Response.json(overrides.paymentMethods ?? { payment_methods: [] });
+      }
+      if (target === `${RUNCRATE_ORIGIN}/v1/models`) {
+        return Response.json(overrides.models ?? { data: [{ id: RUNCRATE_DEEPSEEK }] });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+  await expect(verifyRuncrateDirectGrant(direct2, { fetcher: makeBillingFetcher({ balance: { creditsBalance: 5 } }) }))
+    .rejects.toBeInstanceOf(RuncrateVerificationError);
+  await expect(verifyRuncrateDirectGrant(direct2, { fetcher: makeBillingFetcher({ autoRecharge: { enabled: true } }) }))
+    .rejects.toBeInstanceOf(RuncrateVerificationError);
+  await expect(verifyRuncrateDirectGrant(direct2, { fetcher: makeBillingFetcher({ paymentMethods: { payment_methods: [{ id: 'pm_card' }] } }) }))
+    .rejects.toBeInstanceOf(RuncrateVerificationError);
+  await expect(verifyRuncrateDirectGrant(direct2, { fetcher: makeBillingFetcher({ billingStatus: 403 }) }))
+    .rejects.toBeInstanceOf(RuncrateVerificationError);
+  await expect(verifyRuncrateDirectGrant(direct2, { fetcher: makeBillingFetcher({ models: { data: [{ id: 'other-model' }] } }) }))
+    .rejects.toBeInstanceOf(RuncrateVerificationError);
+
+  const verified2 = await verifyRuncrateDirectGrant(direct2, { fetcher: makeBillingFetcher() });
+  expect(verified2).toMatchObject({
+    free_account_verified: true,
+    key_topups_disabled: true,
+    credential_sha256: credentialFingerprint(direct2)
+  });
+  await writeRuncrateGrant(direct2, path, { verification: verified2 });
   expect(await readRuncrateGrant(path, {})).toMatchObject({ ...direct2, key_topups_disabled: true });
+
+  // Refreshed Squire egress grants with a new fingerprint update runcrate.json cleanly.
+  const refreshedEgress = { base_url: 'https://trusty-squire-api.fly.dev/v1/egress/g_refreshed1234567890', token: 'synthetic-egress-refreshed' };
+  await writeRuncrateGrant(refreshedEgress, path);
+  expect(await readRuncrateGrant(path, {})).toMatchObject({
+    ...refreshedEgress,
+    credential_sha256: credentialFingerprint(refreshedEgress),
+    key_topups_disabled: true
+  });
 });
