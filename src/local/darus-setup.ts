@@ -1,12 +1,14 @@
+import { rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import { readDataSharingConsent } from './data-sharing.js';
 import { Darus, DARUS_HOST, DARUS_MODEL } from './darus.js';
-import { firstWorkingGrant, writePrivateProviderGrant } from './provider-grant.js';
+import { firstWorkingGrant, resolveSquireGrant, writePrivateProviderGrant } from './provider-grant.js';
 import type { BrowserSquire, SetupSquire } from './setup.js';
 
 export const DARUS_STORE = { service: 'darus', label: 'Grunt Free', api_hosts: [DARUS_HOST], auth_shape: 'bearer' } as const;
 type Squire = SetupSquire & Partial<Pick<BrowserSquire, 'signup' | 'call'>>;
 interface Credential { service?: string; label?: string; reference?: string; allowed_hosts?: string[]; field_names?: string[]; auth_strategy?: string }
-export async function setupDarus({ directory, squire, notify, connect, signal }: {
+export async function setupDarus({ directory, squire, notify, connect, signal, background }: {
   directory: string; squire: Squire; notify(line: string): void; connect?: () => Promise<void>; signal?: AbortSignal; background: boolean;
 }) {
   const id = DARUS_STORE.service;
@@ -34,10 +36,19 @@ export async function setupDarus({ directory, squire, notify, connect, signal }:
   }
   if (!matches.length) throw new Error('Darus requires one unambiguous scoped free API key');
   signal?.throwIfAborted();
-  const grant = await firstWorkingGrant(matches.map(item => item.reference!), reference => squire.credentials.grant(reference),
-    grant => new Darus({ directory, loadGrant: async () => grant }).available(), signal);
+  const grant = await firstWorkingGrant(
+    matches.map(item => item.reference!),
+    reference => resolveSquireGrant(id, reference, squire, { directory, ...(signal ? { signal } : {}), background, notify }),
+    grant => new Darus({ directory, loadGrant: async () => grant }).available(),
+    signal
+  );
   if (!grant) throw new Error('Darus protected free entitlement could not be verified');
   signal?.throwIfAborted();
-  await writePrivateProviderGrant(id, grant, directory);
+  if (grant.storedInVault) {
+    await rm(join(directory, `${id}.json`), { force: true });
+    notify('Darus: protected daily free route connected through local Grunt vault; Grunt will verify a live reply.');
+    return;
+  }
+  await writePrivateProviderGrant(id, { base_url: grant.base_url, token: grant.token }, directory);
   notify('Darus: protected daily free route connected; Grunt will verify a live reply.');
 }

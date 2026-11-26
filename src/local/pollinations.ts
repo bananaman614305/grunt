@@ -8,6 +8,15 @@ import { join } from 'node:path';
 import { compileToolSchemas } from './tool-schema.js';
 import { JsonToolBridge } from './json-tool-bridge.js';
 import { readDataSharingConsent } from './data-sharing.js';
+import {
+  credentialFingerprint,
+  isCredentialFingerprint,
+  readVaultEnvGrant,
+  readVaultGrant,
+  validateProviderEndpoint,
+  validateVaultToken,
+  writeVaultEntry
+} from './vault.js';
 import { lengthLimited, SourceError, requestRefusal } from './source.js';
 import type { Completion, ModelRequest, Source } from './source.js';
 import { MetadataFlights } from './metadata-flight.js';
@@ -38,12 +47,12 @@ const invalidCompletion = (message: string, failureReason: SafeDiagnosticMetadat
 const rejected = () => new SourceError('logged_out', 'Pollinations private free-access verification is missing or expired; rerun usegrunt setup');
 function accessGrant(value: unknown): AccessGrant {
   const grant = object(value);
-  if (typeof grant.base_url !== 'string' || typeof grant.token !== 'string' || !/^[\x21-\x7e]{1,16384}$/.test(grant.token)) throw rejected();
-  let url: URL;
-  try { url = new URL(grant.base_url); } catch { throw rejected(); }
-  if (url.origin !== POLLINATIONS_GRANT_ORIGIN || url.username || url.password || url.search || url.hash || /[?#]/.test(grant.base_url)
-    || !/^\/v1\/egress\/g_[A-Za-z0-9_-]{16,64}\/?$/.test(url.pathname)) throw rejected();
-  return { base_url: url.href.replace(/\/$/, ''), token: grant.token };
+  if (typeof grant.base_url !== 'string') throw rejected();
+  try {
+    const token = validateVaultToken(grant.token);
+    const endpoint = validateProviderEndpoint('pollinations', grant.base_url, { strictEgressLength: true });
+    return { base_url: endpoint.base_url, token };
+  } catch { throw rejected(); }
 }
 function validateGrant(value: unknown): PollinationsGrant {
   const grant = object(value), access = accessGrant(value);
@@ -54,23 +63,73 @@ function validateGrant(value: unknown): PollinationsGrant {
   return { ...access, version: 1, upstream_origin: POLLINATIONS_ORIGIN, model: POLLINATIONS_MODEL, verified_at: grant.verified_at as string,
     free_account_verified: true, key_zero_budget_verified: true, quest_pollen_only: true };
 }
-export async function readPollinationsGrant(location = directory()): Promise<PollinationsGrant> {
+export async function readPollinationsGrant(
+  location = directory(),
+  env: NodeJS.ProcessEnv = process.env
+): Promise<PollinationsGrant> {
   let file;
   try {
     file = await open(pollinationsGrantPath(location), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const stat = await file.stat();
     if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.size > 32768) throw rejected();
-    return validateGrant(JSON.parse(await file.readFile('utf8')));
+    const raw = object(JSON.parse(await file.readFile('utf8')));
+    const vaulted = await readVaultGrant('pollinations', location, env);
+    if (raw.credential_source === 'vault') {
+      if (raw.token !== undefined || raw.base_url !== POLLINATIONS_ORIGIN || !isCredentialFingerprint(raw.credential_sha256)
+        || !vaulted || credentialFingerprint(vaulted) !== raw.credential_sha256) {
+        throw rejected();
+      }
+      return validateGrant({ ...raw, base_url: vaulted.base_url, token: vaulted.token });
+    }
+    // Direct provider keys live exclusively in the local vault or env, never copied into pollinations.json.
+    if (typeof raw.base_url !== 'string' || validateProviderEndpoint('pollinations', raw.base_url, { strictEgressLength: true }).transport !== 'egress') {
+      throw rejected();
+    }
+    const saved = validateGrant(raw);
+    if (vaulted) throw rejected();
+    return saved;
   } catch { throw rejected(); }
   finally { await file?.close(); }
 }
-// Setup supplies these facts only after ordinary browser verification and a
-// successful read-only access check. No raw provider key is persisted by Grunt.
-export async function writePollinationsGrant(grant: PollinationsGrant, location = directory()): Promise<void> {
-  const value = validateGrant(grant), temporary = join(location, `.pollinations-${randomUUID()}.tmp`);
+async function persistPollinationsFile(payload: Record<string, unknown>, location: string): Promise<void> {
+  const temporary = join(location, `.pollinations-${randomUUID()}.tmp`);
   await mkdir(location, { recursive: true, mode: 0o700 });
-  try { await writeFile(temporary, JSON.stringify(value), { flag: 'wx', mode: 0o600 }); await rename(temporary, pollinationsGrantPath(location)); }
+  try { await writeFile(temporary, JSON.stringify(payload), { flag: 'wx', mode: 0o600 }); await rename(temporary, pollinationsGrantPath(location)); }
   finally { await rm(temporary, { force: true }); }
+}
+/**
+ * Persists verification metadata and a SHA-256 credential fingerprint for a
+ * direct Pollinations key stored in the local Grunt vault or environment,
+ * without copying the raw API key into pollinations.json.
+ */
+export async function writePollinationsVaultReceipt(grant: PollinationsGrant, location = directory()): Promise<void> {
+  const value = validateGrant(grant);
+  if (validateProviderEndpoint('pollinations', value.base_url, { strictEgressLength: true }).transport !== 'direct') throw rejected();
+  const { token, ...metadata } = value;
+  await persistPollinationsFile({
+    ...metadata,
+    credential_source: 'vault',
+    credential_sha256: credentialFingerprint({ base_url: value.base_url, token })
+  }, location);
+}
+// Setup supplies these facts only after ordinary browser verification and a
+// successful read-only access check. Direct keys stay in vault.json or env.
+export async function writePollinationsGrant(
+  grant: PollinationsGrant,
+  location = directory(),
+  env: NodeJS.ProcessEnv = process.env
+): Promise<void> {
+  const value = validateGrant(grant);
+  const endpoint = validateProviderEndpoint('pollinations', value.base_url, { strictEgressLength: true });
+  if (endpoint.transport === 'direct') {
+    const envGrant = readVaultEnvGrant('pollinations', env);
+    if (!envGrant || credentialFingerprint(envGrant) !== credentialFingerprint(value)) {
+      await writeVaultEntry('pollinations', { api_key: value.token, origin: POLLINATIONS_ORIGIN, source: 'local' }, location);
+    }
+    await writePollinationsVaultReceipt(value, location);
+    return;
+  }
+  await persistPollinationsFile(value as unknown as Record<string, unknown>, location);
 }
 async function readJSON(response: Response, signal: AbortSignal, limit: number): Promise<unknown> {
   if (signal.aborted) { void response.body?.cancel().catch(() => {}); signal.throwIfAborted(); }

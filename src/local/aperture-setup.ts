@@ -1,12 +1,14 @@
+import { rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import { readDataSharingConsent } from './data-sharing.js';
 import { Aperture, APERTURE_HOST, APERTURE_ID, APERTURE_MODEL } from './aperture.js';
-import { firstWorkingGrant, writePrivateProviderGrant } from './provider-grant.js';
+import { firstWorkingGrant, resolveSquireGrant, writePrivateProviderGrant } from './provider-grant.js';
 import type { BrowserSquire, SetupSquire } from './setup.js';
 
 export const APERTURE_STORE = { service: APERTURE_ID, label: 'Grunt Free', api_hosts: [APERTURE_HOST], auth_shape: 'bearer' } as const;
 type Squire = SetupSquire & Partial<Pick<BrowserSquire, 'signup' | 'call'>>;
 interface Credential { service?: string; label?: string; reference?: string; allowed_hosts?: string[]; field_names?: string[]; auth_strategy?: string }
-export async function setupAperture({ directory, squire, notify, connect, signal }: {
+export async function setupAperture({ directory, squire, notify, connect, signal, background }: {
   directory: string; squire: Squire; notify(line: string): void; connect?: () => Promise<void>; signal?: AbortSignal; background: boolean;
 }) {
   const id = APERTURE_STORE.service;
@@ -34,10 +36,19 @@ export async function setupAperture({ directory, squire, notify, connect, signal
   }
   if (!matches.length) throw new Error('Aperture requires one unambiguous scoped Grunt Free key');
   signal?.throwIfAborted();
-  const grant = await firstWorkingGrant(matches.map(item => item.reference!), reference => squire.credentials.grant(reference),
-    grant => new Aperture({ directory, loadGrant: async () => grant }).available(), signal);
+  const grant = await firstWorkingGrant(
+    matches.map(item => item.reference!),
+    reference => resolveSquireGrant(id, reference, squire, { directory, ...(signal ? { signal } : {}), background, notify }),
+    grant => new Aperture({ directory, loadGrant: async () => grant }).available(),
+    signal
+  );
   if (!grant) throw new Error('Aperture Free account and zero-price catalog could not be verified');
   signal?.throwIfAborted();
-  await writePrivateProviderGrant(id, grant, directory);
+  if (grant.storedInVault) {
+    await rm(join(directory, `${id}.json`), { force: true });
+    notify('Aperture: Free route connected through local Grunt vault; Grunt will verify a live reply.');
+    return;
+  }
+  await writePrivateProviderGrant(id, { base_url: grant.base_url, token: grant.token }, directory);
   notify('Aperture: Free route connected; Grunt will verify a live reply.');
 }

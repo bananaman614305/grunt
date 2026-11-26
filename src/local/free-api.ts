@@ -7,6 +7,7 @@ import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 import { readPromotionalStream } from './promotional-api.js';
 import { nousQuotaDelay, quotaObject, quotaRetryAfter, readQuotaError } from './quota-timing.js';
 import { observeAttemptDispatch, diagnosticFetch } from './diagnostics.js';
+import { isVaultProvider, readVaultGrant } from './vault.js';
 
 // Low-level pinned clients. Production wrappers add provider-specific access
 // receipts, quota checks and data-sharing consent before enabling a route.
@@ -44,8 +45,16 @@ function validateGrant(value: unknown): FreeApiGrant {
   if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw new Error('Invalid free API grant endpoint');
   return { base_url: grant.base_url.replace(/\/$/, ''), token: grant.token };
 }
-export async function readFreeApiGrant(provider: FreeApiProvider, location = directory()): Promise<FreeApiGrant> {
+export async function readFreeApiGrant(
+  provider: FreeApiProvider,
+  location = directory(),
+  env: NodeJS.ProcessEnv = process.env
+): Promise<FreeApiGrant> {
   const name = providerName(provider);
+  if (isVaultProvider(name)) {
+    const vaulted = await readVaultGrant(name, location, env);
+    if (vaulted) return validateGrant({ base_url: vaulted.base_url, token: vaulted.token });
+  }
   const file = await open(join(location, `${name}.json`), constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = await file.stat();

@@ -6,6 +6,15 @@ import { join } from 'node:path';
 import { compileToolSchemas } from './tool-schema.js';
 import { readDataSharingConsent } from './data-sharing.js';
 import { providerGrantDirectory } from './provider-grant.js';
+import {
+  credentialFingerprint,
+  isCredentialFingerprint,
+  readVaultEnvGrant,
+  readVaultGrant,
+  validateProviderEndpoint,
+  validateVaultToken,
+  writeVaultEntry
+} from './vault.js';
 import { JsonToolBridge } from './json-tool-bridge.js';
 import { MetadataFlights } from './metadata-flight.js';
 import { lengthLimited, truncatedCompletion, withObservedEnding, SourceError, requestRefusal } from './source.js';
@@ -29,12 +38,12 @@ const obj = (value: unknown): Record<string, unknown> => value && typeof value =
 const rejected = () => new SourceError('logged_out', 'BeatAPI private free-account verification is missing or expired; rerun usegrunt setup');
 function access(value: unknown): BeatAPIAccess {
   const grant = obj(value);
-  if (typeof grant.base_url !== 'string' || typeof grant.token !== 'string' || !/^[\x21-\x7e]{1,16384}$/.test(grant.token)) throw rejected();
-  let url: URL;
-  try { url = new URL(grant.base_url); } catch { throw rejected(); }
-  if (url.origin !== 'https://trusty-squire-api.fly.dev' || url.username || url.password || url.search || url.hash
-    || !/^\/v1\/egress\/g_[A-Za-z0-9_-]{16,64}\/?$/.test(url.pathname)) throw rejected();
-  return { base_url: url.href.replace(/\/$/, ''), token: grant.token };
+  if (typeof grant.base_url !== 'string') throw rejected();
+  try {
+    const token = validateVaultToken(grant.token);
+    const endpoint = validateProviderEndpoint('beatapi', grant.base_url, { strictEgressLength: true });
+    return { base_url: endpoint.base_url, token };
+  } catch { throw rejected(); }
 }
 function validate(value: unknown): BeatAPIGrant {
   const grant = obj(value), auth = access(value), checked = typeof grant.verified_at === 'string' ? Date.parse(grant.verified_at) : NaN;
@@ -57,22 +66,72 @@ async function privateDirectory(directory: string, create = false) {
   const stat = await lstat(directory);
   if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o700) throw rejected();
 }
-export async function readBeatAPIGrant(directory = providerGrantDirectory()): Promise<BeatAPIGrant> {
+export async function readBeatAPIGrant(
+  directory = providerGrantDirectory(),
+  env: NodeJS.ProcessEnv = process.env
+): Promise<BeatAPIGrant> {
   let file;
   try {
     await privateDirectory(directory);
     file = await open(beatapiGrantPath(directory), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const stat = await file.stat();
     if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.size > 32768) throw rejected();
-    return validate(JSON.parse(await file.readFile('utf8')));
+    const raw = obj(JSON.parse(await file.readFile('utf8')));
+    const vaulted = await readVaultGrant('beatapi', directory, env);
+    if (raw.credential_source === 'vault') {
+      if (raw.token !== undefined || raw.base_url !== BEATAPI_ORIGIN || !isCredentialFingerprint(raw.credential_sha256)
+        || !vaulted || credentialFingerprint(vaulted) !== raw.credential_sha256) {
+        throw rejected();
+      }
+      return validate({ ...raw, base_url: vaulted.base_url, token: vaulted.token });
+    }
+    // Direct provider keys live exclusively in the local vault or env, never copied into beatapi.json.
+    if (typeof raw.base_url !== 'string' || validateProviderEndpoint('beatapi', raw.base_url, { strictEgressLength: true }).transport !== 'egress') {
+      throw rejected();
+    }
+    const saved = validate(raw);
+    if (vaulted) throw rejected();
+    return saved;
   } catch { throw rejected(); }
   finally { await file?.close(); }
 }
-export async function writeBeatAPIGrant(grant: BeatAPIGrant, directory = providerGrantDirectory()) {
-  const value = validate(grant); await privateDirectory(directory, true);
+async function persistBeatAPIFile(payload: Record<string, unknown>, directory: string) {
+  await privateDirectory(directory, true);
   const temporary = join(directory, `.beatapi-${randomUUID()}.tmp`);
-  try { await writeFile(temporary, JSON.stringify(value), { flag: 'wx', mode: 0o600 }); await rename(temporary, beatapiGrantPath(directory)); }
+  try { await writeFile(temporary, JSON.stringify(payload), { flag: 'wx', mode: 0o600 }); await rename(temporary, beatapiGrantPath(directory)); }
   finally { await rm(temporary, { force: true }); }
+}
+/**
+ * Persists verification metadata and a SHA-256 credential fingerprint for a
+ * direct BeatAPI key stored in the local Grunt vault or environment, without
+ * copying the raw API key into beatapi.json.
+ */
+export async function writeBeatAPIVaultReceipt(grant: BeatAPIGrant, directory = providerGrantDirectory()) {
+  const value = validate(grant);
+  if (validateProviderEndpoint('beatapi', value.base_url, { strictEgressLength: true }).transport !== 'direct') throw rejected();
+  const { token, ...metadata } = value;
+  await persistBeatAPIFile({
+    ...metadata,
+    credential_source: 'vault',
+    credential_sha256: credentialFingerprint({ base_url: value.base_url, token })
+  }, directory);
+}
+export async function writeBeatAPIGrant(
+  grant: BeatAPIGrant,
+  directory = providerGrantDirectory(),
+  env: NodeJS.ProcessEnv = process.env
+) {
+  const value = validate(grant);
+  const endpoint = validateProviderEndpoint('beatapi', value.base_url, { strictEgressLength: true });
+  if (endpoint.transport === 'direct') {
+    const envGrant = readVaultEnvGrant('beatapi', env);
+    if (!envGrant || credentialFingerprint(envGrant) !== credentialFingerprint(value)) {
+      await writeVaultEntry('beatapi', { api_key: value.token, origin: BEATAPI_ORIGIN, source: 'local' }, directory);
+    }
+    await writeBeatAPIVaultReceipt(value, directory);
+    return;
+  }
+  await persistBeatAPIFile(value as unknown as Record<string, unknown>, directory);
 }
 async function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   let abort: (() => void) | undefined;

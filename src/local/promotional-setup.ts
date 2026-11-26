@@ -1,7 +1,9 @@
+import { rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import { readDataSharingConsent } from './data-sharing.js';
 import { PromotionalApi, PROMOTIONAL_PROVIDERS } from './promotional-api.js';
 import type { PromotionalProvider } from './promotional-api.js';
-import { firstWorkingGrant, writePrivateProviderGrant } from './provider-grant.js';
+import { firstWorkingGrant, resolveSquireGrant, writePrivateProviderGrant } from './provider-grant.js';
 import type { BrowserSquire, SetupSquire } from './setup.js';
 import { SetupRefusal } from './setup-failure.js';
 
@@ -41,10 +43,19 @@ export async function setupPromotionalApi(id: PromotionalProvider, options: {
   }
   if (!matches.length) throw new Error(`${id} requires one unambiguous Grunt Free API key`);
   signal?.throwIfAborted();
-  const grant = await firstWorkingGrant(matches.map(item => item.reference!), reference => squire.credentials.grant(reference),
-    grant => new PromotionalApi(id, { directory, loadGrant: async () => grant }).available(), signal);
+  const grant = await firstWorkingGrant(
+    matches.map(item => item.reference!),
+    reference => resolveSquireGrant(id, reference, squire, { directory, ...(signal ? { signal } : {}), background: options.background, notify }),
+    grant => new PromotionalApi(id, { directory, loadGrant: async () => grant }).available(),
+    signal
+  );
   if (!grant) throw new Error(`${id} free catalog/gate verification failed`);
   signal?.throwIfAborted();
-  await writePrivateProviderGrant(id, grant, directory);
+  if (grant.storedInVault) {
+    await rm(join(directory, `${id}.json`), { force: true });
+    notify(`${id}: temporary free route connected through local Grunt vault; Grunt will verify a live reply.`);
+    return;
+  }
+  await writePrivateProviderGrant(id, { base_url: grant.base_url, token: grant.token }, directory);
   notify(`${id}: temporary free route connected; Grunt will verify a live reply.`);
 }

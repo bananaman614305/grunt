@@ -236,7 +236,34 @@ it('writes private receipts and rejects links, modes, stale billing and arbitrar
   await chmod(beatapiGrantPath(directory), 0o644); await expect(readBeatAPIGrant(directory)).rejects.toMatchObject({ code: 'logged_out' });
   await rm(beatapiGrantPath(directory)); await symlink(join(directory, 'data-sharing-consent.json'), beatapiGrantPath(directory)); await expect(readBeatAPIGrant(directory)).rejects.toMatchObject({ code: 'logged_out' });
   await expect(writeBeatAPIGrant({ ...grant(), lifetime_paid: 5 } as unknown as BeatAPIGrant, directory)).rejects.toMatchObject({ code: 'logged_out' });
-  await expect(writeBeatAPIGrant({ ...grant(), base_url: 'https://attacker.invalid/v1' }, directory)).rejects.toMatchObject({ code: 'logged_out' });
+  for (const bad of ['https://attacker.invalid/v1', 'https://api.beatapi.io/v1', 'https://api.beatapi.io:8443', 'https://api.beatapi.io.evil.test', 'http://api.beatapi.io', 'https://user:pass@api.beatapi.io', 'https://api.beatapi.io?k=1', 'https://api.beatapi.io#frag']) {
+    await expect(writeBeatAPIGrant({ ...grant(), base_url: bad }, directory)).rejects.toMatchObject({ code: 'logged_out' });
+  }
+});
+
+it('accepts direct verified HTTPS origin api.beatapi.io without copying the raw key into beatapi.json', async () => {
+  const direct: BeatAPIGrant = { ...poolGrant(), base_url: BEATAPI_ORIGIN, token: 'synthetic-direct-beatapi-key' };
+  await writeBeatAPIGrant(direct, directory);
+  expect(await readFile(beatapiGrantPath(directory), 'utf8')).not.toContain('synthetic-direct-beatapi-key');
+  expect(await readBeatAPIGrant(directory)).toEqual(direct);
+  const calls: string[] = [];
+  const fetcher = vi.fn<typeof fetch>(async (url, init) => {
+    calls.push(String(url));
+    expect(String(url).startsWith(BEATAPI_ORIGIN)).toBe(true);
+    expect(String(url)).not.toContain('trusty-squire-api.fly.dev');
+    expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer synthetic-direct-beatapi-key');
+    return Response.json(String(url).endsWith('/usage') ? usage() : completion());
+  });
+  const source = new BeatAPI({ directory, fetcher });
+  try {
+    const reply = await source.complete(request(), AbortSignal.timeout(1000));
+    expect(reply.text).toBe('hello');
+    expect(calls).toEqual([
+      `${BEATAPI_ORIGIN}/v1/usage`,
+      `${BEATAPI_ORIGIN}/v1/chat/completions`,
+      `${BEATAPI_ORIGIN}/v1/usage`
+    ]);
+  } finally { await source.close(); }
 });
 
 it('forwards a matching native tool result unchanged and rejects reused response IDs', async () => {

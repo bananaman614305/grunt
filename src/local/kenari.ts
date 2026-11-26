@@ -7,6 +7,7 @@ import { diagnosticFetch, observeAttemptDispatch } from './diagnostics.js';
 import type { FreeApiGrant } from './free-api.js';
 import { readPromotionalStream } from './promotional-api.js';
 import { validateProviderGrant } from './provider-grant.js';
+import { readVaultGrant } from './vault.js';
 import { calendarQuotaDelay } from './quota-policy.js';
 import { quotaObject, quotaRetryAfter, readQuotaError } from './quota-timing.js';
 import { emitStreamText, lengthLimited, truncatedCompletion, withObservedEnding, SourceError } from './source.js';
@@ -20,7 +21,9 @@ interface CatalogEntry {
   tool_call?: boolean;
 }
 
-async function readGrant(directory: string) {
+async function readGrant(directory: string, env: NodeJS.ProcessEnv = process.env) {
+  const vaulted = await readVaultGrant('kenari', directory, env);
+  if (vaulted) return validateProviderGrant({ base_url: vaulted.base_url, token: vaulted.token });
   const file = await open(join(directory, 'kenari.json'), constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = await file.stat();

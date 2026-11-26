@@ -251,12 +251,35 @@ it('rejects unsafe receipt files, endpoint substitutions, invented verification 
   await rm(file); const target = join(path, 'target'); await writeFile(target, JSON.stringify(receipt()), { mode: 0o600 }); await symlink(target, file);
   await expect(readPollinationsGrant(path)).rejects.toMatchObject({ code: 'logged_out' });
   for (const patch of [
-    { base_url: 'https://gen.pollinations.ai' }, { base_url: access.base_url.replace('https:', 'http:') },
+    { base_url: 'https://attacker.invalid' }, { base_url: 'https://gen.pollinations.ai/v1' },
+    { base_url: 'https://gen.pollinations.ai:8443' }, { base_url: 'http://gen.pollinations.ai' },
+    { base_url: 'https://user:password@gen.pollinations.ai' }, { base_url: access.base_url.replace('https:', 'http:') },
     { base_url: access.base_url+'?token=x' }, { base_url: access.base_url+'#' }, { base_url: access.base_url+'?' },
     { base_url: access.base_url.replace('trusty-squire-api.fly.dev', 'user:password@trusty-squire-api.fly.dev') },
     { upstream_origin: 'https://paid.example' }, { model: 'paid-model' }, { key_zero_budget_verified: false },
     { verified_at: new Date(Date.now()+120000).toISOString() }
   ]) await expect(writePollinationsGrant({ ...receipt(), ...patch } as PollinationsGrant, path)).rejects.toMatchObject({ code: 'logged_out' });
+});
+
+it('accepts direct verified HTTPS origin gen.pollinations.ai without copying the raw key into pollinations.json', async () => {
+  const path = await directory();
+  const direct: PollinationsGrant = { ...receipt(), base_url: POLLINATIONS_ORIGIN, token: 'synthetic-direct-pollinations-key' };
+  await writePollinationsGrant(direct, path);
+  expect(await readFile(pollinationsGrantPath(path), 'utf8')).not.toContain('synthetic-direct-pollinations-key');
+  expect(await readPollinationsGrant(path)).toEqual(direct);
+  const fetcher = vi.fn<typeof fetch>(async (url, init) => {
+    expect(String(url).startsWith(POLLINATIONS_ORIGIN)).toBe(true);
+    expect(String(url)).not.toContain('trusty-squire-api.fly.dev');
+    expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer synthetic-direct-pollinations-key');
+    const route = String(url).slice(POLLINATIONS_ORIGIN.length);
+    if (route === '/account/key') return Response.json(key());
+    if (route === '/account/balance') return Response.json(balance());
+    if (route === `/v1/models/${POLLINATIONS_MODEL}`) return Response.json(catalog());
+    if (route === '/v1/chat/completions') return completion(final('Direct Pollinations reply'));
+    throw new Error('Unexpected endpoint');
+  });
+  const reply = await source({ directory: path, fetcher }).complete(request, AbortSignal.timeout(1000));
+  expect(reply).toMatchObject({ text: 'Direct Pollinations reply' });
 });
 
 it.each([[401, 'logged_out'], [402, 'quota'], [403, 'refused'], [429, 'quota'], [503, 'upstream']] as const)('returns generic HTTP %s without retries or upstream secrets', async (status, code) => {
