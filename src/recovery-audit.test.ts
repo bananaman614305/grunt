@@ -145,19 +145,26 @@ it('compares matched exposure and requires validated access for a recovery delay
 
 it('recommends tiers only from covered coding tool attempts with sufficient evidence', () => {
   const rows = Array.from({ length: 20 }, (_, i) => event('attempt.finish', i, {
-    source: 'kenari', codingToolTurn: true, outcome: 'passed', hadToolCalls: true, free: true,
+    source: 'live-only', toolCallPassed: true, codingToolTurn: true, outcome: 'passed', hadToolCalls: true, free: true,
     durationMs: 1000 + i, firstOutputMs: 100 + i
   }));
   const failed = rows.map((e, i) => ({ ...e, source: 'kilo', ...(i < 4 ? { failureReason: 'length' as const } : {}) }));
-  const events = [...rows, ...failed, event('attempt.finish', 0, { source: 'kenari', outcome: 'failed', codingToolTurn: false })];
-  const summary = (events: DiagnosticEvent[]) => buildRecoveryAudit(events, window, metrics(window, events)).toolTiers.adapters;
+  const events = [...rows, ...failed, event('attempt.finish', 0, { source: 'live-only', outcome: 'failed', codingToolTurn: false })];
+  const adapters = [{ id: 'live-only', tier: 'experimental' }, { id: 'kilo', tier: 'stable' }] as const;
+  const summary = (events: DiagnosticEvent[]) => buildRecoveryAudit(events, window, metrics(window, events), undefined, adapters).toolTiers.adapters;
   expect(summary(events)).toEqual(expect.arrayContaining([
-    expect.objectContaining({ source: 'kenari', attempts: 20, passRate: 1, p90DurationMs: 1017,
+    expect.objectContaining({ source: 'live-only', attempts: 20, passRate: 1, p90DurationMs: 1017,
       p90FirstOutputMs: 117, recommendation: 'promotion candidate' }),
     expect.objectContaining({ source: 'kilo', attempts: 20, failureRate: 0.2, recommendation: 'demotion candidate' })
   ]));
-  expect(summary([...events, event('attempt.finish', 50, { source: 'kenari', outcome: 'failed' })]))
-    .toContainEqual(expect.objectContaining({ source: 'kenari', unclassified: 1, recommendation: 'insufficient evidence' }));
-  expect(buildRecoveryAudit(rows, window).toolTiers.adapters).toContainEqual(
-    expect.objectContaining({ source: 'kenari', recommendation: 'insufficient evidence' }));
+  const mostlyText = rows.map((e, i) => ({ ...e, toolCallPassed: i < 3 }));
+  expect(summary(mostlyText)).toContainEqual(expect.objectContaining({ source: 'live-only', passRate: 1,
+    expectedCalls: 20, toolCallPassRate: 0.15, recommendation: 'hold' }));
+  const override = [{ id: 'live-only', tier: 'stable' as const }];
+  expect(buildRecoveryAudit(mostlyText, window, metrics(window, mostlyText), undefined, override).toolTiers.adapters)
+    .toEqual([expect.objectContaining({ source: 'live-only', tier: 'stable', recommendation: 'demotion candidate' })]);
+  expect(summary([...events, event('attempt.finish', 50, { source: 'live-only', outcome: 'failed' })]))
+    .toContainEqual(expect.objectContaining({ source: 'live-only', unclassified: 1, recommendation: 'insufficient evidence' }));
+  expect(buildRecoveryAudit(rows, window, undefined, undefined, adapters).toolTiers.adapters).toContainEqual(
+    expect.objectContaining({ source: 'live-only', recommendation: 'insufficient evidence' }));
 });

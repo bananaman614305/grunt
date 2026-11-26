@@ -518,3 +518,49 @@ it('persists only matching request attribution and does not leak it to unrelated
   expect(rows[1]).not.toHaveProperty('actor'); expect(rows[1]).not.toHaveProperty('workerId');
   expect(rows[2]).toMatchObject({ id: client.id, actor: 'client' }); expect(rows[2]).not.toHaveProperty('workerId');
 });
+
+it('returns the currently configured routing tiers to the audit after a registry refresh', async () => {
+  const value = await store(), pool = new Sources([source('kilo')]);
+  const adapter = { ...bundledRegistry.adapters[0]!, id: 'live-only' };
+  let registry = { ...bundledRegistry, adapters: [adapter] };
+  pool.setChainRegistry(() => registry);
+  pool.setDiagnostics(value);
+  const app = createLocalApp(pool);
+  try {
+    for (const tier of ['experimental', 'stable'] as const) {
+      registry = { ...registry, adapters: [{ ...adapter, tier }] };
+      const response = await app.request('http://127.0.0.1:8788/v1/diagnostics/metrics');
+      expect(response.status).toBe(200);
+      expect((await response.json()).adapters).toEqual([expect.objectContaining({ id: 'live-only', tier })]);
+    }
+  } finally { await pool.close(); }
+});
+
+it('observes required tool choices separately from automatic completions', async () => {
+  const value = await store(), provider = source('kilo');
+  provider.supportsFunctionTools = true;
+  const pool = new Sources([provider]);
+  pool.setDiagnostics(value);
+  const app = createLocalApp(pool);
+  const call = { id: 'call', type: 'function' as const, function: { name: 'read', arguments: '{}' } };
+  const tools = ['read', 'write'].map(name => ({ type: 'function', function: { name, parameters: {} } }));
+  const named = (name: string) => ({ type: 'function', function: { name } });
+  try {
+    const cases: [unknown, Completion, boolean | undefined][] = [
+      ['auto', { text: 'done' }, undefined], ['required', { text: 'done' }, false],
+      [named('read'), { text: '', calls: [call] }, true], [named('write'), { text: '', calls: [call] }, false]
+    ];
+    for (const [choice, reply, passed] of cases) {
+      vi.mocked(provider.complete).mockResolvedValueOnce(reply);
+      const response = await app.request('http://127.0.0.1:8788/v1/chat/completions', { method: 'POST',
+        headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+          model: 'kilo', cwd: '/tmp', messages: [{ role: 'user', content: 'work' }], tools, tool_choice: choice
+        }) });
+      expect(response.status).toBe(200);
+      const trace = await value.trace(response.headers.get('x-grunt-request-id')!);
+      const finish = trace.events.find(e => e.type === 'attempt.finish');
+      expect(finish?.codingToolTurn).toBe(true);
+      expect(finish?.toolCallPassed).toBe(passed);
+    }
+  } finally { await pool.close(); }
+});

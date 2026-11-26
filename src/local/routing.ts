@@ -197,6 +197,9 @@ export class StickyRouter {
     if (!wasBenched && this.benched(id)) try { this.options.dropped?.(id); } catch { /* Signup triggers cannot change routing. */ }
   }
 
+  auditAdapters() {
+    return this.options.registry().adapters.map(({ id, tier, status, expires }) => ({ id, tier, status, expires }));
+  }
   registered(id: string) {
     if (knownAdapters.has(id) || this.options.localOptIns?.has(id)) return true;
     const adapter = this.options.registry().adapters.find(item => item.id === id);

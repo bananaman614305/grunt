@@ -48,7 +48,7 @@ export interface DiagnosticEvent extends SafeDiagnosticMetadata {
   outcome?: 'passed' | 'failed' | 'cancelled' | 'skipped'; durationMs?: number;
   errorCode?: typeof diagnosticErrors[number]; retryAfterSeconds?: number; inputTokens?: number; outputTokens?: number; free?: boolean;
   // Content-free reply ending on a successful attempt.finish: mapped finish_reason, whether the reply held tool calls, reasoning tokens when reported.
-  codingToolTurn?: boolean; firstOutputMs?: number;
+  codingToolTurn?: boolean; toolCallPassed?: boolean; firstOutputMs?: number;
   finishReason?: typeof diagnosticFinishReasons[number]; hadToolCalls?: boolean; reasoningTokens?: number;
   providerFinishReason?: typeof providerFinishReasons[number];
   caller?: string; endpoint?: 'chat' | 'messages' | 'responses';
@@ -109,6 +109,7 @@ export function sanitizeDiagnosticEvent(input: unknown): DiagnosticEvent | null 
   for (const field of ['promptBytes', 'responseBytes', 'maxOutputTokens'] as const) if (integer(v[field])) result[field] = v[field];
   if (integer(v.lastProgressAt) && v.lastProgressAt <= 8640000000000000) result.lastProgressAt = v.lastProgressAt;
   if (result.type === 'attempt.finish') {
+    if (typeof v.toolCallPassed === 'boolean') result.toolCallPassed = v.toolCallPassed;
     if (typeof v.codingToolTurn === 'boolean') result.codingToolTurn = v.codingToolTurn;
     if (finite(v.firstOutputMs)) result.firstOutputMs = v.firstOutputMs;
   }

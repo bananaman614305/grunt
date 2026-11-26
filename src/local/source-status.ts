@@ -406,6 +406,9 @@ export class SourceStatus {
         const result = await this.observedComplete(source, request, signal, guard, output), ending = endingOf(result);
         this.diagnostics!.record({ ...sanitizeSafeDiagnosticMetadata(result.diagnostics), ...base, id: randomUUID(), at: this.now(), type: 'attempt.finish', codingToolTurn,
           ...(firstProgressAt === undefined ? {} : { firstOutputMs: Math.max(0, firstProgressAt - started) }),
+          ...(request.expectedFunctionCall ? { toolCallPassed: !!result.calls?.some(call =>
+            request.expectedFunctionCall?.name ? call.function.name === request.expectedFunctionCall.name
+              : request.tools.some(tool => tool.type === 'function' && (tool.function as { name?: string })?.name === call.function.name)) } : {}),
           outcome: signal.aborted ? 'cancelled' : 'passed', durationMs: Math.max(0, performance.now() - startedMono),
           responseBytes: Buffer.byteLength(result.text),
           ...(lastProgressAt === undefined ? {} : { lastProgressAt }),
@@ -427,6 +430,7 @@ export class SourceStatus {
         }
         this.diagnostics!.record({ ...metadata, ...base, id: randomUUID(), at: this.now(), type: 'attempt.finish', codingToolTurn,
           ...(firstProgressAt === undefined ? {} : { firstOutputMs: Math.max(0, firstProgressAt - started) }),
+          ...(request.expectedFunctionCall ? { toolCallPassed: false } : {}),
           outcome: signal.aborted ? 'cancelled' : 'failed', errorCode: signal.aborted ? 'cancelled' : failureCode(error),
           ...(lastProgressAt === undefined ? {} : { lastProgressAt }),
           durationMs: Math.max(0, performance.now() - startedMono), ...(typeof value.retryAfter === 'number' ? { retryAfterSeconds: value.retryAfter } : {}) });
