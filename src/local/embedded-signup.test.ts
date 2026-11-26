@@ -10,7 +10,14 @@ import {
 import type { RunSignupOptions, SignupResult, SignupSession } from '@trusty-squire/mcp/signup';
 import { recordDataSharingConsent } from './data-sharing.js';
 import { BrowserSquire, setup } from './setup.js';
-import { GRUNT_BROWSER_PROFILE_DIR, GRUNT_SIGNUP_SESSION_FILE, gruntSignupPaths, runEmbeddedSignup } from './signup-mcp.js';
+import {
+  EMBEDDED_DRIVE_GOAL_LIMIT,
+  GRUNT_BROWSER_PROFILE_DIR,
+  GRUNT_SIGNUP_SESSION_FILE,
+  applyEmbeddedContinuation,
+  gruntSignupPaths,
+  runEmbeddedSignup
+} from './signup-mcp.js';
 import { SQUIRE_EGRESS_ORIGIN, credentialFingerprint, readVaultEntry, vaultPath } from './vault.js';
 import { ZRO_DEEPSEEK, Zro, readZroGrant } from './zro.js';
 import { RUNCRATE_BILLING_ORIGIN, RUNCRATE_DEEPSEEK, RUNCRATE_ORIGIN, Runcrate, RuncrateVerificationError, readRuncrateGrant } from './runcrate.js';
@@ -456,4 +463,207 @@ it('captures OpenCode API keys in-process without Squire cloud vault and clears 
     token: opencodeSecret
   });
   await squire.close();
+});
+
+it('resumes embedded signup after needs_value for a key name and captures the API key into vault.json', async () => {
+  const secret = 'sk-zro-embedded-resumed-keyname-554433';
+  const seenCalls: { url: string; goal: string; facts?: Record<string, string> }[] = [];
+
+  const ensureSession = vi.fn(async () => ({
+    status: 'already_connected' as const,
+    session: embeddedSession,
+    providers: ['google' as const],
+    browserLocation: { kind: 'none' as const }
+  }));
+
+  const runSignup = vi.fn(async (options: RunSignupOptions): Promise<SignupResult> => {
+    seenCalls.push({
+      url: options.url,
+      goal: options.goal,
+      ...(options.facts ? { facts: { ...options.facts } } : {})
+    });
+    if (seenCalls.length === 1) {
+      return {
+        status: 'needs_input',
+        service: 'zro',
+        url: 'https://zro.moonmath.ai/api-keys',
+        captured: false,
+        credentials: [],
+        steps: 4,
+        seconds: 1.5,
+        jevCalls: 2,
+        driveStatus: 'needs_value',
+        field: 'Alias',
+        question: 'Enter a name for the new API key',
+        reason: 'Missing value for Alias field',
+        trajectory: []
+      };
+    }
+    await options.onCredentialCaptured({
+      kind: 'api_key',
+      service: 'zro',
+      url: 'https://zro.moonmath.ai/api-keys',
+      fields: { api_key: secret },
+      fieldNames: ['api_key'],
+      source: 'extract',
+      observedHosts: ['zro.moonmath.ai'],
+      capturedAt: new Date().toISOString()
+    });
+    return makeSuccessResult(options, true);
+  });
+
+  vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (url, init) => {
+    expect(String(url)).toBe('https://zro.moonmath.ai/v1/chat/completions');
+    expect(new Headers(init?.headers).get('Authorization')).toBe(`Bearer ${secret}`);
+    return Response.json({
+      id: 'chatcmpl-zro-resumed',
+      model: ZRO_DEEPSEEK,
+      choices: [{ message: { role: 'assistant', content: 'ready' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 4, completion_tokens: 1 }
+    });
+  }));
+
+  const squire = new BrowserSquire({ directory, embeddedRuntime: { ensureSession, runSignup } });
+  try {
+    await squire.connect();
+    await setup(() => {}, ['zro'], { squire, directory });
+  } finally {
+    await squire.close();
+  }
+
+  expect(seenCalls).toHaveLength(2);
+  expect(seenCalls[0]!.url).toBe('https://zro.moonmath.ai/overview');
+  expect(seenCalls[0]!.facts?.Alias).toBeUndefined();
+  expect(seenCalls[1]!.url).toBe('https://zro.moonmath.ai/api-keys');
+  expect(seenCalls[1]!.facts?.Alias).toBe(seenCalls[0]!.facts?.key_name);
+  expect(seenCalls[1]!.goal).toContain('For the "Alias" field, use the supplied "Alias" fact.');
+  expect(seenCalls[1]!.goal.length).toBeLessThanOrEqual(EMBEDDED_DRIVE_GOAL_LIMIT);
+
+  expect(await readVaultEntry('zro', directory)).toMatchObject({
+    api_key: secret,
+    origin: 'https://zro.moonmath.ai',
+    source: 'squire'
+  });
+  const receiptRaw = await readFile(join(directory, 'zro.json'), 'utf8');
+  expect(receiptRaw).not.toContain(secret);
+  expect(await readZroGrant(directory, {})).toMatchObject({ base_url: 'https://zro.moonmath.ai', token: secret });
+});
+
+it('forwards OAuth choice answers across embedded resume turns and captures the key into vault.json', async () => {
+  const secret = 'sk-zro-embedded-oauth-resumed-776655';
+  const seenCalls: { url: string; goal: string; facts?: Record<string, string> }[] = [];
+
+  const ensureSession = vi.fn(async () => ({
+    status: 'already_connected' as const,
+    session: embeddedSession,
+    providers: ['google' as const],
+    browserLocation: { kind: 'none' as const }
+  }));
+
+  const runSignup = vi.fn(async (options: RunSignupOptions): Promise<SignupResult> => {
+    seenCalls.push({
+      url: options.url,
+      goal: options.goal,
+      ...(options.facts ? { facts: { ...options.facts } } : {})
+    });
+    if (seenCalls.length === 1) {
+      return {
+        status: 'low_confidence',
+        service: 'zro',
+        url: 'https://zro.moonmath.ai/sign-in',
+        captured: false,
+        credentials: [],
+        steps: 2,
+        seconds: 1.0,
+        jevCalls: 1,
+        driveStatus: 'low_confidence',
+        question: 'Choose a sign-in option',
+        options: {
+          google_oauth: 'Sign in with Google',
+          email_login: 'Continue with Email'
+        },
+        reason: 'model confidence is below the drive threshold',
+        trajectory: []
+      };
+    }
+    if (seenCalls.length === 2) {
+      return {
+        status: 'low_confidence',
+        service: 'zro',
+        url: 'https://zro.moonmath.ai/api-keys',
+        captured: false,
+        credentials: [],
+        steps: 3,
+        seconds: 1.1,
+        jevCalls: 2,
+        driveStatus: 'low_confidence',
+        question: 'Choose one current target key',
+        options: {
+          kcancel: 'Cancel',
+          kalias: 'Alias'
+        },
+        reason: 'model confidence is below the drive threshold',
+        trajectory: []
+      };
+    }
+    await options.onCredentialCaptured({
+      kind: 'api_key',
+      service: 'zro',
+      url: 'https://zro.moonmath.ai/api-keys',
+      fields: { api_key: secret },
+      fieldNames: ['api_key'],
+      source: 'extract',
+      observedHosts: ['zro.moonmath.ai'],
+      capturedAt: new Date().toISOString()
+    });
+    return makeSuccessResult(options, true);
+  });
+
+  vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => Response.json({
+    id: 'chatcmpl-zro-oauth-resumed',
+    model: ZRO_DEEPSEEK,
+    choices: [{ message: { role: 'assistant', content: 'ready' }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 4, completion_tokens: 1 }
+  })));
+
+  const squire = new BrowserSquire({ directory, embeddedRuntime: { ensureSession, runSignup } });
+  squire.useBatchSignup();
+  try {
+    await squire.connect();
+    await setup(() => {}, ['zro'], { squire, directory });
+  } finally {
+    await squire.close();
+  }
+
+  expect(seenCalls).toHaveLength(3);
+  expect(seenCalls[1]!.url).toBe('https://zro.moonmath.ai/sign-in');
+  expect(seenCalls[1]!.goal).toContain('Select "Sign in with Google" (option "google_oauth") and continue.');
+  expect(seenCalls[2]!.url).toBe('https://zro.moonmath.ai/api-keys');
+  expect(seenCalls[2]!.goal).toContain('Select "Sign in with Google" (option "google_oauth") and continue.');
+  expect(seenCalls[2]!.goal).toContain('Select "Alias" (option "kalias") and continue.');
+  expect(seenCalls[2]!.facts?.Alias).toBe(seenCalls[0]!.facts?.key_name);
+
+  expect(await readVaultEntry('zro', directory)).toMatchObject({
+    api_key: secret,
+    origin: 'https://zro.moonmath.ai',
+    source: 'squire'
+  });
+});
+
+it('keeps embedded continuation goals within limit and redacts secrets from answers', () => {
+  const longGoal = 'A'.repeat(EMBEDDED_DRIVE_GOAL_LIMIT - 10);
+  const secretLike = 'sk-should-never-enter-goal-prose-123456';
+  const fieldResume = applyEmbeddedContinuation({
+    goal: longGoal,
+    facts: { plan: 'free' },
+    continuation: {
+      answer: secretLike,
+      previousField: 'API Key Name',
+      previousDecisions: ['Select "Sign in with Google" (option "google_oauth") and continue.']
+    }
+  });
+  expect(fieldResume.facts['API Key Name']).toBe(secretLike);
+  expect(fieldResume.goal.length).toBeLessThanOrEqual(EMBEDDED_DRIVE_GOAL_LIMIT);
+  expect(fieldResume.goal).toContain('For the "API Key Name" field, use the supplied "API Key Name" fact.');
+  expect(fieldResume.goal).not.toContain(secretLike);
 });

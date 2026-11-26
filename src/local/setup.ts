@@ -75,6 +75,7 @@ import {
   writeId
 } from './signup-mcp.js';
 import type {
+  EmbeddedSignupContinuation,
   EmbeddedSignupRuntime,
   InMemoryCapturedGrant,
   SignupAgent,
@@ -472,7 +473,16 @@ export class BrowserSquire implements SetupSquire {
   private signupSession: SignupSession | undefined;
   private connectionState: 'existing' | 'installed' = 'existing';
   private capturedInMemory = new Map<string, InMemoryCapturedGrant>();
-  private embeddedSessions = new Map<string, { provider: string; url: string }>();
+  private embeddedSessions = new Map<string, {
+    provider: string;
+    url: string;
+    goal: string;
+    facts: Record<string, string>;
+    lastOptions?: Record<string, string>;
+    lastField?: string;
+    lastQuestion?: string;
+    decisions: string[];
+  }>();
   private callProviders = new WeakMap<ObjectValue, string>();
   private sessions = new Map<string, string>();
   private services = new Map<string, AbortController>();
@@ -576,19 +586,43 @@ export class BrowserSquire implements SetupSquire {
           if (!url) throw new Error(`No signup URL configured for ${provider}`);
           const goal = typeof args.goal === 'string' && args.goal.trim()
             ? args.goal
-            : `Sign up for ${provider} free access and capture an API key.`;
+            : tracked?.goal ?? `Sign up for ${provider} free access and capture an API key.`;
           const rawFacts = object(args.facts);
-          const facts = Object.fromEntries(
+          const incomingFacts = Object.fromEntries(
             Object.entries(rawFacts).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
           );
+          const facts = { ...(tracked?.facts ?? {}), ...incomingFacts };
+          const answer = typeof args.answer === 'string' && args.answer.trim() ? args.answer.trim() : undefined;
+          const selectedOptionLabel = answer && tracked?.lastOptions && Object.hasOwn(tracked.lastOptions, answer)
+            ? tracked.lastOptions[answer]
+            : undefined;
+          const continuation: EmbeddedSignupContinuation | undefined = answer !== undefined || (tracked?.decisions.length ?? 0) > 0
+            ? {
+                ...(answer !== undefined ? { answer } : {}),
+                ...(selectedOptionLabel !== undefined ? { selectedOptionLabel } : {}),
+                ...(tracked?.lastField !== undefined ? { previousField: tracked.lastField } : {}),
+                ...(tracked?.lastQuestion !== undefined ? { previousQuestion: tracked.lastQuestion } : {}),
+                ...(tracked?.decisions.length ? { previousDecisions: tracked.decisions } : {})
+              }
+            : undefined;
           const sessionId = existingId ?? `embedded:${provider}:${randomUUID()}`;
-          this.embeddedSessions.set(sessionId, { provider, url });
-          const { driveResult } = await runEmbeddedSignup(
+          this.embeddedSessions.set(sessionId, {
+            provider,
+            url,
+            goal,
+            facts,
+            ...(tracked?.lastOptions ? { lastOptions: tracked.lastOptions } : {}),
+            ...(tracked?.lastField !== undefined ? { lastField: tracked.lastField } : {}),
+            ...(tracked?.lastQuestion !== undefined ? { lastQuestion: tracked.lastQuestion } : {}),
+            decisions: [...(tracked?.decisions ?? [])]
+          });
+          const { driveResult, signupResult, appliedFacts, decision } = await runEmbeddedSignup(
             {
               provider,
               url,
               goal,
               ...(Object.keys(facts).length ? { facts } : {}),
+              ...(continuation ? { continuation } : {}),
               directory: this.directory,
               ...(this.signupSession ? { session: this.signupSession } : {}),
               registry: this.options.registry?.() ?? bundledRegistry,
@@ -605,6 +639,30 @@ export class BrowserSquire implements SetupSquire {
             },
             this.options.embeddedRuntime
           );
+          const resumedUrl = typeof signupResult.url === 'string' && /^https?:\/\//i.test(signupResult.url) && URL.canParse(signupResult.url)
+            ? signupResult.url
+            : url;
+          const nextOptions = signupResult.options
+            ? Object.fromEntries(
+                Object.entries(signupResult.options).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+              )
+            : undefined;
+          const nextDecisions = [...(tracked?.decisions ?? [])];
+          if (decision && !nextDecisions.includes(decision)) {
+            nextDecisions.push(decision);
+          }
+          if (this.embeddedSessions.has(sessionId)) {
+            this.embeddedSessions.set(sessionId, {
+              provider,
+              url: resumedUrl,
+              goal,
+              facts: appliedFacts,
+              ...(nextOptions && Object.keys(nextOptions).length ? { lastOptions: nextOptions } : {}),
+              ...(typeof signupResult.field === 'string' && signupResult.field.trim() ? { lastField: signupResult.field.trim() } : {}),
+              ...(typeof signupResult.question === 'string' && signupResult.question.trim() ? { lastQuestion: signupResult.question.trim() } : {}),
+              decisions: nextDecisions.slice(-6)
+            });
+          }
           return { content: [], structuredContent: { ...driveResult, session_id: sessionId } };
         }
         if (name === 'operate_finish') {
@@ -1013,6 +1071,17 @@ export class BrowserSquire implements SetupSquire {
       // Recovery requires an observed key-name field, even when a fact is offered.
       const keyName = this.signupFacts.get(provider)?.key_name;
       const observed = object(result.observation);
+      const pageUrl = observed.url ?? result.url;
+      if (keyName && result.status === 'needs_value' && typeof result.field === 'string' && keyNameField(result.field, pageUrl)) {
+        const fieldName = result.field.trim();
+        if (!usedTerms.has(`field:${fieldName}`)) {
+          usedTerms.add(`field:${fieldName}`);
+          facts[fieldName] = keyName;
+          this.signupFacts.set(provider, { ...this.signupFacts.get(provider), [fieldName]: keyName });
+          answer = Object.hasOwn(object(result.options), 'key_name') ? 'key_name' : keyName;
+          continue;
+        }
+      }
       const fieldLabel = (row: unknown[]) => String(row[2]).split('|')[0]!.replace(/^@/, '').trim();
       const nameRow = keyName && result.status === 'low_confidence' && Array.isArray(observed.safe_table)
         ? observed.safe_table.find((row): row is unknown[] => Array.isArray(row) && row[1] === 't'
@@ -1031,6 +1100,27 @@ export class BrowserSquire implements SetupSquire {
         this.signupFacts.set(provider, { ...this.signupFacts.get(provider), [fieldLabel(nameRow)]: keyName });
         answer = nameTarget[0];
         continue;
+      }
+      if (keyName && result.status === 'low_confidence' && !Array.isArray(observed.safe_table)) {
+        if (typeof result.field === 'string' && keyNameField(result.field, pageUrl)
+          && Object.hasOwn(object(result.options), 'key_name') && !usedTerms.has('fact:key_name')) {
+          const fieldName = result.field.trim();
+          usedTerms.add('fact:key_name');
+          facts[fieldName] = keyName;
+          this.signupFacts.set(provider, { ...this.signupFacts.get(provider), [fieldName]: keyName });
+          answer = 'key_name';
+          continue;
+        }
+        const embeddedNameTarget = Object.entries(object(result.options)).find(([, label]) => typeof label === 'string'
+          && keyNameField(label, pageUrl) && !usedTerms.has(`field:${label.trim()}`));
+        if (embeddedNameTarget) {
+          const fieldName = String(embeddedNameTarget[1]).trim();
+          usedTerms.add(`field:${fieldName}`);
+          facts[fieldName] = keyName;
+          this.signupFacts.set(provider, { ...this.signupFacts.get(provider), [fieldName]: keyName });
+          answer = embeddedNameTarget[0];
+          continue;
+        }
       }
       // Background signups use the router's driver too; it cannot hand off to a person.
       if (this.options.agent && url) {

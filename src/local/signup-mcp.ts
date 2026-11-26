@@ -49,6 +49,15 @@ export type {
 
 export const GRUNT_BROWSER_PROFILE_DIR = 'browser-profile';
 export const GRUNT_SIGNUP_SESSION_FILE = 'signup-session.json';
+export const EMBEDDED_DRIVE_GOAL_LIMIT = 4000;
+
+export interface EmbeddedSignupContinuation {
+  answer?: string;
+  selectedOptionLabel?: string;
+  previousField?: string;
+  previousQuestion?: string;
+  previousDecisions?: readonly string[];
+}
 
 export interface EmbeddedSignupRuntime {
   ensureSession?: typeof ensureSignupSession;
@@ -276,6 +285,106 @@ function mapEmbeddedDriveStatus(result: SignupResult): string {
   }
 }
 
+const EMBEDDED_FIXED_ANSWERS = new Set([
+  'WAIT',
+  'DONE',
+  'BLOCKED',
+  'NONE_OF_THESE',
+  'STUCK',
+  'TAKE_OVER',
+  'I AM TAKING OVER'
+]);
+
+const MAX_CONTINUATION_DECISIONS = 6;
+
+function normalizeContinuationText(value: string): string {
+  return redactVaultSecrets(value.replace(/\s+/g, ' ').trim());
+}
+
+/**
+ * Translates an `operate_drive` resume answer and prior pause metadata into
+ * updated `facts` and a bounded continuation directive for `runSignup`, which
+ * starts each browser turn from the persisted profile directory and current
+ * page URL rather than an external live MCP session.
+ */
+export function applyEmbeddedContinuation(input: {
+  goal: string;
+  facts?: Record<string, string>;
+  continuation?: EmbeddedSignupContinuation;
+}): { goal: string; facts: Record<string, string>; decision?: string } {
+  const mergedFacts: Record<string, string> = { ...(input.facts ?? {}) };
+  const continuation = input.continuation;
+  const rawAnswer = typeof continuation?.answer === 'string' ? continuation.answer.trim() : '';
+  const previousField = typeof continuation?.previousField === 'string' ? continuation.previousField.trim() : '';
+  const selectedOptionLabel = typeof continuation?.selectedOptionLabel === 'string'
+    ? continuation.selectedOptionLabel.trim()
+    : '';
+
+  let decision: string | undefined;
+  if (rawAnswer) {
+    const upper = rawAnswer.toUpperCase();
+    if (upper === 'WAIT') {
+      decision = 'Wait for the current page or OAuth redirect to finish loading, then continue.';
+    } else if (previousField && Object.hasOwn(mergedFacts, rawAnswer)) {
+      if (mergedFacts[previousField] === undefined) {
+        mergedFacts[previousField] = mergedFacts[rawAnswer]!;
+      }
+      const safeField = normalizeContinuationText(previousField);
+      decision = `For the "${safeField}" field, use the supplied "${safeField}" fact.`;
+    } else if (selectedOptionLabel) {
+      const safeLabel = normalizeContinuationText(selectedOptionLabel);
+      const safeKey = normalizeContinuationText(rawAnswer);
+      decision = `Select "${safeLabel}" (option "${safeKey}") and continue.`;
+    } else if (previousField && !EMBEDDED_FIXED_ANSWERS.has(upper)) {
+      if (mergedFacts[previousField] === undefined) {
+        mergedFacts[previousField] = rawAnswer;
+      }
+      const safeField = normalizeContinuationText(previousField);
+      decision = `For the "${safeField}" field, use the supplied "${safeField}" fact.`;
+    } else {
+      const safeAnswer = normalizeContinuationText(rawAnswer);
+      decision = `Apply the resume answer "${safeAnswer}" and continue.`;
+    }
+  }
+
+  const decisions: string[] = [];
+  for (const item of continuation?.previousDecisions ?? []) {
+    const trimmed = item.trim();
+    if (trimmed && !decisions.includes(trimmed)) decisions.push(trimmed);
+  }
+  if (decision && !decisions.includes(decision)) {
+    decisions.push(decision);
+  }
+  const boundedDecisions = decisions.slice(-MAX_CONTINUATION_DECISIONS);
+
+  const baseGoal = input.goal.trim();
+  if (!boundedDecisions.length) {
+    return {
+      goal: baseGoal,
+      facts: mergedFacts,
+      ...(decision ? { decision } : {})
+    };
+  }
+
+  const prefix = ' Resume instructions from previous turns: ';
+  let activeDecisions = [...boundedDecisions];
+  let suffix = `${prefix}${activeDecisions.join(' ')}`;
+  while (activeDecisions.length > 1 && baseGoal.length + suffix.length > EMBEDDED_DRIVE_GOAL_LIMIT) {
+    activeDecisions = activeDecisions.slice(1);
+    suffix = `${prefix}${activeDecisions.join(' ')}`;
+  }
+
+  const combined = baseGoal.length + suffix.length <= EMBEDDED_DRIVE_GOAL_LIMIT
+    ? `${baseGoal}${suffix}`
+    : `${baseGoal.slice(0, Math.max(0, EMBEDDED_DRIVE_GOAL_LIMIT - suffix.length)).trimEnd()}${suffix}`.slice(0, EMBEDDED_DRIVE_GOAL_LIMIT);
+
+  return {
+    goal: combined,
+    facts: mergedFacts,
+    ...(decision ? { decision } : {})
+  };
+}
+
 /**
  * Runs one embedded provider signup directly in-process via
  * `@trusty-squire/mcp/signup`'s `runSignup`, delivering captured API keys
@@ -287,6 +396,7 @@ export async function runEmbeddedSignup(
     url: string;
     goal: string;
     facts?: Record<string, string>;
+    continuation?: EmbeddedSignupContinuation;
     directory?: string;
     session?: SignupSession;
     registry?: Registry;
@@ -298,11 +408,21 @@ export async function runEmbeddedSignup(
     onProgress?: (message: string, data?: Record<string, unknown>) => Promise<void> | void;
   },
   runtime: EmbeddedSignupRuntime = {}
-): Promise<{ driveResult: Record<string, unknown>; signupResult: SignupResult }> {
+): Promise<{
+  driveResult: Record<string, unknown>;
+  signupResult: SignupResult;
+  appliedFacts: Record<string, string>;
+  decision?: string;
+}> {
   options.signal?.throwIfAborted();
   const directory = options.directory ?? configRoot();
   const { profileDir, sessionPath } = gruntSignupPaths(directory);
   const capturedSecrets = new Set<string>();
+  const prepared = applyEmbeddedContinuation({
+    goal: options.goal,
+    ...(options.facts ? { facts: options.facts } : {}),
+    ...(options.continuation ? { continuation: options.continuation } : {})
+  });
 
   const execute = async () => {
     options.signal?.throwIfAborted();
@@ -310,9 +430,9 @@ export async function runEmbeddedSignup(
     const signupResult = await runner(
       {
         url: options.url,
-        goal: options.goal,
+        goal: prepared.goal,
         service: options.provider,
-        ...(options.facts ? { facts: options.facts } : {}),
+        ...(Object.keys(prepared.facts).length ? { facts: prepared.facts } : {}),
         profileDir,
         ...(options.session ? { session: options.session } : { sessionPath }),
         agentIdentity: 'grunt',
@@ -353,6 +473,7 @@ export async function runEmbeddedSignup(
 
     const driveResult: Record<string, unknown> = {
       status: mapEmbeddedDriveStatus(scrubbed),
+      ...(scrubbed.url ? { url: scrubbed.url } : {}),
       captured: scrubbed.captured,
       credentials: scrubbed.credentials,
       ...(scrubbed.reason !== undefined ? { reason: scrubText(scrubbed.reason) } : {}),
@@ -360,10 +481,16 @@ export async function runEmbeddedSignup(
       ...(scrubbed.field !== undefined ? { field: scrubText(scrubbed.field) } : {}),
       ...(scrubbed.question !== undefined ? { question: scrubText(scrubbed.question) } : {}),
       ...(scrubbed.options !== undefined ? { options: scrubbed.options } : {}),
+      ...(scrubbed.probabilities !== undefined ? { probabilities: scrubbed.probabilities } : {}),
       ...(scrubbed.needsUser !== undefined ? { needs_user: scrubbed.needsUser } : {}),
       ...(scrubbed.oauth !== undefined ? { oauth: scrubbed.oauth } : {})
     };
-    return { driveResult, signupResult: scrubbed };
+    return {
+      driveResult,
+      signupResult: scrubbed,
+      appliedFacts: prepared.facts,
+      ...(prepared.decision ? { decision: prepared.decision } : {})
+    };
   };
 
   return serializeProfileRun(profileDir, options.signal, execute);
