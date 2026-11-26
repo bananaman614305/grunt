@@ -51,6 +51,10 @@ it('reports a locally expired Fikra promotion before connecting to Squire', asyn
     directory, squire: { credentials: { list: vi.fn(), grant: vi.fn() } }, notify: vi.fn(), connect, background: false
   })).rejects.toMatchObject({ reason: 'free promotion expired' });
   expect(connect).not.toHaveBeenCalled();
+  const fetcher = transport('fikra');
+  await expect(source('fikra', fetcher, Date.now).complete(request('fikra'), AbortSignal.timeout(1000)))
+    .rejects.toMatchObject({ code: 'refused', message: 'fikra vetted free promotion expired; select another free route' });
+  expect(fetcher).not.toHaveBeenCalled();
 });
 afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllGlobals(); await rm(directory, { recursive: true, force: true }); });
 

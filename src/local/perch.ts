@@ -283,7 +283,13 @@ export class Perch implements Source {
     signal.throwIfAborted();
     if (!['linux', 'darwin'].includes(process.platform)) throw new SourceError('not_installed', 'Perch requires the vetted Linux or macOS CLI');
     if (!(await readDataSharingConsent(this.directory, ['perch'])).includes('perch')) throw new SourceError('refused', 'Perch data sharing is not approved; rerun usegrunt setup');
-    await verifyPerchInstallation(this.directory, signal); await assertPerchPrivateAuth(this.directory);
+    await verifyPerchInstallation(this.directory, signal);
+    try { await assertPerchPrivateAuth(this.directory); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      // Keep any plan receipt so setup can still check the same account on login.
+      throw new SourceError('not_installed', 'Perch native login is missing; run usegrunt setup');
+    }
     await verifyPerchStartupIsolation(perchPaths(this.directory).work);
     return readPerchFreePlanReceipt(this.directory);
   }

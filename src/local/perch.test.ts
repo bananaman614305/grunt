@@ -100,6 +100,14 @@ it('checks core installation hashes and refuses unsafe native-auth file metadata
   await verifyPerchInstallation(directory); expect(verifyPerchCoreFiles).toHaveBeenCalledWith(perchPaths(directory).package, PERCH_CORE_SHA256, expect.any(AbortSignal));
   await chmod(perchPaths(directory).authFile, 0o644); const f = fake(); expect(await source(f.processes).available()).toBe(false); expect(f.acp).not.toHaveBeenCalled();
 });
+it('reports missing native login as incomplete setup and keeps the account receipt', async () => {
+  await rm(perchPaths(directory).authFile);
+  const f = fake();
+  await expect(source(f.processes).complete(request(), AbortSignal.timeout(2000)))
+    .rejects.toMatchObject({ code: 'not_installed', message: 'Perch native login is missing; run usegrunt setup' });
+  await expect(readPerchFreePlanReceipt(directory)).resolves.toMatchObject({ plan: 'Starter' });
+  expect(f.acp).not.toHaveBeenCalled();
+});
 it('rejects global Perch memory, global native agents and ancestor instructions before ACP starts', async () => {
   const f = fake(), s = source(f.processes); const personal = join(state.personalHome, 'Documents', 'Perch'); await mkdir(personal, { recursive: true }); await writeFile(join(personal, 'PERCH.md'), 'private global instruction');
   await expect(s.complete(request(), AbortSignal.timeout(2000))).rejects.toMatchObject({ code: 'refused' }); expect(f.acp).not.toHaveBeenCalled();

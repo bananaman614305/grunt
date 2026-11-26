@@ -155,7 +155,7 @@ export class SourceStatus {
       case 'pending_setup': return 'setup in progress';
       case 'request_refused': return 'rejected the tool definitions or tool history';
       case 'trial_in_progress': return 'routing trial in progress';
-      case 'retired': return this.routeFailure(id, code) ?? 'waiting for a routing trial';
+      case 'retired': return this.routeFailure(id, code) ?? 'route retired';
       case 'cooldown': return this.routeFailure(id, code) ?? 'routing cooldown';
       case 'unavailable': return this.routeFailure(id) ?? 'unavailable; check usegrunt status';
       default: return undefined;
