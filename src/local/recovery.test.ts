@@ -4,7 +4,11 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readDataSharingConsent, recordDataSharingConsent } from './data-sharing.js';
 import { beginSetupSession, readSetupSession } from './setup-session.js';
-import { SourceRecovery } from './recovery.js';
+import { MAX_OPEN_ROUTES, SourceRecovery, codingCapableRoute } from './recovery.js';
+import { OpenCode } from './opencode.js';
+import { FreePi } from './freepi.js';
+import { Goedel } from './goedel.js';
+import { Kilo } from './kilo.js';
 import { SourceError, Sources } from './source.js';
 import { bundledRegistry } from '../registry.js';
 import type { Source } from './source.js';
@@ -272,7 +276,7 @@ describe('low open routes', () => {
     const live = async (source: Source) => await sources.available(source) && sources.openRoute(source.id);
     const open = async () => (await Promise.all(providers.map(live))).filter(Boolean).length;
     const recoveryOpen = vi.fn(open);
-    const recovery = new SourceRecovery({ directory: dir, candidates: async () => ['livekit'], open: recoveryOpen, notify: () => {}, setup });
+    const recovery = new SourceRecovery({ directory: dir, candidates: async () => ['livekit'], open: recoveryOpen, maxOpenRoutes: 6, notify: () => {}, setup });
     const dropped = vi.fn();
     sources.setRouteDropped(dropped);
     try {
@@ -387,4 +391,13 @@ it.each(['reused', 'unavailable', 'pre-signup error'])('does not count a %s setu
     await recovery.close();
     expect(signedUp).not.toHaveBeenCalled();
   } finally { await recovery.close(); }
+});
+
+it('counts only coding-capable routes (excluding non-tool opencode and public-only freepi/goedel) and raises MAX_OPEN_ROUTES to 10', async () => {
+  expect(MAX_OPEN_ROUTES).toBe(10);
+  const dir = await directory();
+  expect(codingCapableRoute(new OpenCode(), dir)).toBe(false);
+  expect(codingCapableRoute(new FreePi({ directory: dir }), dir)).toBe(false);
+  expect(codingCapableRoute(new Goedel({ directory: dir }), dir)).toBe(false);
+  expect(codingCapableRoute(new Kilo({ directory: dir }), dir)).toBe(true);
 });

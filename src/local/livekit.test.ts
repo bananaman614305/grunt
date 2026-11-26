@@ -2,7 +2,7 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { LiveKit, LIVEKIT_DEEPSEEK, LIVEKIT_GATEWAY, LIVEKIT_RECEIPT_MAX_AGE_MS, livekitEnvironment, livekitPaths, parseLiveKitProjects, readLiveKitFreeBuildReceipt, validateLiveKitNativeConfig, writeLiveKitFreeBuildReceipt } from './livekit.js';
+import { LiveKit, LIVEKIT_DEEPSEEK, LIVEKIT_GATEWAY, LIVEKIT_RECEIPT_MAX_AGE_MS, LIVEKIT_TOKEN_TTL_MS, livekitEnvironment, livekitPaths, parseLiveKitProjects, readLiveKitFreeBuildReceipt, validateLiveKitNativeConfig, writeLiveKitFreeBuildReceipt } from './livekit.js';
 import type { LiveKitFreeBuildReceipt } from './livekit.js';
 import { Sources } from './source.js';
 import { createLocalApp } from './api.js';
@@ -210,4 +210,33 @@ it('keeps unrelated environment and HOME while removing all case variants of Liv
   vi.stubEnv('lK_Url', 'synthetic'); vi.stubEnv('LIVEKIT_CONFIG', '/unsafe'); vi.stubEnv('UNRELATED_SETTING', 'preserved');
   const env = livekitEnvironment(); expect(env.lK_Url).toBeUndefined(); expect(env.LIVEKIT_CONFIG).toBeUndefined();
   expect(env.HOME).toBe(process.env.HOME); expect(env.UNRELATED_SETTING).toBe('preserved');
+});
+
+it('caches the minted 10-minute JWT for ~8 minutes and invalidates on expiry, 401, and close', async () => {
+  const options = await fixture(`import {appendFileSync} from 'node:fs';
+    appendFileSync(new URL('./mints.log', import.meta.url), 'mint\\n');
+    process.stdout.write(${JSON.stringify(syntheticToken)});`);
+  let now = 1_000_000;
+  let status = 200;
+  const fetcher = vi.fn<typeof fetch>(async () => status === 200 ? reply() : new Response(null, { status }));
+  const item = source({ ...options, fetcher, now: () => now });
+  const mintCount = async () => (await readFile(join(options.directory, 'mints.log'), 'utf8')).trim().split('\n').filter(Boolean).length;
+
+  await item.complete(request, AbortSignal.timeout(5000));
+  expect(await mintCount()).toBe(1);
+  // Reuse cached JWT across subsequent requests within TTL.
+  now += LIVEKIT_TOKEN_TTL_MS - 1000;
+  await item.complete(request, AbortSignal.timeout(5000));
+  expect(await mintCount()).toBe(1);
+  // Expiry triggers a fresh mint.
+  now += 2000;
+  await item.complete(request, AbortSignal.timeout(5000));
+  expect(await mintCount()).toBe(2);
+  // HTTP 401 invalidates the cached token so the next request mints fresh.
+  status = 401;
+  await expect(item.complete(request, AbortSignal.timeout(5000))).rejects.toMatchObject({ code: 'logged_out' });
+  status = 200;
+  await item.complete(request, AbortSignal.timeout(5000));
+  expect(await mintCount()).toBe(3);
+  expect(fetcher).toHaveBeenCalledTimes(5);
 });

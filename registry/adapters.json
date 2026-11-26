@@ -13,7 +13,6 @@
       "install": "npm:opencode-ai",
       "models": [
         "deepseek-v4.1-flash-free",
-        "glm-5.3-flash-free",
         "big-pickle"
       ]
     },
@@ -191,6 +190,7 @@
       "install": "builtin:fikra",
       "signup": "https://fikraapi.co.ke/account/signup",
       "model": "deepseek-v4-1-flash-economy-free",
+      "status": "inactive",
       "hints": "On /account/signup type the Squire email in the email field and a new password in the password field, choose 'Google Search' in the 'Select an option' list, press 'Create Account with $0.50 free-model credit', then complete the emailed verification and create one key named grunt; press its copy button so it is stored."
     },
     {

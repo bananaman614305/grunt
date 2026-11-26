@@ -153,8 +153,10 @@ export function renderDashboard(snapshot: PoolSnapshot, options: DashboardRender
   }
   add(); add(chalk.gray('─'.repeat(columns)));
   if (!offline && approvals.size) {
-    add(chalk.yellow(fit(`${approvals.size} action${approvals.size === 1 ? '' : 's'} needed${approvals.size ? ` · ${[...approvals].map(id => names[id] ?? id).join(', ')}` : ''}`, columns)));
-    add(fit('Run usegrunt setup to resume approvals.', columns));
+    const ids = [...approvals];
+    add(chalk.yellow(fit(`${approvals.size} action${approvals.size === 1 ? '' : 's'} needed · ${ids.map(id => names[id] ?? id).join(', ')}`, columns)));
+    const target = ids.length === 1 ? ids[0]! : '<provider>';
+    add(fit(`Run usegrunt setup or usegrunt add ${target} to resume.`, columns));
     add(chalk.gray(fit('Other ready sources keep working.', columns)));
   } else if (options.notice) add(chalk.yellow(fit(options.notice, columns)));
   else add(chalk.gray(fit(offline ? 'Run usegrunt setup if the daemon is stopped.' : 'Available = configured; ready = verified reply.', columns)));

@@ -50,7 +50,7 @@ it('distributes new conversations across exactly the vetted pool and keeps follo
     await driver.complete(request('one'), signal());
     await driver.complete(request('follow-up', 'one'), signal());
     for (const text of ['two', 'three', 'four']) await driver.complete(request(text), signal());
-    expect(fake.calls.map(call => call.model)).toEqual([DEFAULT_OPENCODE_MODELS[0], DEFAULT_OPENCODE_MODELS[0], DEFAULT_OPENCODE_MODELS[1], DEFAULT_OPENCODE_MODELS[2], DEFAULT_OPENCODE_MODELS[0]]);
+    expect(fake.calls.map(call => call.model)).toEqual([DEFAULT_OPENCODE_MODELS[0], DEFAULT_OPENCODE_MODELS[0], DEFAULT_OPENCODE_MODELS[1], DEFAULT_OPENCODE_MODELS[0], DEFAULT_OPENCODE_MODELS[1]]);
     expect(fake.calls[1]?.session).toBe(fake.calls[0]?.session);
     expect(new Set(fake.calls.slice(2).map(call => call.session)).size).toBe(3);
   } finally { await driver.close(); }
@@ -88,25 +88,26 @@ it.each([
 });
 
 it('fails over an exhausted model, honors Retry-After, and preserves an existing conversation during model failover', async () => {
-  let glmExhausted = false;
-  const fake = backend(model => model === DEFAULT_OPENCODE_MODELS[0]
+  const models = ['deepseek-v4.1-flash-free', 'model-two-free', 'big-pickle'] as const;
+  let secondExhausted = false;
+  const fake = backend(model => model === models[0]
     ? new Response(null, { status: 429, headers: { 'Retry-After': '15' } })
-    : model === DEFAULT_OPENCODE_MODELS[1] && glmExhausted
+    : model === models[1] && secondExhausted
       ? Response.json({ info: { error: { data: { statusCode: 429 } } } })
       : Response.json({ parts: [{ type: 'text', text: model }] }));
-  const driver = new OpenCode({ url: 'http://127.0.0.1:4096', fetcher: fake.fetcher });
+  const driver = new OpenCode({ url: 'http://127.0.0.1:4096', fetcher: fake.fetcher, models });
   try {
-    expect((await driver.complete(request('first'), signal())).text).toBe(DEFAULT_OPENCODE_MODELS[1]);
-    glmExhausted = true;
-    expect((await driver.complete(request('continue', 'first'), signal())).text).toBe(DEFAULT_OPENCODE_MODELS[2]);
-    expect(fake.calls.map(call => call.model)).toEqual([...DEFAULT_OPENCODE_MODELS.slice(0, 2), ...DEFAULT_OPENCODE_MODELS.slice(1)]);
+    expect((await driver.complete(request('first'), signal())).text).toBe(models[1]);
+    secondExhausted = true;
+    expect((await driver.complete(request('continue', 'first'), signal())).text).toBe(models[2]);
+    expect(fake.calls.map(call => call.model)).toEqual([...models.slice(0, 2), ...models.slice(1)]);
     expect(fake.calls[2]?.session).toBe(fake.calls[1]?.session);
     expect(fake.calls[3]?.session).toBe(fake.calls[1]?.session);
     // Retried model requests update the existing user turn rather than adding
     // another copy to the agent's conversation history.
     expect([...fake.histories.values()].flat().filter(message => message.info.role === 'user')).toHaveLength(2);
     await driver.complete(request('new conversation'), signal());
-    expect(fake.calls.at(-1)?.model).toBe(DEFAULT_OPENCODE_MODELS[2]);
+    expect(fake.calls.at(-1)?.model).toBe(models[2]);
   } finally { await driver.close(); }
 });
 
@@ -136,9 +137,9 @@ it('stops after all free models exhaust, skips them during cooldown, and retries
   const driver = new OpenCode({ url: 'http://127.0.0.1:4096', fetcher: fake.fetcher });
   try {
     await expect(driver.complete(request('first'), signal())).rejects.toMatchObject({ code: 'quota', retryAfter: 5 });
-    expect(fake.calls).toHaveLength(3);
+    expect(fake.calls).toHaveLength(DEFAULT_OPENCODE_MODELS.length);
     await expect(driver.complete(request('second'), signal())).rejects.toMatchObject({ code: 'quota', retryAfter: 5 });
-    expect(fake.calls).toHaveLength(3);
+    expect(fake.calls).toHaveLength(DEFAULT_OPENCODE_MODELS.length);
     exhausted = false; now += 5001;
     await expect(driver.complete(request('third'), signal())).resolves.toMatchObject({ text: 'recovered' });
     expect(fake.calls.at(-1)?.model).toBe(DEFAULT_OPENCODE_MODELS[0]);
@@ -166,12 +167,13 @@ it.each([{ statusCode: 404 }, { code: 'model_not_found' }])('skips a provider-de
 });
 
 it('distributes new work evenly across the healthy models while another model cools down', async () => {
-  const fake = backend(model => model === DEFAULT_OPENCODE_MODELS[0] ? new Response(null, { status: 429 }) : Response.json({ parts: [{ type: 'text', text: model }] }));
-  const driver = new OpenCode({ url: 'http://127.0.0.1:4096', fetcher: fake.fetcher });
+  const models = ['deepseek-v4.1-flash-free', 'model-two-free', 'big-pickle'] as const;
+  const fake = backend(model => model === models[0] ? new Response(null, { status: 429 }) : Response.json({ parts: [{ type: 'text', text: model }] }));
+  const driver = new OpenCode({ url: 'http://127.0.0.1:4096', fetcher: fake.fetcher, models });
   try {
     const answers = [];
     for (const text of ['one', 'two', 'three', 'four']) answers.push((await driver.complete(request(text), signal())).text);
-    expect(answers).toEqual([DEFAULT_OPENCODE_MODELS[1], DEFAULT_OPENCODE_MODELS[2], DEFAULT_OPENCODE_MODELS[1], DEFAULT_OPENCODE_MODELS[2]]);
+    expect(answers).toEqual([models[1], models[2], models[1], models[2]]);
   } finally { await driver.close(); }
 });
 

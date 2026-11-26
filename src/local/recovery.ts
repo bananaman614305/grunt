@@ -4,22 +4,41 @@ import { beginSetupSession } from './setup-session.js';
 import { setupFallbacks } from './fallback-setup.js';
 import { approveDataSharing, registryDataSharingPolicies, requiresDataSharing } from './data-sharing.js';
 import { setupFailureReason } from './setup-failure.js';
+import { toolCapable } from './source.js';
+import type { ModelRequest, Source } from './source.js';
 import type { SignupAgent } from './signup-mcp.js';
 import type { Registry } from '../registry.js';
 
 const exec = promisify(execFile);
 const RUN_TIMEOUT_MS = 10 * 60000;
-// N in docs/router.md: the most routes the daemon keeps open by itself.
-export const MAX_OPEN_ROUTES = 6;
+// N in docs/router.md: the most coding-capable routes the daemon keeps open by itself.
+export const MAX_OPEN_ROUTES = 10;
 // Below this many open routes, a route leaving the open set starts a pass at once.
 export const LOW_OPEN_ROUTES = 2;
+
+// A route counts toward the open coding-route target only when it supports
+// client-owned function tools and accepts ordinary (non-public) requests.
+export function codingCapableRoute(source: Source, cwd: string): boolean {
+  if (!toolCapable(source)) return false;
+  if (!source.acceptsRequest) return true;
+  const sample: ModelRequest = {
+    model: 'grunt',
+    cwd,
+    messages: [{ role: 'user', content: '' }],
+    tools: [{ type: 'function', function: { name: 'check', parameters: { type: 'object' } } }],
+    stream: false
+  };
+  return source.acceptsRequest(sample);
+}
 
 export interface RecoveryOptions {
   directory: string;
   // Routes worth opening that are not open now, best first.
   candidates: () => Promise<readonly string[]>;
-  // How many routes are open (available and not retired).
+  // How many coding-capable routes are open (available and not retired).
   open: () => Promise<number>;
+  // Optional override for MAX_OPEN_ROUTES.
+  maxOpenRoutes?: number;
   eligible?: (id: string) => boolean;
   // Signup driver selection follows docs/router.md.
   driver?: () => Promise<SignupAgent | undefined>;
@@ -87,9 +106,11 @@ export class SourceRecovery {
       const eligible = await this.eligible(low);
       if (!low) this.failed = new Set([...this.failed].filter(id => eligible.includes(id)));
       const ordered = [...eligible.filter(id => !this.failed.has(id)), ...[...this.failed].filter(id => eligible.includes(id))];
+      const maxOpen = this.options.maxOpenRoutes !== undefined && Number.isInteger(this.options.maxOpenRoutes) && this.options.maxOpenRoutes > 0
+        ? this.options.maxOpenRoutes : MAX_OPEN_ROUTES;
       let attempts = 0;
       for (const id of ordered) {
-        if (signal.aborted || attempts >= MAX_OPEN_ROUTES || await this.options.open() >= MAX_OPEN_ROUTES) break;
+        if (signal.aborted || attempts >= maxOpen || await this.options.open() >= maxOpen) break;
         // Re-checked per signup: the first route that opens drives the rest.
         const agent = await this.options.driver?.();
         signal.throwIfAborted();

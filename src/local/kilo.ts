@@ -3,13 +3,15 @@ import type { ValidateFunction } from 'ajv';
 import { readDataSharingConsent } from './data-sharing.js';
 import { providerGrantDirectory, readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
 import { JsonToolBridge } from './json-tool-bridge.js';
-import { completionEnding, withEnding, lengthLimited, truncatedCompletion, needsFunctionTools, SourceError } from './source.js';
+import { readPromotionalStream } from './promotional-api.js';
+import { completionEnding, emitStreamText, endingOf, hasEmittedStreamText, withEnding, lengthLimited, truncatedCompletion, needsFunctionTools, SourceError } from './source.js';
 import { diagnosticFetch, observeAttemptDispatch, recordAttemptFailure } from './diagnostics.js';
 import type { SafeDiagnosticMetadata } from './diagnostics.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 
 export const KILO_PARTICLE = 'particle-ai/particle-1:free';
 export const KILO_BEAM = 'reflection/beam-free';
+export const KILO_CATALOG_CACHE_MS = 60000;
 // Free models left out of the rotation for requests that carry function tools, for lack of credibility as a coding
 // agent. Each needs evidence, not a hunch; everything else stays. Checked against Kilo's public catalog and the
 // vendors' own cards on 2026-11-25.
@@ -136,12 +138,21 @@ export class Kilo implements Source {
   readonly id: 'kilo' | 'reflection-beam'; readonly supportsFunctionTools = true;
   // The model that answered last is tried first; a quota reply moves on to the next.
   private preferred: string | undefined;
+  private cachedModels: { models: string[]; at: number } | undefined;
   private shutdown = new AbortController(); private pending = new Set<Promise<unknown>>();
-  constructor(private options: { directory?: string; fetcher?: typeof fetch; timeout?: number; anonymous?: () => boolean; reflectionBeam?: boolean } = {}) {
+  constructor(private options: { directory?: string; fetcher?: typeof fetch; timeout?: number; anonymous?: () => boolean; reflectionBeam?: boolean; now?: () => number } = {}) {
     this.id = options.reflectionBeam ? 'reflection-beam' : 'kilo';
   }
-  private verify(signal: AbortSignal) {
-    return verifyKiloAccess({ ...(this.options.fetcher ? { fetcher: this.options.fetcher } : {}), reflectionBeam: this.id === 'reflection-beam', signal });
+  private get now() { return (this.options.now ?? Date.now)(); }
+  private async verify(signal: AbortSignal) {
+    const now = this.now;
+    if (this.cachedModels && now >= this.cachedModels.at && now - this.cachedModels.at < KILO_CATALOG_CACHE_MS) {
+      return this.cachedModels.models;
+    }
+    this.cachedModels = undefined;
+    const models = await verifyKiloAccess({ ...(this.options.fetcher ? { fetcher: this.options.fetcher } : {}), reflectionBeam: this.id === 'reflection-beam', signal });
+    this.cachedModels = { models, at: this.now };
+    return models;
   }
   private async approved() { return (await readDataSharingConsent(this.options.directory ?? providerGrantDirectory(), [this.id])).includes(this.id); }
   private async grant() {
@@ -157,18 +168,18 @@ export class Kilo implements Source {
     } catch { return false; } })());
   }
   async healthCheck() { return this.available(); }
-  complete(request: ModelRequest, caller: AbortSignal): Promise<Completion> { return this.track(this.retryBadCalls(request, caller)); }
+  complete(request: ModelRequest, caller: AbortSignal, output?: () => void): Promise<Completion> { return this.track(this.retryBadCalls(request, caller, output)); }
   // Particle sometimes samples one function call that fails the tool schema.
   // Ask once more before reporting the failure, so one bad sample does not
   // end a coding-tool turn.
-  private async retryBadCalls(request: ModelRequest, caller: AbortSignal): Promise<Completion> {
-    try { return await this.once(request, caller); }
+  private async retryBadCalls(request: ModelRequest, caller: AbortSignal, output?: () => void): Promise<Completion> {
+    try { return await this.once(request, caller, output); }
     catch (error) {
-      if (!(error instanceof SourceError) || error.diagnostics?.failureReason !== 'response_tools' || caller.aborted || this.shutdown.signal.aborted) throw error;
-      return this.once(request, caller);
+      if (!(error instanceof SourceError) || error.diagnostics?.failureReason !== 'response_tools' || caller.aborted || this.shutdown.signal.aborted || hasEmittedStreamText()) throw error;
+      return this.once(request, caller, output);
     }
   }
-  private async once(request: ModelRequest, caller: AbortSignal): Promise<Completion> {
+  private async once(request: ModelRequest, caller: AbortSignal, output?: () => void): Promise<Completion> {
     const timeout = this.options.timeout, signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(typeof timeout === 'number' && Number.isFinite(timeout) && timeout > 0 ? Math.min(180000, Math.ceil(timeout)) : 180000)]);
     try {
       signal.throwIfAborted();
@@ -177,8 +188,9 @@ export class Kilo implements Source {
       const limit = request.maxTokens, { messages, validators } = conversation(request);
       if (!await this.approved()) throw new SourceError('refused', 'Kilo data sharing is not approved; rerun usegrunt setup');
       signal.throwIfAborted();
+      const wantStream = request.stream;
       const wire = (model: string) => {
-        const body = JSON.stringify({ model, messages, ...(request.tools.length ? { tools: request.tools } : {}), stream: false, max_tokens: limit });
+        const body = JSON.stringify({ model, messages, ...(request.tools.length ? { tools: request.tools } : {}), stream: wantStream, ...(wantStream ? { stream_options: { include_usage: true } } : {}), max_tokens: limit });
         if (Buffer.byteLength(body) > 2 * 1024 * 1024) throw requestFailure('Kilo prompt exceeds the supported input size', 'request_size');
         return body;
       };
@@ -193,14 +205,17 @@ export class Kilo implements Source {
       let quota: SourceError | undefined, last: SourceError | undefined;
       for (const model of order) {
         try {
-          const completion = await this.ask(model, wire(model), origin, grant, request, messages, validators, limit, signal);
+          const completion = await this.ask(model, wire(model), origin, grant, request, messages, validators, limit, signal, output);
           this.preferred = model; return completion;
         } catch (error) {
+          if (error instanceof SourceError && (error.diagnostics?.failureReason === 'completion_model' || error.diagnostics?.failureReason === 'completion_billing')) {
+            this.cachedModels = undefined;
+          }
           // Move on when this model reports quota (429), a server error (5xx) or
           // answers as another model. A timeout or any other failure ends the turn.
           const reported = error instanceof SourceError && (error.code === 'quota' || error.diagnostics?.failureReason === 'completion_model'
             || error.code === 'upstream' && (error.diagnostics?.httpStatus ?? 0) >= 500);
-          if (!reported || signal.aborted) throw error;
+          if (!reported || signal.aborted || hasEmittedStreamText()) throw error;
           if (error.code !== 'quota') last = error;
           else if (!quota || (error.retryAfter ?? Infinity) < (quota.retryAfter ?? Infinity)) quota = error;
         }
@@ -214,7 +229,7 @@ export class Kilo implements Source {
     }
   }
   private async ask(model: string, body: string, origin: string, grant: { token: string } | undefined, request: ModelRequest, messages: ModelRequest['messages'],
-    validators: Map<string, ValidateFunction>, limit: number | undefined, signal: AbortSignal): Promise<Completion> {
+    validators: Map<string, ValidateFunction>, limit: number | undefined, signal: AbortSignal, output?: () => void): Promise<Completion> {
     observeAttemptDispatch({ model, account: grant ? 'vaulted' : 'anonymous', ...(limit === undefined ? {} : { maxOutputTokens: limit }) });
     const response = await abortable(diagnosticFetch(this.options.fetcher ?? fetch, this.id, 'chat.completions')(`${origin}/chat/completions`, { method: 'POST', redirect: 'error', signal,
       headers: { 'Content-Type': 'application/json', ...(grant ? { Authorization: `Bearer ${grant.token}` } : {}) }, body }), signal); status(response);
@@ -227,16 +242,89 @@ export class Kilo implements Source {
       recordAttemptFailure(this.id, { ...failure.diagnostics, failureReason: reason }, true);
       return failure;
     };
-    const result = await json(response, signal, 2 * 1024 * 1024, 'chat.completions'), usage = object(result.usage), details = object(usage.cost_details);
-    if (result.model !== model) throw fail('refused', 'Kilo returned an unverified model', 'completion_model');
-    const unverifiedUsage = 'Kilo returned unverified free usage or exceeded the output budget';
-    if (usage.cost !== 0 || ['total_cost', 'credits_charged'].some(key => key in usage && usage[key] !== 0)
-      || ['upstream_inference_cost', 'upstream_inference_prompt_cost', 'upstream_inference_completions_cost'].some(key => details[key] !== 0)
-      || ['cost', 'total_cost', 'credits_charged'].some(key => key in result && result[key] !== 0)) {
-      throw fail('refused', unverifiedUsage, 'completion_billing');
+    const validateUsage = (usage: Record<string, unknown>, container: Record<string, unknown> = {}) => {
+      const details = object(usage.cost_details);
+      const unverifiedUsage = 'Kilo returned unverified free usage or exceeded the output budget';
+      if (usage.cost !== 0 || ['total_cost', 'credits_charged'].some(key => key in usage && usage[key] !== 0)
+        || ['upstream_inference_cost', 'upstream_inference_prompt_cost', 'upstream_inference_completions_cost'].some(key => details[key] !== 0)
+        || ['cost', 'total_cost', 'credits_charged'].some(key => key in container && container[key] !== 0)) {
+        throw fail('refused', unverifiedUsage, 'completion_billing');
+      }
+      if (!Number.isSafeInteger(usage.prompt_tokens) || Number(usage.prompt_tokens) < 1 || !Number.isSafeInteger(usage.completion_tokens)
+        || Number(usage.completion_tokens) < 1 || limit !== undefined && Number(usage.completion_tokens) > limit) throw fail('refused', unverifiedUsage, 'completion_usage');
+    };
+    const validateToolCalls = (rawCalls: unknown): ToolCall[] => {
+      const calls: ToolCall[] = [], ids = new Set<string>();
+      if (rawCalls !== undefined) {
+        if (!Array.isArray(rawCalls) || rawCalls.length > 16) throw fail('upstream', 'Kilo returned invalid function calls', 'response_tools');
+        for (const value of rawCalls) {
+          const call = object(value), fn = object(call.function); let args: unknown;
+          try { args = JSON.parse(String(fn.arguments)); } catch { throw fail('upstream', 'Kilo returned invalid function arguments', 'response_tools'); }
+          if (call.type !== 'function' || typeof call.id !== 'string' || !call.id || call.id.length > 256 || ids.has(call.id)
+            || request.messages.some(m => m.tool_calls?.some(old => old.id === call.id)) || messages.some(m => m.tool_calls?.some(old => old.id === call.id)) || typeof fn.name !== 'string' || typeof fn.arguments !== 'string'
+            || !args || typeof args !== 'object' || Array.isArray(args) || !validators.get(fn.name)?.(args)) throw fail('upstream', 'Kilo returned invalid function calls', 'response_tools');
+          ids.add(call.id); calls.push({ id: call.id, type: 'function', function: { name: fn.name, arguments: fn.arguments } });
+        }
+      }
+      return calls;
+    };
+    if (response.headers.get('content-type')?.includes('text/event-stream')) {
+      let streamUsage: Record<string, unknown> = {};
+      let streamFailure: SafeDiagnosticMetadata['failureReason'];
+      let reply: Completion;
+      const checkBillingContainer = (container: Record<string, unknown>) => {
+        const unverifiedUsage = 'Kilo returned unverified free usage or exceeded the output budget';
+        if (['cost', 'total_cost', 'credits_charged'].some(key => key in container && container[key] !== 0)) {
+          throw fail('refused', unverifiedUsage, 'completion_billing');
+        }
+        if (container.usage !== undefined && container.usage !== null) {
+          const chunkUsage = object(container.usage), details = object(chunkUsage.cost_details);
+          if (('cost' in chunkUsage && chunkUsage.cost !== 0)
+            || ['total_cost', 'credits_charged'].some(key => key in chunkUsage && chunkUsage[key] !== 0)
+            || ['upstream_inference_cost', 'upstream_inference_prompt_cost', 'upstream_inference_completions_cost'].some(key => key in details && details[key] !== 0)) {
+            throw fail('refused', unverifiedUsage, 'completion_billing');
+          }
+        }
+      };
+      try {
+        reply = await readPromotionalStream(response, model, signal, {
+          strictToolArgs: false,
+          allowAnyFinishReason: true,
+          chunk: checkBillingContainer,
+          ...(output ? { progress: output } : {}),
+          ...(request.stream ? { text: delta => emitStreamText(delta) } : {}),
+          result: u => { streamUsage = u; },
+          failure: reason => { streamFailure ??= reason; },
+          cleanup: () => {}
+        });
+      } catch (error) {
+        if (signal.aborted) throw error;
+        if (error instanceof SourceError) {
+          if (error.diagnostics?.failureReason) throw error;
+          if (error.code === 'refused') throw fail('refused', 'Kilo refused the request', 'refusal');
+          throw error;
+        }
+        if (streamFailure === 'completion_model') throw fail('refused', 'Kilo returned an unverified model', 'completion_model');
+        throw fail('upstream', 'Kilo request failed', streamFailure ?? 'response_body');
+      }
+      validateUsage(streamUsage);
+      const ended = endingOf(reply);
+      const finish = ended?.providerFinish ?? ended?.finish;
+      if (reply.finishReason === 'length') {
+        if (request.model !== this.id && !reply.text.trim()) throw unusable('Kilo stopped at the output limit without usable output', 'length');
+        return truncatedCompletion(reply.text, streamUsage, finish ?? 'length', { servedModel: model, free: true });
+      }
+      const calls = validateToolCalls(reply.calls);
+      if (!calls.length && (finish === 'tool_calls' || finish === 'function_call')) {
+        throw fail('upstream', 'Kilo ended in a tool call but returned none', 'response_tools');
+      }
+      if (!reply.text.trim() && !calls.length) throw unusable('Kilo returned an empty completion', 'response_empty');
+      return withEnding({ servedModel: model, free: true, text: reply.text, ...(calls.length ? { calls } : {}), inputTokens: streamUsage.prompt_tokens as number, outputTokens: streamUsage.completion_tokens as number },
+        completionEnding(finish, streamUsage, calls.length > 0));
     }
-    if (!Number.isSafeInteger(usage.prompt_tokens) || Number(usage.prompt_tokens) < 1 || !Number.isSafeInteger(usage.completion_tokens)
-      || Number(usage.completion_tokens) < 1 || limit !== undefined && Number(usage.completion_tokens) > limit) throw fail('refused', unverifiedUsage, 'completion_usage');
+    const result = await json(response, signal, 2 * 1024 * 1024, 'chat.completions'), usage = object(result.usage);
+    if (result.model !== model) throw fail('refused', 'Kilo returned an unverified model', 'completion_model');
+    validateUsage(usage, result);
     if (!Array.isArray(result.choices) || result.choices.length !== 1) throw fail('upstream', 'Kilo returned an empty completion', 'response_choices');
     const choice = object(result.choices[0]), message = object(choice.message);
     if (message.refusal) throw fail('refused', 'Kilo refused the request', 'refusal');
@@ -246,18 +334,7 @@ export class Kilo implements Source {
       if (request.model !== this.id && !text.trim()) throw unusable('Kilo stopped at the output limit without usable output', 'length');
       return truncatedCompletion(text, usage, choice.finish_reason, { servedModel: model, free: true });
     }
-    const calls: ToolCall[] = [], ids = new Set<string>();
-    if (message.tool_calls !== undefined) {
-      if (!Array.isArray(message.tool_calls) || message.tool_calls.length > 16) throw fail('upstream', 'Kilo returned invalid function calls', 'response_tools');
-      for (const value of message.tool_calls) {
-        const call = object(value), fn = object(call.function); let args: unknown;
-        try { args = JSON.parse(String(fn.arguments)); } catch { throw fail('upstream', 'Kilo returned invalid function arguments', 'response_tools'); }
-        if (call.type !== 'function' || typeof call.id !== 'string' || !call.id || call.id.length > 256 || ids.has(call.id)
-          || request.messages.some(m => m.tool_calls?.some(old => old.id === call.id)) || messages.some(m => m.tool_calls?.some(old => old.id === call.id)) || typeof fn.name !== 'string' || typeof fn.arguments !== 'string'
-          || !args || typeof args !== 'object' || Array.isArray(args) || !validators.get(fn.name)?.(args)) throw fail('upstream', 'Kilo returned invalid function calls', 'response_tools');
-        ids.add(call.id); calls.push({ id: call.id, type: 'function', function: { name: fn.name, arguments: fn.arguments } });
-      }
-    }
+    const calls = validateToolCalls(message.tool_calls);
     // A reply that ends in a tool call (or carries a legacy function_call) but has no parsed call is an invalid sample,
     // not a finished text answer. The text is not parsed or changed.
     if (!calls.length && (choice.finish_reason === 'tool_calls' || choice.finish_reason === 'function_call' || message.function_call !== undefined && message.function_call !== null)) {
@@ -267,5 +344,5 @@ export class Kilo implements Source {
     return withEnding({ servedModel: model, free: true, text, ...(calls.length ? { calls } : {}), inputTokens: usage.prompt_tokens as number, outputTokens: usage.completion_tokens as number },
       completionEnding(choice.finish_reason, usage, calls.length > 0));
   }
-  async close() { this.shutdown.abort(); await Promise.allSettled([...this.pending]); }
+  async close() { this.cachedModels = undefined; this.shutdown.abort(); await Promise.allSettled([...this.pending]); }
 }

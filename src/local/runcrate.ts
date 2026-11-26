@@ -1,5 +1,5 @@
 import { diagnosticFetch } from './diagnostics.js';
-import { FreeApi } from './free-api.js';
+import { FreeApi, isDeepSeekV41Model } from './free-api.js';
 import type { FreeApiGrant } from './free-api.js';
 import { verifiedDeepSeekFetch } from './deepseek-response.js';
 import { readDataSharingConsent } from './data-sharing.js';
@@ -33,7 +33,7 @@ export class Runcrate implements Source {
   private location: string;
   constructor(private options: { directory?: string; fetcher?: typeof fetch; timeout?: number; loadGrant?: () => Promise<RuncrateGrant> } = {}) {
     this.location = options.directory ?? providerGrantDirectory();
-    this.source = new FreeApi('runcrate', { ...options, fetcher: verifiedDeepSeekFetch(options.fetcher), loadGrant: () => this.grant() });
+    this.source = new FreeApi('runcrate', { ...options, fetcher: verifiedDeepSeekFetch(options.fetcher), verifyModel: isDeepSeekV41Model, loadGrant: () => this.grant() });
   }
   private approved = async () => (await readDataSharingConsent(this.location, [this.id])).includes(this.id);
   private grant() { return (this.options.loadGrant?.() ?? readRuncrateGrant(this.location)).then(validate); }

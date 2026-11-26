@@ -3,7 +3,7 @@ import { constants } from 'node:fs';
 import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { FreeApi } from './free-api.js';
+import { FreeApi, isDeepSeekV41Model } from './free-api.js';
 import type { FreeApiGrant } from './free-api.js';
 import { verifiedDeepSeekFetch } from './deepseek-response.js';
 import { SourceError } from './source.js';
@@ -47,11 +47,25 @@ export class Zro implements Source {
   readonly supportsFunctionTools = true;
   private source: FreeApi;
   constructor(private options: { directory?: string; fetcher?: typeof fetch; timeout?: number; loadGrant?: () => Promise<ZroGrant> } = {}) {
-    this.source = new FreeApi('zro', { ...options, fetcher: verifiedDeepSeekFetch(options.fetcher), loadGrant: () => this.grant() });
+    this.source = new FreeApi('zro', { ...options, fetcher: verifiedDeepSeekFetch(options.fetcher), verifyModel: isDeepSeekV41Model, loadGrant: () => this.grant() });
   }
   private grant() { return (this.options.loadGrant?.() ?? readZroGrant(this.options.directory)).then(validate); }
-  // Readiness is a real chat request: Zro still lists models for a paused key.
+  // Availability checks only verified local grant presence; passive request
+  // observations and explicit healthCheck() detect externally paused keys
+  // without burning live chat completions every 30s.
   async available(signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    try {
+      await this.grant();
+      signal?.throwIfAborted();
+      return true;
+    } catch {
+      signal?.throwIfAborted();
+      return false;
+    }
+  }
+  // Explicit recovery/maintenance probe: Zro still lists models for a paused key.
+  async healthCheck(signal?: AbortSignal) {
     try {
       await this.source.complete({ model: this.id, cwd: this.options.directory ?? directory(), messages: [{ role: 'user', content: 'Reply with one word: ready' }],
         tools: [], stream: false, maxTokens: 16 }, AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(this.availabilityTimeoutMs)]));
@@ -63,10 +77,9 @@ export class Zro implements Source {
       return false;
     }
   }
-  async healthCheck() { return this.available(); }
-  complete(request: ModelRequest, signal: AbortSignal) {
+  complete(request: ModelRequest, signal: AbortSignal, output?: () => void) {
     // Router aliases select this source; they never select another upstream model.
-    return this.source.complete({ ...request, model: this.id }, signal);
+    return this.source.complete({ ...request, model: this.id }, signal, output);
   }
   async close() { await this.source.close(); }
 }

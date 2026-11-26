@@ -51,6 +51,7 @@ export class Numes implements Source {
     this.directory = options.directory ?? configRoot();
     this.fetcher = options.fetcher ?? fetch;
     this.client = new FreeApi(this.id, {
+      allowStream: false,
       loadGrant: () => this.grant(),
       fetcher: (input, init) => this.checkedCompletion(input, init)
     });

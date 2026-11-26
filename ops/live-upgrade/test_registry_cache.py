@@ -31,7 +31,7 @@ class RegistryCacheTest(unittest.TestCase):
         value=self.verify();self.assertFalse(value['rawBytesUnchanged']);self.assertTrue(value['normalWriterShape']);self.assertEqual(value['catalogSha256'],self.catalog)
         self.assertEqual(Path(self.proof['originalBackup']).read_bytes(),original)
     def test_equal_bundled_publication_refresh_does_not_clear_actual_retired_backoff(self):
-        self.assertEqual(self.catalog,'1cde3d7d2c4f2a3662a87ae4d1a760bf5e2b07e03cdc3235d314154d9ab97f57')
+        self.assertEqual(self.catalog,'f6c7f89e7573797ce8da77764d0ebb1b422a70da79c2b15837cf1ba8988bb383')
         now=int(time.time()*1000)
         raw=json.dumps({'code':'upstream','signature':'upstream:::','streak':5,'at':now,'until':now+3600000},separators=(',',':'))
         database=self.config/'routing-history.db'

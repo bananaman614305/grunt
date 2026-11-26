@@ -3,7 +3,7 @@ import { configRoot } from '../brand.js';
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { FreeApi, readFreeApiGrant } from './free-api.js';
+import { FreeApi, isDeepSeekV41Model, readFreeApiGrant } from './free-api.js';
 import type { FreeApiGrant } from './free-api.js';
 import { verifiedDeepSeekFetch } from './deepseek-response.js';
 import { readDataSharingConsent } from './data-sharing.js';
@@ -49,7 +49,7 @@ export class TokenHarbor implements Source {
   private check: { grant: FreeApiGrant; result: Promise<Allowance> } | undefined;
   constructor(private options: { directory?: string; fetcher?: typeof fetch; timeout?: number; loadGrant?: () => Promise<FreeApiGrant>; now?: () => number } = {}) {
     this.location = options.directory ?? directory();
-    this.source = new FreeApi('tokenharbor', { ...options, directory: this.location, loadGrant: () => this.grant(), fetcher: verifiedDeepSeekFetch(options.fetcher) });
+    this.source = new FreeApi('tokenharbor', { ...options, directory: this.location, loadGrant: () => this.grant(), fetcher: verifiedDeepSeekFetch(options.fetcher), verifyModel: isDeepSeekV41Model });
   }
   private async approved() { return (await readDataSharingConsent(this.location, ['tokenharbor'])).includes('tokenharbor'); }
   private grant() { return this.options.loadGrant?.() ?? readFreeApiGrant('tokenharbor', this.location); }

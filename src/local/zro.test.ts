@@ -92,10 +92,25 @@ it('does not open Zro in the browser when the vaulted key fails without a reject
   expect(squire.runs.start).not.toHaveBeenCalled();
 });
 
-it('reports a Zro paused-key 403 as unavailable, not connected', async () => {
+it('checks Zro availability from local grant presence without live inference, and detects paused keys on healthCheck or failover', async () => {
   const path = await directory(); await writeZroGrant(grant, path);
   const fetcher = vi.fn<typeof fetch>(async url => String(url).endsWith('/models') ? Response.json({ data: [{ id: ZRO_DEEPSEEK }] }) : paused());
-  expect(await new Zro({ directory: path, fetcher }).available()).toBe(false);
+  const zro = new Zro({ directory: path, fetcher });
+  expect(await zro.available()).toBe(true);
+  expect(fetcher).not.toHaveBeenCalled();
+  expect(await zro.healthCheck()).toBe(false);
+  expect(fetcher).toHaveBeenCalledOnce();
+  // A real request on a paused key fails with 403, benches Zro, and fails over cleanly.
+  const backup = { id: 'kilo', supportsFunctionTools: true, available: async () => true, complete: vi.fn(async () => ({ text: 'backup ok' })) };
+  const sources = new Sources([zro, backup], { registry: () => bundledRegistry, random: () => 0 });
+  try {
+    const res = await createLocalApp(sources).request('http://127.0.0.1:8788/v1/chat/completions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('x-grunt-source')).toBe('kilo');
+    expect(backup.complete).toHaveBeenCalledOnce();
+  } finally { await sources.close(); }
 });
 
 it('stops Zro setup when the browser refuses after the vaulted key was rejected', async () => {
@@ -319,7 +334,7 @@ it('passes grouped sharing approval to custom Freebuff and OpenCode browser goal
   for (const goal of goals) expect(goal).toContain('Grunt setup enables this free source by default');
 });
 
-it('admits a Zro chat that answers after six seconds and cancels an unfinished admission on close', async () => {
+it('admits a Zro health check that answers after six seconds and cancels an unfinished check on abort', async () => {
   vi.useFakeTimers();
   const signals: AbortSignal[] = [];
   const source = new Zro({
@@ -331,16 +346,23 @@ it('admits a Zro chat that answers after six seconds and cancels an unfinished a
       signal.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
     })
   });
+  // Admission itself is zero-inference and immediate.
   const admission = new SourceAvailability(new SourceStatus(['zro']));
   admission.start([source]);
-  await vi.advanceTimersByTimeAsync(6001);
-  expect(admission.peek('zro')).toBe(true);
-  await admission.close();
-  const next = new SourceAvailability(new SourceStatus(['zro']));
-  next.start([source]);
   await vi.advanceTimersByTimeAsync(0);
-  await next.close();
+  expect(admission.peek('zro')).toBe(true);
+  expect(signals).toHaveLength(0);
+  await admission.close();
+  // Explicit healthCheck still uses the 30s timeout and honors abort.
+  const healthy = source.healthCheck();
+  await vi.advanceTimersByTimeAsync(6001);
+  expect(await healthy).toBe(true);
+  const abort = new AbortController();
+  const cancelled = source.healthCheck(abort.signal);
+  await vi.advanceTimersByTimeAsync(0);
+  abort.abort(new Error('cancelled'));
+  await expect(cancelled).rejects.toThrow('cancelled');
   expect(signals).toHaveLength(2);
-  expect(signals[1].aborted).toBe(true);
+  expect(signals[1]!.aborted).toBe(true);
   await source.close();
 });

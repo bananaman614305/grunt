@@ -7,7 +7,7 @@ import type { FreeApiGrant } from './free-api.js';
 import { JsonToolBridge } from './json-tool-bridge.js';
 import { readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
 import { readPromotionalStream } from './promotional-api.js';
-import { completionEnding, endingOf, withEnding, lengthLimited, truncatedCompletion, SourceError, requestRefusal } from './source.js';
+import { completionEnding, emitStreamText, endingOf, withEnding, lengthLimited, truncatedCompletion, SourceError, requestRefusal } from './source.js';
 import type { Completion, ModelRequest, SlowUpstreamPolicy, Source, ToolCall } from './source.js';
 
 export const MILLIONSEEK_MODEL = 'deepseek-v4.1-flash-free';
@@ -141,7 +141,7 @@ export class MillionSeek implements Source {
       };
       let reply: Completion;
       if (response.headers.get('content-type')?.includes('text/event-stream')) {
-        reply = await readPromotionalStream(response, MILLIONSEEK_MODEL, signal, { ...(progress ? { progress } : {}), failure: reason => { streamFailure ??= reason; }, cleanup: () => {},
+        reply = await readPromotionalStream(response, MILLIONSEEK_MODEL, signal, { ...(progress ? { progress } : {}), ...(request.stream ? { text: delta => emitStreamText(delta) } : {}), failure: reason => { streamFailure ??= reason; }, cleanup: () => {},
           // A stream without usage (the provider ignoring include_usage) is still a valid reply; its token counts are unknown.
           result: usage => { if (Object.keys(usage).length) usable(usage); } });
       } else {

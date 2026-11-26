@@ -2,8 +2,9 @@ import { configRoot } from '../brand.js';
 import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { join } from 'node:path';
-import { completionEnding, withEnding, lengthLimited, truncatedCompletion, SourceError } from './source.js';
+import { completionEnding, emitStreamText, endingOf, withEnding, lengthLimited, truncatedCompletion, SourceError } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
+import { readPromotionalStream } from './promotional-api.js';
 import { nousQuotaDelay, quotaObject, quotaRetryAfter, readQuotaError } from './quota-timing.js';
 import { observeAttemptDispatch, diagnosticFetch } from './diagnostics.js';
 
@@ -62,7 +63,7 @@ export class FreeApi implements Source {
   readonly id: FreeApiProvider;
   readonly supportsFunctionTools = true;
   private shutdown = new AbortController();
-  constructor(provider: FreeApiProvider, private options: { directory?: string; fetcher?: typeof fetch; timeout?: number; expectedModel?: string; loadGrant?: () => Promise<FreeApiGrant> } = {}) {
+  constructor(provider: FreeApiProvider, private options: { directory?: string; fetcher?: typeof fetch; timeout?: number; expectedModel?: string; verifyModel?: (model: unknown) => boolean; allowStream?: boolean; loadGrant?: () => Promise<FreeApiGrant> } = {}) {
     this.id = providerName(provider);
   }
   private get spec() { return FREE_API_PROVIDERS[this.id]; }
@@ -70,10 +71,10 @@ export class FreeApi implements Source {
   // Availability here means private access is configured. Only the live probe
   // establishes whether the provider will serve the requested free model.
   async available() { try { await this.grant(); return true; } catch { return false; } }
-  complete(request: ModelRequest, caller: AbortSignal) {
-    return this.completeWithGrant(request, caller);
+  complete(request: ModelRequest, caller: AbortSignal, output?: () => void) {
+    return this.completeWithGrant(request, caller, undefined, output);
   }
-  async completeWithGrant(request: ModelRequest, caller: AbortSignal, verifiedGrant?: FreeApiGrant) {
+  async completeWithGrant(request: ModelRequest, caller: AbortSignal, verifiedGrant?: FreeApiGrant, output?: () => void) {
     caller.throwIfAborted();
     if (![this.id, 'grunt'].includes(request.model)) throw new SourceError('upstream', 'Free API probe requires an explicit provider');
     if (request.tools.some(tool => tool.type !== 'function')) throw new SourceError('upstream', 'Free API probe requires function tools');
@@ -81,6 +82,7 @@ export class FreeApi implements Source {
     try { grant = verifiedGrant ?? await this.grant(); }
     catch { throw new SourceError('logged_out', `${this.id} access is not configured`); }
     const signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(this.options.timeout ?? 180000)]);
+    const wantStream = request.stream && this.options.allowStream !== false;
     let response: Response;
     try {
       observeAttemptDispatch({ model: this.spec.model, account: 'configured', maxOutputTokens: request.maxTokens });
@@ -88,7 +90,8 @@ export class FreeApi implements Source {
         method: 'POST', redirect: 'error', signal,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${grant.token}` },
         body: JSON.stringify({ model: this.spec.model, messages: request.messages,
-          tools: request.tools.length ? request.tools : undefined, stream: false,
+          tools: request.tools.length ? request.tools : undefined, stream: wantStream,
+          ...(wantStream ? { stream_options: { include_usage: true } } : {}),
           max_tokens: request.maxTokens })
       });
     } catch {
@@ -113,9 +116,36 @@ export class FreeApi implements Source {
         { httpStatus: response.status, transport: 'http', httpMethod: 'POST', endpointLabel: 'chat.completions' });
     }
     try {
+      if (response.headers.get('content-type')?.includes('text/event-stream')) {
+        const reply = await readPromotionalStream(response, this.options.expectedModel, signal, {
+          ...(this.options.verifyModel ? { verifyModel: this.options.verifyModel } : {}),
+          strictToolArgs: false,
+          allowAnyFinishReason: true,
+          ...(output ? { progress: output } : {}),
+          ...(wantStream ? { text: delta => emitStreamText(delta) } : {}),
+          failure: () => {},
+          cleanup: () => {}
+        });
+        signal.throwIfAborted();
+        if (reply.finishReason === 'length') return reply;
+        if (reply.calls !== undefined && !validCalls(reply.calls)) throw new SourceError('upstream', `${this.id} returned an invalid completion`);
+        const ended = endingOf(reply);
+        const finishReason = this.id === 'zro' ? finishReasons.find(reason => reason === ended?.providerFinish || reason === ended?.finish) : undefined;
+        const result: Completion = {
+          text: reply.text,
+          ...(reply.calls?.length ? { calls: reply.calls } : {}),
+          ...(finishReason ? { finishReason } : {}),
+          ...(reply.inputTokens === undefined ? {} : { inputTokens: reply.inputTokens }),
+          ...(reply.outputTokens === undefined ? {} : { outputTokens: reply.outputTokens })
+        };
+        return ended ? withEnding(result, ended) : result;
+      }
       const body = await response.json() as { model?: unknown; choices?: { finish_reason?: unknown; message?: { content?: unknown; tool_calls?: unknown; refusal?: unknown } }[]; usage?: { prompt_tokens?: unknown; completion_tokens?: unknown } };
       signal.throwIfAborted();
       if (this.options.expectedModel !== undefined && body.model !== this.options.expectedModel) {
+        throw new SourceError('upstream', `${this.id} returned a different model`);
+      }
+      if (this.options.verifyModel && !this.options.verifyModel(body.model)) {
         throw new SourceError('upstream', `${this.id} returned a different model`);
       }
       const choice = body.choices?.[0], message = choice?.message;

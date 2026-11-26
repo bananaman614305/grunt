@@ -82,6 +82,8 @@ export const installers: Readonly<Record<string, string>> = { freebuff: 'npm:fre
 export const knownAdapters = new Set(Object.keys(installers));
 // Shipped adapters with kind "model"; the other shipped adapters are agents.
 export const modelAdapters = new Set(['kilo', 'nvidia', 'zro', 'tokenharbor', 'runcrate', 'apinex', 'livekit', 'pollinations', 'beatapi', 'nous', 'kenari', 'numes', 'goedel', 'crowllm', 'fikra', 'openference', 'darus', 'aperture-ai', 'reflection-beam', 'antseed-vikey', 'millionseek', 'freepi', 'ifm']);
+// Shipped adapters whose code explicitly supports image input in addition to text.
+export const imageAdapters = new Set<string>();
 // Shipped adapters whose code serves exactly one model.
 export const pinnedModels: Readonly<Record<string, string>> = { 'aperture-ai': 'baidu/ernie-5.5-flash-preview:free', darus: 'darus/deepseek-v4.1-flash-1017-FREE', fikra: 'deepseek-v4-1-flash-economy-free', openference: 'DeepSeek-V4.1-Flash-1017-Free', crowllm: 'glm-5.3-flash:free', 'reflection-beam': 'reflection/beam-free', millionseek: 'deepseek-v4.1-flash-free', freepi: 'deepseek-v4.1-flash', ifm: 'IFM/K2-Horizon-375B-A23B', 'antseed-vikey': 'deepseek/deepseek-v4.1-flash-free', goedel: 'deepseek/deepseek-v4.1-flash', nous: 'qwen/qwen4-max:free' };
 // Explicit fallback descriptors do not enroll sources in the bundled registry.
@@ -173,7 +175,7 @@ export const ADAPTER_RULES = {
   kind: `must be one of ${KINDS.join(', ')}; a shipped adapter keeps its shipped kind and a declarative adapter must be model`,
   tier: `must be one of ${TIERS.join(', ')}`,
   weight: 'must be a number greater than 0 and at most 1',
-  modalities: `must be a non-empty list of distinct values from ${MODALITIES.join(', ')}; text only for a shipped or declarative adapter`,
+  modalities: `must be a non-empty list of distinct values from ${MODALITIES.join(', ')}; a shipped adapter may include image only when it supports image input, and a declarative adapter must be text only`,
   install: `must be the shipped installer for a shipped adapter id, ${DECLARATIVE_OPENAI_INSTALL} for a declarative model adapter, or npm:<package>`,
   signup: 'must be an https URL without credentials; required and public DNS only for a declarative adapter',
   model: `must be a non-blank string; required (at most ${MODEL_MAX} characters) for a declarative adapter; a single-model shipped adapter keeps its shipped model`,
@@ -245,7 +247,7 @@ export function adapterErrors(value: unknown): RegistryError[] {
   if (known) {
     check(a.kind === (modelAdapters.has(id as string) ? 'model' : 'agent'), 'kind');
     check(a.install === installers[id as string], 'install');
-    check(!modalities || modalities.every(m => m === 'text'), 'modalities');
+    check(!modalities || modalities.every(m => m === 'text' || m === 'image' && imageAdapters.has(id as string)), 'modalities');
     check(pinnedModels[id as string] === undefined || a.model === pinnedModels[id as string], 'model');
     check(a.declarative === undefined, 'declarative');
   } else if (declarativeInstall && !disabled) {

@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { Kilo, KILO_BEAM, KILO_NOT_FOR_TOOL_WORK, KILO_ORIGIN, KILO_PARTICLE, verifyKiloAccess } from './kilo.js';
+import { Kilo, KILO_BEAM, KILO_CATALOG_CACHE_MS, KILO_NOT_FOR_TOOL_WORK, KILO_ORIGIN, KILO_PARTICLE, verifyKiloAccess } from './kilo.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 import { writePrivateProviderGrant } from './provider-grant.js';
 import { beginSetupSession, readSetupSession } from './setup-session.js';
@@ -33,7 +33,7 @@ it('uses only fixed anonymous Particle with no inherited key, and checks live fr
   vi.stubEnv('KILO_API_KEY', 'synthetic-unrelated-private-key'); const f = fixture();
   expect(await f.source.available()).toBe(true); expect(f.posts()).toHaveLength(0);
   expect(await f.source.complete({ ...request(), model: 'arbitrary-paid-alias', maxTokens: 10000 }, new AbortController().signal)).toEqual({ text: 'Hello.', inputTokens: 20, outputTokens: 5, free: true, servedModel: KILO_PARTICLE });
-  expect(f.fetcher.mock.calls.map(([url]) => url)).toEqual([`${KILO_ORIGIN}/models`, `${KILO_ORIGIN}/models`, `${KILO_ORIGIN}/chat/completions`]);
+  expect(f.fetcher.mock.calls.map(([url]) => url)).toEqual([`${KILO_ORIGIN}/models`, `${KILO_ORIGIN}/chat/completions`]);
   for (const [, init] of f.fetcher.mock.calls) { expect(init?.redirect).toBe('error'); expect(new Headers(init?.headers).has('authorization')).toBe(false); }
   expect(JSON.parse(f.posts()[0]![1]!.body as string)).toMatchObject({ model: KILO_PARTICLE, max_tokens: 10000, stream: false });
 });
@@ -417,4 +417,34 @@ it.each([false, true])('accepts every tool of a recorded Claude Code request and
     await expect(f.source.complete(claudeCodeRequest(index, 'kilo'), new AbortController().signal)).resolves.toMatchObject({ text: expect.any(String) });
     expect(JSON.parse(f.posts()[0]![1]!.body as string).tools).toEqual(tools);
   }
+});
+
+it('caches verified /models metadata for 60s while preserving exact model and zero-cost checks on every completion', async () => {
+  let now = 1_000_000;
+  let billed = false;
+  const fetcher = vi.fn<typeof fetch>(async (url) => {
+    if (String(url) === `${KILO_ORIGIN}/models`) return Response.json({ data: [model()] });
+    return Response.json(result(billed ? { usage: { ...usage(), cost: 0.01 } } : {}));
+  });
+  const source = new Kilo({ directory, fetcher, now: () => now });
+  sources.push(source);
+  const modelGets = () => fetcher.mock.calls.filter(([url]) => String(url) === `${KILO_ORIGIN}/models`).length;
+
+  expect(await source.available()).toBe(true);
+  await source.complete(request(), new AbortController().signal);
+  now += KILO_CATALOG_CACHE_MS - 1;
+  await source.complete(request(), new AbortController().signal);
+  expect(modelGets()).toBe(1);
+
+  // After 60s the catalog refreshes.
+  now += 1;
+  await source.complete(request(), new AbortController().signal);
+  expect(modelGets()).toBe(2);
+
+  // Billing verification still runs on every completion and invalidates the catalog cache.
+  billed = true;
+  await expect(source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'refused', diagnostics: { failureReason: 'completion_billing' } });
+  billed = false;
+  await source.complete(request(), new AbortController().signal);
+  expect(modelGets()).toBe(3);
 });
