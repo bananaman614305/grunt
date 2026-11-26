@@ -4,7 +4,7 @@ import { constants } from 'node:fs';
 import { chmod, lstat, mkdir, open, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import type { Client, InValue } from '@libsql/client';
+import type { Client, InValue, Transaction } from '@libsql/client';
 import { diagnosticMetricSchema, pruneDiagnosticMetrics, readDiagnosticLosses, readDiagnosticMetrics, recordDiagnosticMetrics } from './diagnostic-metrics.js';
 export type { DiagnosticMetrics, DiagnosticMetricBucket } from './diagnostic-metrics.js';
 
@@ -219,6 +219,44 @@ function serializeDiagnosticWriter(key: string, write: () => Promise<void>) {
 }
 const attemptSummary = (): DiagnosticAttemptSummary => ({ total: 0, succeeded: 0, failed: 0, cancelled: 0, inputTokens: 0, outputTokens: 0, unknownInput: 0, unknownOutput: 0 });
 
+const evictionPriority = "CASE WHEN incident=1 THEN 2 WHEN type='route.skip' THEN 0 ELSE 1 END";
+
+async function initializeIncidentRetention(tx: Transaction) {
+  const { rows } = await tx.execute('PRAGMA table_info(diagnostic_events)');
+  if (rows.some(row => row.name === 'incident')) return;
+  // Backfill the existing journal without changing its cursor or metrics.
+  await tx.executeMultiple(`
+    ALTER TABLE diagnostic_events ADD COLUMN incident INTEGER NOT NULL DEFAULT 0;
+    UPDATE diagnostic_events SET incident=1 WHERE request_id IN (
+      SELECT request_id FROM diagnostic_events GROUP BY request_id
+      HAVING max(outcome='failed' OR type='attempt.failure'
+        OR (CASE WHEN json_valid(data) THEN json_extract(data,'$.failureReason') END)='length')
+        OR sum(type='attempt.start')>1
+    );
+    CREATE INDEX diagnostic_events_eviction ON diagnostic_events(${evictionPriority},seq);
+    CREATE INDEX diagnostic_events_incidents ON diagnostic_events(request_id) WHERE incident=1;
+    CREATE TRIGGER diagnostic_events_mark_incident AFTER INSERT ON diagnostic_events
+    WHEN NEW.outcome='failed' OR NEW.type='attempt.failure' OR json_extract(NEW.data,'$.failureReason')='length'
+      OR EXISTS (SELECT 1 FROM diagnostic_events WHERE request_id=NEW.request_id AND incident=1)
+      OR (NEW.type='attempt.start' AND EXISTS (
+        SELECT 1 FROM diagnostic_events WHERE request_id=NEW.request_id AND type='attempt.start' AND seq<NEW.seq
+      ))
+    BEGIN
+      UPDATE diagnostic_events SET incident=1 WHERE request_id=NEW.request_id AND incident=0;
+    END;
+  `);
+}
+
+async function pruneDiagnosticEvents(tx: Transaction, cutoff: number, maxEvents: number) {
+  await tx.execute({ sql: 'DELETE FROM diagnostic_events WHERE at<?', args: [cutoff] });
+  await tx.execute({ sql: `
+    DELETE FROM diagnostic_events WHERE seq IN (
+      SELECT seq FROM diagnostic_events ORDER BY ${evictionPriority},seq
+      LIMIT max(0,(SELECT count(*) FROM diagnostic_events)-?)
+    )
+  `, args: [maxEvents] });
+}
+
 export class DiagnosticsStore {
   private queue: Promise<void> = Promise.resolve();
   private queued = 0;
@@ -243,7 +281,7 @@ export class DiagnosticsStore {
   }
   static async open(options: { directory: string; adoptionConsent?: boolean; maxEvents?: number; maxAgeMs?: number; now?: () => number; runtimeVersion?: string }) {
     if (options.runtimeVersion !== undefined && !runtimeVersion.test(options.runtimeVersion)) throw new Error('Invalid runtime version');
-    const limits = { maxEvents: Math.min(100000, Math.max(100, options.maxEvents ?? 50000)), maxAgeMs: Math.min(90 * 86400000, Math.max(60000, options.maxAgeMs ?? 30 * 86400000)), now: options.now ?? Date.now, ...(options.runtimeVersion ? { runtimeVersion: options.runtimeVersion } : {}) };
+    const limits = { maxEvents: Math.min(100000, Math.max(0, Math.floor(options.maxEvents ?? 50000))), maxAgeMs: Math.min(90 * 86400000, Math.max(60000, options.maxAgeMs ?? 30 * 86400000)), now: options.now ?? Date.now, ...(options.runtimeVersion ? { runtimeVersion: options.runtimeVersion } : {}) };
     let db: Client | undefined;
     try {
       await mkdir(options.directory, { recursive: true, mode: 0o700 });
@@ -274,6 +312,13 @@ export class DiagnosticsStore {
           CREATE INDEX IF NOT EXISTS diagnostic_events_time ON diagnostic_events(at);
           CREATE INDEX IF NOT EXISTS diagnostic_events_source ON diagnostic_events(source,seq);
           ${diagnosticMetricSchema}`);
+        const tx = await db!.transaction('write');
+        try {
+          await initializeIncidentRetention(tx);
+          await pruneDiagnosticEvents(tx, limits.now() - limits.maxAgeMs, limits.maxEvents);
+          await tx.commit();
+        } catch (error) { await tx.rollback(); throw error; }
+        finally { tx.close(); }
         await chmod(path, 0o600);
         // Only daemon startup supplies a consent decision. Other journal readers leave it intact.
         if (options.adoptionConsent === true) {
@@ -396,7 +441,7 @@ export class DiagnosticsStore {
               const fresh = accepted.filter(event => ids.delete(event.id));
               await recordDiagnosticMetrics(tx, fresh.filter(event => !traceDetailTypes.has(event.type)), this.options.now());
             }
-            await tx.execute({ sql: 'DELETE FROM diagnostic_events WHERE at<? OR seq IN (SELECT seq FROM diagnostic_events ORDER BY seq DESC LIMIT -1 OFFSET ?)', args: [this.options.now() - this.options.maxAgeMs, this.options.maxEvents] });
+            await pruneDiagnosticEvents(tx, this.options.now() - this.options.maxAgeMs, this.options.maxEvents);
             await pruneDiagnosticMetrics(tx, this.options.now());
             await tx.commit();
             this.lastWriteAt = this.options.now(); this.error = undefined;
@@ -443,6 +488,8 @@ export class DiagnosticsStore {
   async trace(requestId: string) { return this.list({ requestId, limit: 500 }); }
   async metrics(options: { since?: number; until?: number } = {}) {
     await this.flush();
+    // coverage.retainedFrom is the first aggregate hour. Raw event retention
+    // is selective and can leave gaps after the oldest surviving event.
     const attachHealth = (result: Awaited<ReturnType<typeof readDiagnosticMetrics>>) => {
       result.ingestionHealth = this.health(); result.coverage.droppedEvents += this.pendingLoss;
       result.coverage.available = result.coverage.available && result.ingestionHealth.available;
