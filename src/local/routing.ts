@@ -7,7 +7,7 @@ import { taskTurns } from './harness.js';
 import { RequestError, SourceError, answeredBy, bridgedTools, canReplay, needsFunctionTools, toolCapable, NO_TOOL_SOURCE } from './source.js';
 import type { Completion, ErrorCode, ModelRequest, SlowUpstreamPolicy, Source } from './source.js';
 import type { Adapter, Registry } from '../registry.js';
-import { isDeclarativeAdapter, knownAdapters } from '../registry.js';
+import { knownAdapters } from '../registry.js';
 import { SourceStatus } from './source-status.js';
 import { SourceAvailability } from './source-availability.js';
 import { currentDiagnosticContext, observeRequestPhase, withDiagnosticContext } from './diagnostics.js';
@@ -167,8 +167,9 @@ export class StickyRouter {
   }
 
   registered(id: string) {
-    return knownAdapters.has(id) || !!this.options.localOptIns?.has(id)
-      || isDeclarativeAdapter(this.options.registry().adapters.find(adapter => adapter.id === id));
+    if (knownAdapters.has(id) || this.options.localOptIns?.has(id)) return true;
+    const adapter = this.options.registry().adapters.find(item => item.id === id);
+    return adapter?.install === 'declarative:openai' && adapter.declarative !== undefined;
   }
   listed(id: string) { return this.registered(id) && this.options.registry().adapters.some(a => a.id === id && !scoutRetired(a, this.now())); }
   supportsInput(id: string, imageInput = false) {
