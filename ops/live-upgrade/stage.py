@@ -69,9 +69,9 @@ def cpu_policy():
 def assert_cpu_policy(expected):
  try:
   quota,period=map(int,expected.split())
-  valid=quota>0 and period>0 and quota==2*period
+  valid=quota>0 and period>0 and quota==4*period
  except (AttributeError,TypeError,ValueError):valid=False
- if not valid or cpu_policy()!=expected:raise RuntimeError('Intentional Grunt two-CPU policy changed')
+ if not valid or cpu_policy()!=expected:raise RuntimeError('Intentional Grunt four-CPU policy changed')
 def observer_snapshot():
  info=OBSERVER_STATE.stat()
  if OBSERVER_STATE.is_symlink() or info.st_uid!=os.getuid() or info.st_mode&0o077:raise RuntimeError('Unsafe passive observer state directory')
