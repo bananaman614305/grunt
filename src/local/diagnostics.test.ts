@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdtemp, rm, stat, chmod, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, realpath, rm, stat, chmod, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -16,7 +16,7 @@ import { buildRecoveryAudit } from '../recovery-audit.js';
 
 const directories: string[] = [], stores: DiagnosticsStore[] = [];
 const event = (patch: Partial<DiagnosticEvent> = {}): DiagnosticEvent => ({ version: 1, id: randomUUID(), at: Date.now(), type: 'attempt.finish', requestId: randomUUID(), kind: 'user', source: 'kilo', outcome: 'passed', ...patch });
-async function directory() { const path = await mkdtemp(join(tmpdir(), 'grunt-diagnostics-')); directories.push(path); return path; }
+async function directory() { const path = await mkdtemp(join(await realpath(tmpdir()), 'grunt-diagnostics-')); directories.push(path); return path; }
 async function store(path?: string, options: { maxEvents?: number; maxAgeMs?: number; now?: () => number } = {}) { const value = await DiagnosticsStore.open({ directory: path ?? await directory(), ...options }); stores.push(value); return value; }
 const request: ModelRequest = { model: 'grunt', messages: [{ role: 'user', content: 'SECRET_PROMPT_CONTENT' }], cwd: '/private/SECRET_PROJECT', stream: false, tools: [] };
 const source = (id: string, complete: Source['complete'] = async () => ({ text: 'SECRET_ANSWER_CONTENT' })): Source => ({ id, available: vi.fn(async () => true), complete: vi.fn(complete) });
@@ -203,6 +203,68 @@ it('evicts oldest incident rows when incidents alone fill the cap and expires th
   const fresh = event({ at: now, type: 'route.skip', outcome: 'skipped' });
   value.record(fresh);
   expect((await value.list()).events.map(row => row.id)).toEqual([fresh.id]);
+});
+
+it.each([50, 49])('restores the newest failed trace after a separate flush under pressure from %i older incidents', async olderCount => {
+  const at = Date.UTC(2026, 10, 24, 5);
+  const window = { since: at, until: at + 3_600_000 };
+  let now = at;
+  const value = await store(undefined, { maxEvents: 50, now: () => now });
+  const older = Array.from({ length: olderCount }, () => event({ at, type: 'request.finish', outcome: 'failed' }));
+  for (const row of older) value.record(row);
+  await value.flush();
+
+  const requestId = randomUUID(), attemptId = randomUUID();
+  const start = event({ at: at + 1, requestId, type: 'request.start' });
+  const dispatch = event({ at: at + 2, requestId, attemptId, type: 'attempt.start' });
+  const failure = event({ at: at + 3, requestId, attemptId, type: 'attempt.failure', failureReason: 'response_empty' });
+  const attemptFinish = event({ at: at + 4, requestId, attemptId, outcome: 'failed' });
+  const finish = event({ at: at + 5, requestId, type: 'request.finish', outcome: 'failed', durationMs: 4 });
+  value.record(start);
+  value.record(dispatch);
+  await value.flush();
+  expect((await value.trace(requestId)).events.map(row => row.id)).toEqual(olderCount === 50 ? [] : [dispatch.id]);
+  expect((await value.list()).events).toHaveLength(50);
+
+  for (const row of [failure, attemptFinish, finish]) value.record(row);
+  await value.flush();
+  const events = (await value.list()).events;
+  expect(events).toHaveLength(50);
+  expect(events.filter(row => row.requestId === requestId).map(row => row.id))
+    .toEqual([start.id, dispatch.id, failure.id, attemptFinish.id, finish.id]);
+  now = window.until;
+  const metrics = await value.metrics(window);
+  expect(metrics.buckets.filter(bucket => bucket.dimensions.type === 'request.start' || bucket.dimensions.type === 'attempt.start')
+    .map(bucket => bucket.count)).toEqual([1, 1]);
+  expect(buildRecoveryAudit(events, window, metrics)).toMatchObject({
+    classifiedFailures: 1, terminalFailedMs: 4,
+    slowestFailures: [{ requestId, attempts: [{ source: 'kilo', outcome: 'failed' }] }]
+  });
+});
+
+it.each([false, true])('restores a trace under incident pressure only when it needs a second attempt (%s)', async retry => {
+  const value = await store(undefined, { maxEvents: 50 });
+  const older = Array.from({ length: 50 }, () => event({ type: 'request.finish', outcome: 'failed' }));
+  for (const row of older) value.record(row);
+  await value.flush();
+
+  const requestId = randomUUID(), attemptId = randomUUID();
+  const start = event({ requestId, type: 'request.start' });
+  const dispatch = event({ requestId, attemptId, type: 'attempt.start' });
+  const attemptFinish = event({ requestId, attemptId, outcome: retry ? 'cancelled' : 'passed' });
+  for (const row of [start, dispatch, attemptFinish]) value.record(row);
+  await value.flush();
+  expect((await value.list()).events.map(row => row.id)).toEqual(older.map(row => row.id));
+
+  const next = { requestId, attemptId: randomUUID() };
+  const fallback = retry ? [event({ ...next, type: 'attempt.start' }), event(next)] : [];
+  const finish = event({ requestId, type: 'request.finish' });
+  for (const row of [...fallback, finish]) value.record(row);
+  const rows = (await value.list()).events;
+  expect(rows.map(row => row.id)).toEqual((retry
+    ? [...older.slice(6), start, dispatch, attemptFinish, ...fallback, finish]
+    : older).map(row => row.id));
+  if (retry) expect(buildRecoveryAudit(rows, { since: finish.at, until: finish.at + 1 })).toMatchObject({ passed: 1, classified: 1 });
 });
 
 it('keeps missing usage unknown, counts genuine zero usage, and excludes HTTP events from model attempts', async () => {

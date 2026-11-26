@@ -220,6 +220,20 @@ function serializeDiagnosticWriter(key: string, write: () => Promise<void>) {
 const attemptSummary = (): DiagnosticAttemptSummary => ({ total: 0, succeeded: 0, failed: 0, cancelled: 0, inputTokens: 0, outputTokens: 0, unknownInput: 0, unknownOutput: 0 });
 
 const evictionPriority = "CASE WHEN incident=1 THEN 2 WHEN type='route.skip' THEN 0 ELSE 1 END";
+const diagnosticBatchSize = 64;
+const maxInFlightRequests = 64;
+const maxInFlightEvents = 64;
+
+function isIncidentEvent(event: DiagnosticEvent) {
+  return event.outcome === 'failed' || event.type === 'attempt.failure' || event.failureReason === 'length';
+}
+
+function insertDiagnosticEvents(tx: Transaction, events: DiagnosticEvent[], incident = 0) {
+  return tx.execute({ sql: 'INSERT OR IGNORE INTO diagnostic_events(id,at,request_id,source,type,outcome,data,incident) VALUES '
+    + events.map(() => '(?,?,?,?,?,?,?,?)').join(',') + ' RETURNING id',
+    args: events.flatMap(event => [event.id, event.at, event.requestId, event.source ?? null, event.type,
+      event.outcome ?? null, JSON.stringify(event), incident]) });
+}
 
 async function initializeIncidentRetention(tx: Transaction) {
   const { rows } = await tx.execute('PRAGMA table_info(diagnostic_events)');
@@ -271,6 +285,9 @@ export class DiagnosticsStore {
   // Only requests started by this process can be live. A shared journal can
   // contain unfinished traces from other processes or an earlier daemon.
   private active = new Map<string, { events: DiagnosticEvent[]; positions: Map<string, () => number | null>; progress: Map<string, number> }>();
+  // Keep the earliest committed events until the finish drains, even if
+  // SQLite prunes them before a later batch reveals the request is an incident.
+  private inFlight = new Map<string, DiagnosticEvent[]>();
   private constructor(private db: Client | undefined, private options: { maxEvents: number; maxAgeMs: number; now: () => number; runtimeVersion?: string }, private streamId: string | null = null, private writerKey?: string) {
     if (!db) this.error = 'storage_unavailable';
   }
@@ -416,10 +433,62 @@ export class DiagnosticsStore {
       this.queue = serializeDiagnosticWriter(this.writerKey!, () => this.drain());
     }
   }
+  private rememberFlushedEvents(accepted: DiagnosticEvent[], fresh: DiagnosticEvent[]) {
+    const inserted = new Set(fresh);
+    for (const event of accepted) {
+      const { requestId, type } = event;
+      if (type === 'request.finish') {
+        this.inFlight.delete(requestId);
+        continue;
+      }
+      if (!inserted.delete(event)) continue;
+      if (type === 'request.start' && !this.inFlight.has(requestId)) {
+        if (this.inFlight.size >= maxInFlightRequests) this.inFlight.delete(this.inFlight.keys().next().value!);
+        this.inFlight.set(requestId, []);
+      }
+      const trace = this.inFlight.get(requestId);
+      if (trace && trace.length < maxInFlightEvents && !trace.some(previous => previous.id === event.id)) trace.push(event);
+    }
+  }
+  private async restoreIncidentEvents(tx: Transaction, accepted: DiagnosticEvent[], cutoff: number) {
+    const candidates = new Map<string, DiagnosticEvent[]>();
+    for (const event of accepted) {
+      if (!this.inFlight.has(event.requestId) || (event.type !== 'attempt.start' && !isIncidentEvent(event))) continue;
+      const events = candidates.get(event.requestId) ?? [];
+      events.push(event);
+      candidates.set(event.requestId, events);
+    }
+    for (const [requestId, incoming] of candidates) {
+      const prior = this.inFlight.get(requestId)!.filter(event => event.at >= cutoff);
+      if (!prior.length) continue;
+      const { rows } = await tx.execute({
+        sql: `SELECT id,type FROM diagnostic_events WHERE request_id=?
+          AND (type='attempt.start' OR id IN (SELECT value FROM json_each(?)))`,
+        args: [requestId, JSON.stringify(prior.map(event => event.id))]
+      });
+      const retained = new Set(rows.map(row => String(row.id)));
+      const firstMissing = prior.findIndex(event => !retained.has(event.id));
+      if (firstMissing < 0) continue;
+      if (!incoming.some(isIncidentEvent)) {
+        const starts = new Set([...prior, ...incoming, ...rows].filter(event => event.type === 'attempt.start').map(event => String(event.id)));
+        if (starts.size < 2) continue;
+      }
+      // Reinsert any surviving rows after the gap so the restored prefix and
+      // the new batch retain their causal order in the ascending cursor.
+      const restore = prior.slice(firstMissing);
+      const surviving = restore.filter(event => retained.has(event.id));
+      if (surviving.length) {
+        await tx.execute({ sql: 'DELETE FROM diagnostic_events WHERE id IN (SELECT value FROM json_each(?))',
+          args: [JSON.stringify(surviving.map(event => event.id))] });
+      }
+      // The retention trigger promotes the remaining rows for this request.
+      await insertDiagnosticEvents(tx, restore, 1);
+    }
+  }
   private async drain() {
     try {
       while (this.pending.length || this.pendingLoss) {
-        const batch = this.pending.splice(0, 64), loss = this.pendingLoss; this.pendingLoss = 0;
+        const batch = this.pending.splice(0, diagnosticBatchSize), loss = this.pendingLoss; this.pendingLoss = 0;
         this.writing = batch;
         try {
           const tx = await this.db!.transaction('write');
@@ -434,23 +503,28 @@ export class DiagnosticsStore {
               }
               accepted.push(event);
             }
+            const cutoff = this.options.now() - this.options.maxAgeMs;
+            let fresh: DiagnosticEvent[] = [];
             if (accepted.length) {
-              const inserted = await tx.execute({ sql: 'INSERT OR IGNORE INTO diagnostic_events(id,at,request_id,source,type,outcome,data) VALUES ' + accepted.map(() => '(?,?,?,?,?,?,?)').join(',') + ' RETURNING id',
-                args: accepted.flatMap(event => [event.id, event.at, event.requestId, event.source ?? null, event.type, event.outcome ?? null, JSON.stringify(event)]) });
+              await this.restoreIncidentEvents(tx, accepted, cutoff);
+              // Restored rows already entered metrics in an earlier flush.
+              const inserted = await insertDiagnosticEvents(tx, accepted);
               const ids = new Set(inserted.rows.map(row => String(row.id)));
-              const fresh = accepted.filter(event => ids.delete(event.id));
+              fresh = accepted.filter(event => ids.delete(event.id));
               await recordDiagnosticMetrics(tx, fresh.filter(event => !traceDetailTypes.has(event.type)), this.options.now());
             }
-            await pruneDiagnosticEvents(tx, this.options.now() - this.options.maxAgeMs, this.options.maxEvents);
+            await pruneDiagnosticEvents(tx, cutoff, this.options.maxEvents);
             await pruneDiagnosticMetrics(tx, this.options.now());
             await tx.commit();
+            this.rememberFlushedEvents(accepted, fresh);
             this.lastWriteAt = this.options.now(); this.error = undefined;
           } catch (error) { await tx.rollback(); throw error; }
           finally { tx.close(); }
         } catch {
           this.error = 'write_failed';
-          const discarded = this.pending.splice(0).length; this.queued -= discarded;
-          this.droppedEvents += batch.length + discarded; this.pendingLoss += loss + batch.length + discarded;
+          const discarded = this.pending.splice(0); this.queued -= discarded.length;
+          this.rememberFlushedEvents([...batch, ...discarded], []);
+          this.droppedEvents += batch.length + discarded.length; this.pendingLoss += loss + batch.length + discarded.length;
           break; // Keep the loss count for the next successful write; never spin on a broken database.
         }
         finally { this.queued -= batch.length; this.writing = []; }
@@ -524,6 +598,6 @@ export class DiagnosticsStore {
     if (this.closed) return;
     await this.flush();
     if (this.pendingLoss) await this.flush(); // One loss-only persistence attempt, never an unbounded retry.
-    this.closed = true; this.active.clear(); this.db?.close();
+    this.closed = true; this.active.clear(); this.inFlight.clear(); this.db?.close();
   }
 }
