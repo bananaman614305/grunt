@@ -2,7 +2,19 @@
 
 ## [Unreleased]
 
-- Operator: the live-upgrade controller pins the Adventure builder's CPU limit at exactly four CPUs (`cpu.max` `400000 100000`), now that the task limit is 2,048.
+## 0.10.17 — 2026-11-26
+
+- Automatic inference can race one idle backup when the first provider stays silent for eight seconds. Grunt groups gateway and connection failures into one escalating cooldown, probes providers when cooldowns expire, and checks tool recovery separately so text requests can resume while tool calls are still on hold (#251).
+- Provider idle timers stay active after inference starts, including during reasoning and tool output. Nous now streams replies through the Hermes bridge, which uses a shorter socket path to avoid startup failures on long paths (#249).
+- Streamed tool turns can still switch providers before a short text preamble reaches the client. Once text has been sent, streams report mid-reply failures explicitly. Kilo discards buffered text from abandoned attempts before retrying (#248).
+- Stream verified text incrementally on the Chat, Messages and Responses routes, cache provider preflight checks, and let the automatic pool keep up to ten coding-capable routes open by default (`GRUNT_MAX_OPEN_ROUTES` overrides this). OpenCode defaults to DeepSeek V4.1 Flash Free and Big Pickle (#247).
+- Add free OpenAI-compatible providers through registry entries without a new npm release. Grunt checks the HTTPS origin, pinned model, cost, consent and promotion expiry before using these providers (#246).
+- Add `usegrunt vault` to manage provider API keys stored on your machine. Grunt can use those keys to send requests directly to supported providers' approved HTTPS endpoints. Default setup still uses Trusty Squire egress as a fallback, and exporting a key from Squire requires explicit passkey approval (#245).
+- Keep local diagnostic traces for failed, retried and output-limited requests longer under journal pressure. The recovery audit now reports terminal failures, their reasons and attempt timings (#250).
+- Add read-only `usegrunt observe` with optional JSON output for in-flight and recent requests, provider attempts, route health and daemon configuration (#242).
+- Show why routes were skipped, including missing login, expired promotions and retirement. Perch startup ignores ancestor `.claude/agents` directories the CLI does not read and gives a setup hint when its native login is missing (#241).
+- Remove retired Freebuff and Apinex adapter code and trim local runtime dependencies. Legacy `milo` model requests still work. Use `GRUNT_BACKGROUND_ACCOUNT_ACQUISITION` and other `GRUNT_*` names for Grunt-era settings, whose `MILO_*` aliases were removed (#244).
+- Operator: the live-upgrade controller pins the Adventure builder's CPU limit at exactly four CPUs (`cpu.max` `400000 100000`), now that the task limit is 2,048 (#243).
 
 ## 0.10.16 — 2026-11-25
 
