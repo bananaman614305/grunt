@@ -1,10 +1,12 @@
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import { chmod, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -26,8 +28,8 @@ import {
 import type { PollinationsGrant } from './pollinations.js';
 import { setupPollinations } from './pollinations-setup.js';
 import { materializeDirectGrant, readPrivateProviderGrant, validatePinnedProviderGrant, writePrivateProviderGrant } from './provider-grant.js';
-import { Runcrate, RUNCRATE_DEEPSEEK, readRuncrateGrant, writeRuncrateGrant } from './runcrate.js';
-import { BrowserSquire, setupProviders } from './setup.js';
+import { Runcrate, RUNCRATE_DEEPSEEK, RuncrateVerificationError, readRuncrateGrant, writeRuncrateGrant } from './runcrate.js';
+import { BrowserSquire, setup, setupProviders } from './setup.js';
 import {
   SQUIRE_EGRESS_ORIGIN,
   credentialFingerprint,
@@ -42,6 +44,7 @@ import {
   vaultEnvKeyName,
   vaultLockPath,
   vaultPath,
+  withVaultLock,
   writeVaultEntry
 } from './vault.js';
 import { vaultCommand } from './vault-cli.js';
@@ -107,7 +110,8 @@ it('stores local vault entries with 0700 dir, 0600 file, atomic writes, and seri
 
   expect((await stat(nested)).mode & 0o777).toBe(0o700);
   expect((await stat(vaultPath(nested))).mode & 0o777).toBe(0o600);
-  expect(await readdir(nested)).toEqual(['vault.json']);
+  expect((await stat(vaultLockPath(nested))).mode & 0o777).toBe(0o600);
+  expect((await readdir(nested)).sort()).toEqual(['.vault-lock.db', 'vault.json']);
 
   expect(await readVaultEntry('beatapi', nested)).toMatchObject({
     api_key: 'sk-beatapi-synthetic-secret-1',
@@ -138,36 +142,148 @@ it('stores local vault entries with 0700 dir, 0600 file, atomic writes, and seri
   expect(await readVaultEntry('darus', nested)).toBeUndefined();
 });
 
-it('serializes concurrent vault updates across independent OS processes and cleans up stale locks', async () => {
+it('serializes concurrent vault updates across independent OS processes and recovers cleanly after SIGKILL with multiple contenders', async () => {
   const providers = ['beatapi', 'pollinations', 'darus', 'ifm', 'crowllm', 'goedel'] as const;
   const vaultModule = pathToFileURL(join(process.cwd(), 'src/local/vault.ts')).href;
-  const tsxBin = join(process.cwd(), 'node_modules/.bin/tsx');
-  const script = `(async () => {
-    const { writeVaultEntry } = await import(${JSON.stringify(vaultModule)});
-    await writeVaultEntry(process.env.VAULT_TEST_PROVIDER, { api_key: process.env.VAULT_TEST_KEY, source: 'import' }, process.env.VAULT_TEST_DIR);
-  })().catch(error => { console.error(error); process.exit(1); });`;
+  const tsxArgs = (code: string) => ['--import', 'tsx', '--input-type=module', '-e', code];
+  const writerScript = `import { writeVaultEntry } from ${JSON.stringify(vaultModule)};
+    await writeVaultEntry(process.env.VAULT_TEST_PROVIDER, { api_key: process.env.VAULT_TEST_KEY, source: 'import' }, process.env.VAULT_TEST_DIR);`;
 
   await Promise.all(providers.map(provider =>
-    execFileAsync(tsxBin, ['-e', script], {
+    execFileAsync(process.execPath, tsxArgs(writerScript), {
       timeout: 15_000,
       env: { ...process.env, VAULT_TEST_PROVIDER: provider, VAULT_TEST_KEY: `sk-proc-${provider}-secret`, VAULT_TEST_DIR: directory }
     })
   ));
 
-  expect(await readdir(directory)).toEqual(['vault.json']);
+  expect((await readdir(directory)).sort()).toEqual(['.vault-lock.db', 'vault.json']);
   expect((await stat(vaultPath(directory))).mode & 0o777).toBe(0o600);
+  expect((await stat(vaultLockPath(directory))).mode & 0o777).toBe(0o600);
   for (const provider of providers) {
     expect(await readVaultEntry(provider, directory)).toMatchObject({ api_key: `sk-proc-${provider}-secret` });
   }
 
-  // Plant a stale lockfile owned by a dead process and confirm recovery succeeds cleanly.
-  await writeFile(vaultLockPath(directory), JSON.stringify({ pid: 99999999, token: 'dead-lock', at: Date.now() - 60_000 }), { mode: 0o600 });
-  await writeVaultEntry('zro', { api_key: 'sk-after-stale-lock', source: 'local' }, directory);
-  expect(await readVaultEntry('zro', directory)).toMatchObject({ api_key: 'sk-after-stale-lock' });
-  expect(await readdir(directory)).toEqual(['vault.json']);
-}, 20_000);
+  // Multi-contender recovery after SIGKILL of a process holding the OS lock:
+  // none of the contenders can steal or unlink the lock while the owner is alive,
+  // and once the owner is SIGKILLed all contenders serialize with zero lost updates.
+  const recoveryDir = await mkdtemp(join(tmpdir(), 'grunt-vault-sigkill-'));
+  const holderScript = `import { withVaultLock } from ${JSON.stringify(vaultModule)};
+    process.stdin.resume();
+    await withVaultLock(process.env.VAULT_TEST_DIR, async () => {
+      process.stdout.write('locked\\n');
+      await new Promise(() => {});
+    });`;
 
-it('rejects insecure vault permissions, symlinks, broad directories, and FIFOs', async () => {
+  try {
+    await writeVaultEntry('kilo', { api_key: 'sk-seed-kilo', source: 'local' }, recoveryDir);
+    const holder = spawn(process.execPath, tsxArgs(holderScript), {
+      env: { ...process.env, VAULT_TEST_DIR: recoveryDir },
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+    let holderOut = '';
+    holder.stdout.on('data', chunk => { holderOut += String(chunk); });
+    const holderExited = once(holder, 'exit');
+    let contenders: Promise<unknown>[] = [];
+
+    try {
+      await vi.waitFor(() => expect(holderOut).toContain('locked'), { timeout: 10_000 });
+      contenders = providers.map(provider =>
+        execFileAsync(process.execPath, tsxArgs(writerScript), {
+          timeout: 15_000,
+          env: { ...process.env, VAULT_TEST_PROVIDER: provider, VAULT_TEST_KEY: `sk-recovered-${provider}`, VAULT_TEST_DIR: recoveryDir }
+        })
+      );
+
+      // While holder is alive, contenders must remain blocked without mutating vault.json.
+      await delay(250);
+      expect((await listVaultEntries(recoveryDir, {})).map(item => item.provider)).toEqual(['kilo']);
+
+      holder.kill('SIGKILL');
+      await holderExited;
+      await Promise.all(contenders);
+    } finally {
+      if (holder.exitCode === null && holder.signalCode === null) holder.kill('SIGKILL');
+      await holderExited;
+      await Promise.allSettled(contenders);
+    }
+
+    expect((await readdir(recoveryDir)).sort()).toEqual(['.vault-lock.db', 'vault.json']);
+    expect(await readVaultEntry('kilo', recoveryDir)).toMatchObject({ api_key: 'sk-seed-kilo' });
+    for (const provider of providers) {
+      expect(await readVaultEntry(provider, recoveryDir)).toMatchObject({ api_key: `sk-recovered-${provider}` });
+    }
+  } finally {
+    await rm(recoveryDir, { recursive: true, force: true });
+  }
+}, 25_000);
+
+it('never evicts a live vault lock owner while contenders wait or time out', async () => {
+  const vaultModule = pathToFileURL(join(process.cwd(), 'src/local/vault.ts')).href;
+  const tsxArgs = (code: string) => ['--import', 'tsx', '--input-type=module', '-e', code];
+  const contendersList = ['beatapi', 'pollinations', 'darus', 'ifm'] as const;
+  const liveHolderScript = `import { readFile, rename, writeFile } from 'node:fs/promises';
+    import { join } from 'node:path';
+    import { withVaultLock, vaultPath } from ${JSON.stringify(vaultModule)};
+    const dir = process.env.VAULT_TEST_DIR;
+    await withVaultLock(dir, async () => {
+      const store = JSON.parse(await readFile(vaultPath(dir), 'utf8'));
+      process.stdout.write('locked\\n');
+      for await (const _chunk of process.stdin) { /* wait until parent releases */ }
+      store.providers.zro = {
+        api_key: 'sk-live-holder-zro',
+        origin: 'https://zro.moonmath.ai',
+        source: 'local',
+        updated_at: new Date().toISOString()
+      };
+      const tmp = join(dir, '.vault-holder.tmp');
+      await writeFile(tmp, JSON.stringify(store, null, 2), { flag: 'wx', mode: 0o600 });
+      await rename(tmp, vaultPath(dir));
+    });`;
+  const writerScript = `import { writeVaultEntry } from ${JSON.stringify(vaultModule)};
+    await writeVaultEntry(process.env.VAULT_TEST_PROVIDER, { api_key: process.env.VAULT_TEST_KEY, source: 'import' }, process.env.VAULT_TEST_DIR);`;
+
+  await writeVaultEntry('kilo', { api_key: 'sk-seed-live', source: 'local' }, directory);
+  const holder = spawn(process.execPath, tsxArgs(liveHolderScript), {
+    env: { ...process.env, VAULT_TEST_DIR: directory },
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
+  let holderOut = '';
+  holder.stdout.on('data', chunk => { holderOut += String(chunk); });
+  const holderExited = once(holder, 'exit');
+  let contenders: Promise<unknown>[] = [];
+
+  try {
+    await vi.waitFor(() => expect(holderOut).toContain('locked'), { timeout: 10_000 });
+    contenders = contendersList.map(provider =>
+      execFileAsync(process.execPath, tsxArgs(writerScript), {
+        timeout: 15_000,
+        env: { ...process.env, VAULT_TEST_PROVIDER: provider, VAULT_TEST_KEY: `sk-after-live-${provider}`, VAULT_TEST_DIR: directory }
+      })
+    );
+
+    // A short-timeout contender must fail cleanly without evicting the live holder.
+    await expect(withVaultLock(directory, async () => 'stolen', { timeoutMs: 250 })).rejects.toThrow('Timed out waiting for local Grunt vault lock');
+    expect((await listVaultEntries(directory, {})).map(item => item.provider)).toEqual(['kilo']);
+
+    // Release the live holder so it commits its own write, then all waiting contenders serialize after it.
+    holder.stdin.end();
+    const [holderCode] = await holderExited;
+    expect(holderCode).toBe(0);
+    await Promise.all(contenders);
+  } finally {
+    if (holder.exitCode === null && holder.signalCode === null) holder.kill('SIGKILL');
+    await holderExited;
+    await Promise.allSettled(contenders);
+  }
+
+  expect(await readVaultEntry('kilo', directory)).toMatchObject({ api_key: 'sk-seed-live' });
+  expect(await readVaultEntry('zro', directory)).toMatchObject({ api_key: 'sk-live-holder-zro' });
+  for (const provider of contendersList) {
+    expect(await readVaultEntry(provider, directory)).toMatchObject({ api_key: `sk-after-live-${provider}` });
+  }
+}, 25_000);
+
+it('rejects insecure vault permissions, symlinks, broad directories, FIFOs, and unsafe lockfiles', async () => {
   await writeVaultEntry('beatapi', { api_key: 'sk-beatapi-secret' }, directory);
 
   await chmod(vaultPath(directory), 0o644);
@@ -177,6 +293,24 @@ it('rejects insecure vault permissions, symlinks, broad directories, and FIFOs',
   await chmod(directory, 0o755);
   await expect(readVaultGrant('beatapi', directory, {})).rejects.toThrow('Unsafe local vault directory');
   await chmod(directory, 0o700);
+
+  // Unsafe lockfile permissions, symlinks, and FIFOs fail closed without touching targets.
+  await chmod(vaultLockPath(directory), 0o644);
+  await expect(writeVaultEntry('beatapi', { api_key: 'sk-beatapi-secret-2' }, directory)).rejects.toThrow('Unsafe local vault lockfile');
+  await rm(vaultLockPath(directory));
+
+  const lockTarget = join(directory, 'protected-lock-target');
+  await writeFile(lockTarget, 'preserved', { mode: 0o600 });
+  await symlink(lockTarget, vaultLockPath(directory));
+  await expect(writeVaultEntry('beatapi', { api_key: 'sk-beatapi-secret-2' }, directory)).rejects.toThrow('Unsafe local vault lockfile');
+  expect(await readFile(lockTarget, 'utf8')).toBe('preserved');
+  await rm(vaultLockPath(directory));
+
+  if (process.platform !== 'win32') {
+    execFileSync('mkfifo', ['-m', '600', vaultLockPath(directory)]);
+    await expect(writeVaultEntry('beatapi', { api_key: 'sk-beatapi-secret-2' }, directory)).rejects.toThrow('Unsafe local vault lockfile');
+    await rm(vaultLockPath(directory));
+  }
 
   const target = join(directory, 'real-vault.json');
   await writeFile(target, await readFile(vaultPath(directory), 'utf8'), { mode: 0o600 });
@@ -445,15 +579,24 @@ it('binds Runcrate key_topups_disabled and Zro receipts to the verified credenti
   await recordDataSharingConsent(directory, ['runcrate']);
   const verifiedKey = 'sk-runcrate-verified-key-1';
   const replacementKey = 'sk-runcrate-replacement-key-2';
+  const verifiedGrant = { base_url: 'https://api.runcrate.ai', token: verifiedKey };
   await writeVaultEntry('runcrate', { api_key: verifiedKey, source: 'import' }, directory);
-  await writeRuncrateGrant({ base_url: 'https://api.runcrate.ai', token: verifiedKey }, directory);
+  await expect(writeRuncrateGrant(verifiedGrant, directory)).rejects.toBeInstanceOf(RuncrateVerificationError);
+  await writeRuncrateGrant(verifiedGrant, directory, {
+    verification: {
+      free_account_verified: true,
+      key_topups_disabled: true,
+      credential_sha256: credentialFingerprint(verifiedGrant),
+      verified_at: new Date().toISOString()
+    }
+  });
 
   // Direct receipt stores fingerprint only, never the raw key.
   const rawText = await readFile(join(directory, 'runcrate.json'), 'utf8');
   expect(rawText).not.toContain(verifiedKey);
   expect(JSON.parse(rawText)).toMatchObject({
     credential_source: 'vault',
-    credential_sha256: credentialFingerprint({ base_url: 'https://api.runcrate.ai', token: verifiedKey }),
+    credential_sha256: credentialFingerprint(verifiedGrant),
     key_topups_disabled: true
   });
 
@@ -481,6 +624,7 @@ it('binds Runcrate key_topups_disabled and Zro receipts to the verified credenti
 
   // Legacy egress Runcrate receipt also refuses an unverified replacement vault key.
   const legacyEgress = { base_url: `${SQUIRE_EGRESS_ORIGIN}/v1/egress/g_${'r'.repeat(24)}`, token: 'synthetic-egress-runcrate' };
+  await rm(join(directory, 'runcrate.json'), { force: true });
   await writeRuncrateGrant(legacyEgress, directory);
   expect(await readRuncrateGrant(directory, {})).toMatchObject({ ...legacyEgress, key_topups_disabled: true });
   await writeVaultEntry('runcrate', { api_key: replacementKey, source: 'import' }, directory);
@@ -495,6 +639,141 @@ it('binds Runcrate key_topups_disabled and Zro receipts to the verified credenti
   expect(await readZroGrant(directory, {})).toMatchObject({ base_url: 'https://zro.moonmath.ai', token: zroKey });
   await writeVaultEntry('zro', { api_key: 'sk-zro-unverified-2', source: 'import' }, directory);
   await expect(readZroGrant(directory, {})).rejects.toThrow('verification is missing');
+});
+
+it('requires fresh exact-key free-account and top-up verification during Runcrate setup for replacement vault and env keys', async () => {
+  await recordDataSharingConsent(directory, ['runcrate']);
+  const verifiedKey = 'sk-runcrate-initial-verified-key';
+  const replacementKey = 'sk-runcrate-replacement-vault-key';
+  const envReplacementKey = 'sk-runcrate-replacement-env-key';
+  const verifiedGrant = { base_url: 'https://api.runcrate.ai', token: verifiedKey };
+  const replacementGrant = { base_url: 'https://api.runcrate.ai', token: replacementKey };
+  const envReplacementGrant = { base_url: 'https://api.runcrate.ai', token: envReplacementKey };
+
+  await writeVaultEntry('runcrate', { api_key: verifiedKey, source: 'import' }, directory);
+  const initialProof = {
+    free_account_verified: true as const,
+    key_topups_disabled: true as const,
+    credential_sha256: credentialFingerprint(verifiedGrant),
+    verified_at: new Date().toISOString()
+  };
+  await writeRuncrateGrant(verifiedGrant, directory, { verification: initialProof });
+
+  const server = await startFakeUpstream(req => {
+    if (req.url === '/v1/models') {
+      return { body: { data: [{ id: RUNCRATE_DEEPSEEK }] } };
+    }
+    if (req.url === '/v1/chat/completions') {
+      return { body: { model: RUNCRATE_DEEPSEEK, choices: [{ message: { content: 'ready' }, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 2 } } };
+    }
+    return { status: 404, body: { error: 'not found' } };
+  });
+
+  const realFetch = globalThis.fetch;
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const requested = String(input);
+    const parsed = new URL(requested);
+    expect(parsed.origin).toBe('https://api.runcrate.ai');
+    return realFetch(`${server.origin}${parsed.pathname}${parsed.search}`, init);
+  });
+
+  const squire = {
+    credentials: {
+      list: vi.fn(async () => { throw new Error('Squire list must not bypass replacement verification'); }),
+      grant: vi.fn(async () => { throw new Error('Squire grant must not bypass replacement verification'); })
+    },
+    runs: {
+      start: vi.fn(async () => { throw new Error('Squire signup must not bypass replacement verification'); }),
+      get: vi.fn()
+    }
+  };
+
+  try {
+    // Replace key in vault.json without fresh verification: setup must refuse and preserve old receipt.
+    await writeVaultEntry('runcrate', { api_key: replacementKey, source: 'import' }, directory);
+    const notifications: string[] = [];
+    await expect(setup(line => notifications.push(line), ['runcrate'], { directory, squire }))
+      .rejects.toBeInstanceOf(RuncrateVerificationError);
+    expect(server.seen).toHaveLength(0);
+    expect(squire.credentials.list).not.toHaveBeenCalled();
+    expect(squire.runs.start).not.toHaveBeenCalled();
+    expect(JSON.parse(await readFile(join(directory, 'runcrate.json'), 'utf8'))).toMatchObject({
+      credential_sha256: credentialFingerprint(verifiedGrant)
+    });
+    expect(await new Runcrate({ directory }).available()).toBe(false);
+
+    // Stale proof bound to the old key or key_topups_disabled=false must also be rejected before probing.
+    await expect(setup(line => notifications.push(line), ['runcrate'], {
+      directory,
+      squire,
+      verifyRuncrateGrant: async () => initialProof
+    })).rejects.toBeInstanceOf(RuncrateVerificationError);
+    await expect(setup(line => notifications.push(line), ['runcrate'], {
+      directory,
+      squire,
+      verifyRuncrateGrant: async grant => ({
+        free_account_verified: true,
+        key_topups_disabled: false as unknown as true,
+        credential_sha256: credentialFingerprint(grant),
+        verified_at: new Date().toISOString()
+      })
+    })).rejects.toBeInstanceOf(RuncrateVerificationError);
+    await expect(setup(line => notifications.push(line), ['runcrate'], {
+      directory,
+      squire,
+      verifyRuncrateGrant: async () => { throw new Error('Auto top-ups are enabled on this key'); }
+    })).rejects.toBeInstanceOf(RuncrateVerificationError);
+    expect(server.seen).toHaveLength(0);
+    expect(JSON.parse(await readFile(join(directory, 'runcrate.json'), 'utf8'))).toMatchObject({
+      credential_sha256: credentialFingerprint(verifiedGrant)
+    });
+
+    // Fresh free-account + top-ups-disabled verification for the exact replacement key succeeds.
+    const verifiedCalls: string[] = [];
+    await setup(line => notifications.push(line), ['runcrate'], {
+      directory,
+      squire,
+      verifyRuncrateGrant: async grant => {
+        verifiedCalls.push(grant.token);
+        return {
+          free_account_verified: true,
+          key_topups_disabled: true,
+          credential_sha256: credentialFingerprint(grant),
+          verified_at: new Date().toISOString()
+        };
+      }
+    });
+    expect(verifiedCalls).toEqual([replacementKey]);
+    expect(server.seen).toEqual([{ method: 'POST', url: '/v1/chat/completions', authorization: `Bearer ${replacementKey}` }]);
+    expect(notifications.join('\n')).not.toContain(replacementKey);
+    const updatedReceipt = await readFile(join(directory, 'runcrate.json'), 'utf8');
+    expect(updatedReceipt).not.toContain(replacementKey);
+    expect(JSON.parse(updatedReceipt)).toMatchObject({
+      credential_source: 'vault',
+      credential_sha256: credentialFingerprint(replacementGrant),
+      free_account_verified: true,
+      key_topups_disabled: true
+    });
+    expect(await readRuncrateGrant(directory, {})).toMatchObject({ ...replacementGrant, key_topups_disabled: true });
+    expect(await new Runcrate({ directory }).available()).toBe(true);
+
+    // Env-var replacement key also requires fresh verification for that exact env key.
+    vi.stubEnv(vaultEnvKeyName('runcrate'), envReplacementKey);
+    await expect(setup(() => {}, ['runcrate'], { directory, squire })).rejects.toBeInstanceOf(RuncrateVerificationError);
+    await setup(() => {}, ['runcrate'], {
+      directory,
+      squire,
+      verifyRuncrateGrant: async grant => ({
+        free_account_verified: true,
+        key_topups_disabled: true,
+        credential_sha256: credentialFingerprint(grant),
+        verified_at: new Date().toISOString()
+      })
+    });
+    expect(await readRuncrateGrant(directory)).toMatchObject({ ...envReplacementGrant, key_topups_disabled: true });
+  } finally {
+    await server.close();
+  }
 });
 
 it('keeps backwards compatibility with existing Squire egress grants and rejects tampered raw-key direct receipts', async () => {

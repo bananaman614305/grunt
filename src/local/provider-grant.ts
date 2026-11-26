@@ -100,12 +100,13 @@ export async function resolveSquireGrant(
     directory?: string;
     signal?: AbortSignal;
     background?: boolean;
+    allowDirectExport?: boolean;
     notify?: (line: string) => void;
     onApproval?: (info: { approvalId: string; approvalUrl: string }) => Promise<void> | void;
   } = {}
 ): Promise<ResolvedSquireGrant> {
   options.signal?.throwIfAborted();
-  if (isVaultProvider(provider) && typeof squire.materializeDirectVaultGrant === 'function') {
+  if (options.allowDirectExport !== false && isVaultProvider(provider) && typeof squire.materializeDirectVaultGrant === 'function') {
     try {
       const direct = await squire.materializeDirectVaultGrant(provider, reference, {
         ...(options.directory ? { directory: options.directory } : {}),

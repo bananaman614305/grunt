@@ -3,17 +3,82 @@ import { FreeApi } from './free-api.js';
 import type { FreeApiGrant } from './free-api.js';
 import { verifiedDeepSeekFetch } from './deepseek-response.js';
 import { readDataSharingConsent } from './data-sharing.js';
-import { providerGrantDirectory, readPrivateProviderGrant, validateProviderGrant, writePrivateProviderGrant } from './provider-grant.js';
+import { providerGrantDirectory, readPrivateProviderGrant, readPrivateProviderGrantFile, validateProviderGrant, writePrivateProviderGrant } from './provider-grant.js';
 import { credentialFingerprint, isCredentialFingerprint, readVaultGrant, validateDirectOrigin } from './vault.js';
 import { SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
 
 export const RUNCRATE_DEEPSEEK = 'deepseek-ai/DeepSeek-V4.1-Flash';
+export interface RuncrateVerification {
+  free_account_verified: true;
+  key_topups_disabled: true;
+  credential_sha256: string;
+  verified_at: string;
+}
+export type RuncrateGrantVerifier = (
+  grant: FreeApiGrant,
+  signal?: AbortSignal
+) => Promise<RuncrateVerification> | RuncrateVerification;
+export interface WriteRuncrateGrantOptions {
+  env?: NodeJS.ProcessEnv;
+  verification?: RuncrateVerification;
+}
+export class RuncrateVerificationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RuncrateVerificationError';
+  }
+}
 export interface RuncrateGrant extends FreeApiGrant {
   free_account_verified: true;
   key_topups_disabled: true;
   verified_at: string;
   credential_sha256?: string;
+}
+export function validateRuncrateVerification(grant: FreeApiGrant, verification: unknown): RuncrateVerification {
+  const access = validateProviderGrant(grant);
+  const expected = credentialFingerprint(access);
+  const proof = verification as Partial<RuncrateVerification> | null | undefined;
+  if (!proof || typeof proof !== 'object' || Array.isArray(proof)
+    || proof.free_account_verified !== true
+    || proof.key_topups_disabled !== true
+    || typeof proof.verified_at !== 'string'
+    || !Number.isFinite(Date.parse(proof.verified_at))) {
+    throw new RuncrateVerificationError('Runcrate free-account and top-ups-disabled verification is required before writing a receipt');
+  }
+  if (!isCredentialFingerprint(proof.credential_sha256) || proof.credential_sha256 !== expected) {
+    throw new RuncrateVerificationError('Runcrate free-account and top-ups-disabled verification does not match the exact credential');
+  }
+  return {
+    free_account_verified: true,
+    key_topups_disabled: true,
+    credential_sha256: expected,
+    verified_at: proof.verified_at
+  };
+}
+function isWriteOptions(value: NodeJS.ProcessEnv | WriteRuncrateGrantOptions): value is WriteRuncrateGrantOptions {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
+  return ('verification' in candidate && typeof candidate.verification !== 'string')
+    || ('env' in candidate && typeof candidate.env !== 'string');
+}
+async function readExistingReceiptFingerprint(location: string): Promise<{ exists: boolean; fingerprint?: string }> {
+  try {
+    const saved = await readPrivateProviderGrantFile('runcrate', location);
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return { exists: true };
+    const record = saved as Record<string, unknown>;
+    if (isCredentialFingerprint(record.credential_sha256)) {
+      return { exists: true, fingerprint: record.credential_sha256 };
+    }
+    try {
+      return { exists: true, fingerprint: credentialFingerprint(validateProviderGrant(record)) };
+    } catch {
+      return { exists: true };
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { exists: false };
+    return { exists: true };
+  }
 }
 function validate(value: unknown): RuncrateGrant {
   const grant = value as Partial<RuncrateGrant> | null;
@@ -39,16 +104,37 @@ export async function readRuncrateGrant(
   return validate(await readPrivateProviderGrant('runcrate', location, env));
 }
 // Setup calls this only after confirming free access and disabling key top-ups.
+// Direct vault keys and any replacement of an existing receipt require an explicit
+// verification proof bound to the exact credential fingerprint.
 // Like Zro's setup receipt, this does not freeze future account changes at Runcrate.
 export async function writeRuncrateGrant(
   grant: FreeApiGrant,
   location = providerGrantDirectory(),
-  env: NodeJS.ProcessEnv = process.env
+  optionsOrEnv: NodeJS.ProcessEnv | WriteRuncrateGrantOptions = process.env
 ) {
-  const value = validate({ ...grant, free_account_verified: true, key_topups_disabled: true, verified_at: new Date().toISOString() });
-  const fingerprint = value.credential_sha256!;
+  const options = isWriteOptions(optionsOrEnv) ? optionsOrEnv : { env: optionsOrEnv };
+  const env = options.env ?? process.env;
+  const access = validateProviderGrant(grant);
+  const fingerprint = credentialFingerprint(access);
   let isDirect = false;
-  try { validateDirectOrigin('runcrate', value.base_url); isDirect = true; } catch { /* Legacy egress or test URL. */ }
+  try { validateDirectOrigin('runcrate', access.base_url); isDirect = true; } catch { /* Legacy egress or test URL. */ }
+  const existing = await readExistingReceiptFingerprint(location);
+  const isReplacement = existing.exists && existing.fingerprint !== fingerprint;
+  const verified = (isDirect || isReplacement || options.verification !== undefined)
+    ? validateRuncrateVerification(access, options.verification)
+    : {
+      free_account_verified: true as const,
+      key_topups_disabled: true as const,
+      credential_sha256: fingerprint,
+      verified_at: new Date().toISOString()
+    };
+  const value = validate({
+    ...access,
+    free_account_verified: verified.free_account_verified,
+    key_topups_disabled: verified.key_topups_disabled,
+    verified_at: verified.verified_at,
+    credential_sha256: verified.credential_sha256
+  });
   const vaulted = isDirect ? await readVaultGrant('runcrate', location, env).catch(() => undefined) : undefined;
   if (isDirect && vaulted && credentialFingerprint(vaulted) === fingerprint) {
     await writePrivateProviderGrant('runcrate', {

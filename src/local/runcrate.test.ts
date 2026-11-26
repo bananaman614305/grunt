@@ -2,10 +2,11 @@ import { chmod, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { Runcrate, RUNCRATE_DEEPSEEK, readRuncrateGrant, writeRuncrateGrant } from './runcrate.js';
+import { Runcrate, RUNCRATE_DEEPSEEK, RuncrateVerificationError, readRuncrateGrant, writeRuncrateGrant } from './runcrate.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 import { Sources } from './source.js';
 import { createLocalApp } from './api.js';
+import { credentialFingerprint, writeVaultEntry } from './vault.js';
 
 const paths: string[] = [];
 const grant = { base_url: 'https://grant.test/runcrate', token: 'synthetic-private-grant' };
@@ -89,4 +90,49 @@ it('propagates quota without retry or a paid model fallback', async () => {
   const fetcher = vi.fn<typeof fetch>(async () => new Response('private upstream message', { status: 429, headers: { 'Retry-After': '12' } }));
   await expect(new Runcrate({ directory: path, fetcher }).complete(request, AbortSignal.timeout(1000))).rejects.toMatchObject({ code: 'quota', retryAfter: 12, message: 'runcrate returned HTTP 429' });
   expect(fetcher).toHaveBeenCalledOnce();
+});
+
+it('requires exact-credential free-account and top-up verification for direct and replacement grants', async () => {
+  const path = await directory();
+  const key1 = 'sk-runcrate-original-1';
+  const key2 = 'sk-runcrate-replacement-2';
+  const direct1 = { base_url: 'https://api.runcrate.ai', token: key1 };
+  const direct2 = { base_url: 'https://api.runcrate.ai', token: key2 };
+
+  await writeVaultEntry('runcrate', { api_key: key1, source: 'import' }, path);
+  await expect(writeRuncrateGrant(direct1, path)).rejects.toBeInstanceOf(RuncrateVerificationError);
+  await expect(stat(join(path, 'runcrate.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+
+  const proof1 = {
+    free_account_verified: true as const,
+    key_topups_disabled: true as const,
+    credential_sha256: credentialFingerprint(direct1),
+    verified_at: new Date().toISOString()
+  };
+  await writeRuncrateGrant(direct1, path, { verification: proof1 });
+  expect(await readRuncrateGrant(path, {})).toMatchObject({ ...direct1, key_topups_disabled: true });
+
+  // Replacing the key in vault.json rejects unverified or stale-fingerprint receipt writes.
+  await writeVaultEntry('runcrate', { api_key: key2, source: 'import' }, path);
+  await expect(writeRuncrateGrant(direct2, path)).rejects.toBeInstanceOf(RuncrateVerificationError);
+  await expect(writeRuncrateGrant(direct2, path, { verification: proof1 })).rejects.toBeInstanceOf(RuncrateVerificationError);
+  await expect(writeRuncrateGrant(direct2, path, {
+    verification: { ...proof1, credential_sha256: credentialFingerprint(direct2), key_topups_disabled: false as unknown as true }
+  })).rejects.toBeInstanceOf(RuncrateVerificationError);
+  // Replacing a saved receipt with a different egress grant also requires fresh verification.
+  await expect(writeRuncrateGrant({ base_url: 'https://grant.test/runcrate', token: 'egress-replacement' }, path))
+    .rejects.toBeInstanceOf(RuncrateVerificationError);
+  // Existing receipt remains bound to key1 until key2 is verified.
+  expect(JSON.parse(await readFile(join(path, 'runcrate.json'), 'utf8'))).toMatchObject({
+    credential_sha256: credentialFingerprint(direct1)
+  });
+
+  const proof2 = {
+    free_account_verified: true as const,
+    key_topups_disabled: true as const,
+    credential_sha256: credentialFingerprint(direct2),
+    verified_at: new Date().toISOString()
+  };
+  await writeRuncrateGrant(direct2, path, { verification: proof2 });
+  expect(await readRuncrateGrant(path, {})).toMatchObject({ ...direct2, key_topups_disabled: true });
 });

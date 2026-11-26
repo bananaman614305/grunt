@@ -1,14 +1,14 @@
 import { configRoot, gruntEnv } from '../brand.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { constants } from 'node:fs';
+import { constants, realpathSync } from 'node:fs';
 import { lstat, mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { pathToFileURL } from 'node:url';
 
 export const SQUIRE_EGRESS_ORIGIN = 'https://trusty-squire-api.fly.dev';
 const MAX_VAULT_BYTES = 512 * 1024;
 const VAULT_LOCK_TIMEOUT_MS = 10_000;
-const VAULT_LOCK_STALE_MS = 30_000;
 const TOKEN_PATTERN = /^[\x21-\x7e]{1,16384}$/;
 const STRICT_EGRESS_PATH = /^\/v1\/egress\/g_[A-Za-z0-9_-]{16,64}\/?$/;
 const COMPAT_EGRESS_PATH = /^\/v1\/egress\/g_[A-Za-z0-9_-]+\/?$/;
@@ -94,7 +94,7 @@ export function vaultPath(directory = configRoot()): string {
 }
 
 export function vaultLockPath(directory = configRoot()): string {
-  return join(directory, '.vault.lock');
+  return join(directory, '.vault-lock.db');
 }
 
 export function isCredentialFingerprint(value: unknown): value is string {
@@ -244,38 +244,49 @@ async function readVaultStore(directory = configRoot()): Promise<VaultStore | un
 
 const writeQueues = new Map<string, Promise<unknown>>();
 
-function processAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
+function isSqliteBusy(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const code = String((error as { code?: unknown }).code ?? '');
+  if (code === 'SQLITE_BUSY' || code === 'SQLITE_LOCKED') return true;
+  const message = error instanceof Error ? error.message : '';
+  return /\bSQLITE_(?:BUSY|LOCKED)\b/.test(message);
+}
+
+function lockQueueKey(directory: string): string {
+  const absolute = resolve(directory);
   try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM';
+    return realpathSync(absolute);
+  } catch {
+    const parts: string[] = [];
+    let current = absolute;
+    while (true) {
+      const parent = dirname(current);
+      if (parent === current) return absolute;
+      parts.unshift(basename(current));
+      current = parent;
+      try {
+        return join(realpathSync(current), ...parts);
+      } catch { /* Continue walking to an existing ancestor. */ }
+    }
   }
 }
 
-async function readLockOwner(lockPath: string): Promise<{ pid?: number; token?: string; mtimeMs: number } | undefined> {
+async function ensurePrivateLockFile(lockPath: string): Promise<void> {
+  try {
+    const created = await open(lockPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    await created.close();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== 'EEXIST') throw new Error('Unsafe local vault lockfile');
+  }
   let handle;
   try {
     handle = await open(lockPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const stat = await handle.stat();
-    if (!stat.isFile() || stat.uid !== process.getuid?.() || stat.size > 4096) {
+    if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600) {
       throw new Error('Unsafe local vault lockfile');
     }
-    const raw = await handle.readFile('utf8');
-    let parsed: Record<string, unknown> = {};
-    try {
-      const value: unknown = JSON.parse(raw);
-      if (isRecord(value)) parsed = value;
-    } catch { /* Handle partially written or corrupt lock metadata via age fallback. */ }
-    return {
-      ...(typeof parsed.pid === 'number' ? { pid: parsed.pid } : {}),
-      ...(typeof parsed.token === 'string' ? { token: parsed.token } : {}),
-      mtimeMs: stat.mtimeMs
-    };
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT') return undefined;
     if (error instanceof Error && error.message === 'Unsafe local vault lockfile') throw error;
     throw new Error('Unsafe local vault lockfile');
   } finally {
@@ -283,62 +294,75 @@ async function readLockOwner(lockPath: string): Promise<{ pid?: number; token?: 
   }
 }
 
-async function withVaultFileLock<T>(directory: string, work: () => Promise<T>): Promise<T> {
+/**
+ * Acquires an OS-managed process lock backed by SQLite's write transaction on
+ * a private mode-0600 lock database. The OS releases the lock automatically on
+ * process exit or crash (including SIGKILL), so contenders never unlink another
+ * owner's lockfile or evict a live owner by age.
+ */
+async function withVaultFileLock<T>(
+  directory: string,
+  work: () => Promise<T>,
+  timeoutMs = VAULT_LOCK_TIMEOUT_MS
+): Promise<T> {
   await assertPrivateDirectory(directory, true);
   const lockPath = vaultLockPath(directory);
-  const token = randomUUID();
-  const startedAt = Date.now();
-  const deadline = startedAt + VAULT_LOCK_TIMEOUT_MS;
-  let acquired = false;
+  await ensurePrivateLockFile(lockPath);
 
-  while (!acquired) {
-    let handle;
-    try {
-      handle = await open(lockPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
-      await handle.writeFile(JSON.stringify({ pid: process.pid, token, at: Date.now() }), 'utf8');
-      acquired = true;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== 'EEXIST') throw error;
-      if (Date.now() >= deadline) throw new Error('Timed out waiting for local Grunt vault lock');
-      if (Date.now() - startedAt >= 150) {
-        const owner = await readLockOwner(lockPath);
-        if (owner) {
-          const dead = owner.pid !== undefined && !processAlive(owner.pid);
-          const stale = Date.now() - owner.mtimeMs > VAULT_LOCK_STALE_MS;
-          if (dead || stale) {
-            await rm(lockPath, { force: true }).catch(() => {});
-            continue;
-          }
-        }
-      }
-      await delay(10 + Math.floor(Math.random() * 15));
-    } finally {
-      await handle?.close();
-    }
-  }
+  const { createClient } = await import('@libsql/client');
+  const db = createClient({ url: pathToFileURL(lockPath).href, concurrency: 1 });
+  const deadline = Date.now() + timeoutMs;
+  let transaction: Awaited<ReturnType<typeof db.transaction>> | undefined;
+  let busyTimeoutSet = false;
 
   try {
-    return await work();
-  } finally {
-    try {
-      const current = await readLockOwner(lockPath);
-      if (current?.token === token) {
-        await rm(lockPath, { force: true });
+    while (!transaction) {
+      try {
+        if (!busyTimeoutSet) {
+          await db.execute('PRAGMA busy_timeout=0');
+          busyTimeoutSet = true;
+        }
+        transaction = await db.transaction('write');
+      } catch (error) {
+        if (!isSqliteBusy(error)) throw error;
+        if (Date.now() >= deadline) {
+          throw new Error('Timed out waiting for local Grunt vault lock');
+        }
+        await delay(10 + Math.floor(Math.random() * 15));
       }
-    } catch { /* Never mask the primary result or error. */ }
+    }
+
+    try {
+      return await work();
+    } finally {
+      try {
+        await transaction.rollback();
+      } finally {
+        transaction.close();
+      }
+    }
+  } finally {
+    db.close();
   }
 }
 
-function serializeWrite<T>(directory: string, work: () => Promise<T>): Promise<T> {
-  const key = resolve(directory);
+function serializeWrite<T>(directory: string, work: () => Promise<T>, timeoutMs = VAULT_LOCK_TIMEOUT_MS): Promise<T> {
+  const key = lockQueueKey(directory);
   const previous = writeQueues.get(key) ?? Promise.resolve();
-  const next = previous.catch(() => {}).then(() => withVaultFileLock(directory, work));
+  const next = previous.catch(() => {}).then(() => withVaultFileLock(directory, work, timeoutMs));
   writeQueues.set(key, next);
   void next.finally(() => {
     if (writeQueues.get(key) === next) writeQueues.delete(key);
   }).catch(() => {});
   return next;
+}
+
+export function withVaultLock<T>(
+  directory: string,
+  work: () => Promise<T>,
+  options: { timeoutMs?: number } = {}
+): Promise<T> {
+  return serializeWrite(directory, work, options.timeoutMs ?? VAULT_LOCK_TIMEOUT_MS);
 }
 
 async function persistVaultStore(store: VaultStore, directory: string): Promise<void> {
