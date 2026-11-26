@@ -4,7 +4,7 @@ import type { providerQuotaPolicy, SellerQuota } from './quota-policy.js';
 import type { MaintenanceEntry } from './maintenance.js';
 import { randomUUID } from 'node:crypto';
 import { currentDiagnosticContext, recordAttemptFailure, sanitizeSafeDiagnosticMetadata, withDiagnosticContext } from './diagnostics.js';
-import type { DiagnosticsStore } from './diagnostics.js';
+import type { DiagnosticEvent, DiagnosticsStore } from './diagnostics.js';
 import { currentRoutingWorkload, localRequestRefusal, nextRoutingPerformance, quotaAfterRecovery, mergeRoutingBackoff, nextRoutingBackoff, ROUTING_HISTORY_TTL_MS } from './routing-history.js';
 import type { RoutingHistory, RoutingPerformance, RoutingWorkload, RoutingProfile, RoutingBackoff } from './routing-history.js';
 
@@ -49,6 +49,7 @@ interface Observation {
   retryAt?: number;
   availabilityCheckedAt?: number;
   available?: boolean;
+  setupFailure?: string;
   performance?: RoutingPerformance;
   profiles?: Partial<Record<RoutingWorkload, RoutingPerformance>>;
 }
@@ -108,10 +109,58 @@ export class SourceStatus {
     const entry = this.entry(id);
     entry.revision++;
     delete entry.failure; delete entry.retryAt; delete entry.availabilityQuota;
+    delete entry.setupFailure;
     if (entry.state !== 'ready') entry.state = 'available';
     entry.available = true; entry.availabilityCheckedAt = this.now();
   }
   observedAvailable(id: string) { return this.entry(id).available; }
+  setSetupFailure(id: string, reason: string | undefined) {
+    const entry = this.entry(id);
+    // Browser diagnostics can append page text. Only use fixed local classifications.
+    switch (reason?.split(';', 1)[0]) {
+      case undefined: case 'cancelled': case 'quota exhausted': delete entry.setupFailure; break;
+      case 'free promotion expired': entry.setupFailure = 'free promotion expired; select another free route'; break;
+      case 'startup isolation check failed': entry.setupFailure = 'startup isolation check failed; inspect startup config and rerun usegrunt setup'; break;
+      case 'needs human verification': case 'browser requested an approval':
+        entry.setupFailure = 'setup incomplete: browser verification required; run usegrunt setup'; break;
+      case 'approval required': entry.setupFailure = 'setup incomplete: approval required; run usegrunt setup'; break;
+      case 'provider refused': entry.setupFailure = 'setup incomplete: provider refused access; check provider access and rerun usegrunt setup'; break;
+      case 'Squire unavailable': case 'browser could not continue':
+        entry.setupFailure = 'setup incomplete: Squire could not finish; check Squire and rerun usegrunt setup'; break;
+      default: entry.setupFailure = 'setup incomplete; run usegrunt setup'; break;
+    }
+  }
+  routeProblem(id: string, code?: ErrorCode) {
+    const entry = this.entry(id);
+    switch (code ?? entry.failure) {
+      case 'quota': return undefined;
+      case 'not_installed': return entry.setupFailure ?? 'setup incomplete; run usegrunt setup';
+      case 'logged_out': return entry.setupFailure ?? 'sign-in required; run usegrunt setup';
+      case 'refused': return entry.setupFailure ?? 'route refused the request; check provider access or select another route';
+      default: return entry.setupFailure;
+    }
+  }
+  routeFailure(id: string, code?: ErrorCode) {
+    const failure = code ?? this.entry(id).failure;
+    return this.routeProblem(id, failure) ?? (failure === 'quota' ? 'free quota or rate limit reached'
+      : failure === 'timeout' ? 'timed out' : failure === 'upstream' ? 'upstream request failed' : undefined);
+  }
+  routeSkip(id: string, reason: NonNullable<DiagnosticEvent['reason']>, code?: ErrorCode) {
+    switch (reason) {
+      case 'disabled': return 'routing disabled';
+      case 'not_listed': return 'not in the active registry';
+      case 'input_unsupported': return 'input type unsupported';
+      case 'tools_unsupported': return 'function tools unsupported';
+      case 'context_not_approved': return 'request context needs approval';
+      case 'pending_setup': return 'setup in progress';
+      case 'request_refused': return 'rejected the tool definitions or tool history';
+      case 'trial_in_progress': return 'routing trial in progress';
+      case 'retired': return this.routeFailure(id, code) ?? 'route retired';
+      case 'cooldown': return this.routeFailure(id, code) ?? 'routing cooldown';
+      case 'unavailable': return this.routeFailure(id) ?? 'unavailable; check usegrunt status';
+      default: return undefined;
+    }
+  }
   private routeOpen(id: string) { return (this.observedAvailable(id) ?? this.entry(id).active > 0) && !!this.routes?.open(id); }
   private notifyClosed(id: string, wasOpen: boolean) {
     if (this.routes && wasOpen && !this.routeOpen(id)) {
@@ -279,6 +328,7 @@ export class SourceStatus {
         else if (entry.state === 'unknown' || entry.state === 'unavailable') entry.state = 'available';
         const checkedAt = this.now();
         entry.available = result; entry.availabilityCheckedAt = checkedAt;
+        if (result) delete entry.setupFailure;
         this.notifyClosed(source.id, wasOpen);
         if (result) for (const observe of this.availabilityObservers) {
           try { observe(source.id, checkedAt); } catch { /* Observation cannot change admission. */ }
@@ -369,7 +419,7 @@ export class SourceStatus {
         entry.revision++;
         entry.state = 'ready'; entry.lastSuccessAt = this.now(); entry.lastReplyMs = Math.max(0, this.now() - started);
         entry.available = true; entry.availabilityCheckedAt = this.now();
-        delete entry.failure; delete entry.retryAt; delete entry.availabilityQuota;
+        delete entry.failure; delete entry.retryAt; delete entry.availabilityQuota; delete entry.setupFailure;
         if (guard) guard.acceptedRevision = entry.revision;
         this.report(source.id, 'ok', this.now() - started);
         await this.performance(source.id, true, this.now() - started, request);
@@ -424,7 +474,8 @@ export class SourceStatus {
       if (row.state !== 'disabled' && options.retired?.(id)) row.state = 'unavailable';
       if (entry.availabilityCheckedAt !== undefined) row.checkedAgoSeconds = Math.max(0, Math.floor((now - entry.availabilityCheckedAt) / 1000));
       row.routable = (row.state === 'available' || row.state === 'ready' || row.state === 'answering') && this.routingAvailability(id, AVAILABILITY_POSITIVE_MS, AVAILABILITY_NEGATIVE_MS) === true;
-      row.detail = `${detail[row.state]}${model ? '; model label comes from the registry, not response attestation' : ''}`;
+      const problem = row.state === 'unavailable' || row.state === 'error' ? this.routeProblem(id, row.errorCode) : undefined;
+      row.detail = `${problem ?? detail[row.state]}${model ? '; model label comes from the registry, not response attestation' : ''}`;
       return row;
     });
     return { version: 1, updatedAt: now, sources, activeRequests: sources.reduce((total, source) => total + source.active, 0) };

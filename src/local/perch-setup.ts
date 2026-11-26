@@ -6,6 +6,7 @@ import { runPerchCommand, verifyPerchCoreFiles } from './perch-process.js';
 import type { PerchProcesses } from './perch-process.js';
 import { DATA_SHARING_POLICIES, readDataSharingConsent } from './data-sharing.js';
 import { removeGroupWrite } from './private-tree.js';
+import { SetupRefusal } from './setup-failure.js';
 
 export interface PerchSignup {
   signup(service: string, url: string, goal: string): Promise<void>;
@@ -189,6 +190,7 @@ export async function setupPerch(options: PerchSetupOptions): Promise<void> {
     }
     stage = 'startup isolation check';
     await Perch.verifyPerchStartupIsolation(paths.work);
+    stage = 'Starter receipt check';
     let saved: Perch.PerchFreePlanReceipt | undefined;
     try { saved = await Perch.readPerchFreePlanReceipt(options.directory); } catch { /* A fresh foreground check is required. */ }
     if (options.background && !saved) throw setupFailure();
@@ -235,6 +237,7 @@ export async function setupPerch(options: PerchSetupOptions): Promise<void> {
   } catch {
     // The stage names a fixed step; upstream error text never reaches the output.
     options.notify?.(`Perch: setup stopped at ${stage}`);
+    if (stage === 'startup isolation check') throw new SetupRefusal('startup isolation check failed', 'Perch needs an isolated workspace; inspect external startup configuration and rerun usegrunt setup');
     throw setupFailure();
   } finally {
     clearTimeout(timer);

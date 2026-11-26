@@ -242,6 +242,7 @@ export function start(env = process.env) {
     },
     opening: id => { opening = id; reconcile(); },
     signedUp: (id, ok) => feedback.signup(id, ok),
+    settled: (id, reason) => sources.setSetupFailure(id, reason),
     notify: console.error });
   // Account acquisition is distinct from registry refresh, dispatch and daily
   // access maintenance. Read the explicit operator policy once at startup.

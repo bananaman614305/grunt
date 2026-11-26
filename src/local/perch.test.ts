@@ -100,6 +100,14 @@ it('checks core installation hashes and refuses unsafe native-auth file metadata
   await verifyPerchInstallation(directory); expect(verifyPerchCoreFiles).toHaveBeenCalledWith(perchPaths(directory).package, PERCH_CORE_SHA256, expect.any(AbortSignal));
   await chmod(perchPaths(directory).authFile, 0o644); const f = fake(); expect(await source(f.processes).available()).toBe(false); expect(f.acp).not.toHaveBeenCalled();
 });
+it('reports missing native login as incomplete setup and keeps the account receipt', async () => {
+  await rm(perchPaths(directory).authFile);
+  const f = fake();
+  await expect(source(f.processes).complete(request(), AbortSignal.timeout(2000)))
+    .rejects.toMatchObject({ code: 'not_installed', message: 'Perch native login is missing; run usegrunt setup' });
+  await expect(readPerchFreePlanReceipt(directory)).resolves.toMatchObject({ plan: 'Starter' });
+  expect(f.acp).not.toHaveBeenCalled();
+});
 it('rejects global Perch memory, global native agents and ancestor instructions before ACP starts', async () => {
   const f = fake(), s = source(f.processes); const personal = join(state.personalHome, 'Documents', 'Perch'); await mkdir(personal, { recursive: true }); await writeFile(join(personal, 'PERCH.md'), 'private global instruction');
   await expect(s.complete(request(), AbortSignal.timeout(2000))).rejects.toMatchObject({ code: 'refused' }); expect(f.acp).not.toHaveBeenCalled();
@@ -107,6 +115,16 @@ it('rejects global Perch memory, global native agents and ancestor instructions 
   await expect(verifyPerchStartupIsolation(perchPaths(directory).work)).rejects.toMatchObject({ code: 'refused' });
   await rm(join(directory, 'AGENTS.md')); await mkdir(join(state.personalHome, '.perch', 'agents'), { recursive: true }); await writeFile(join(state.personalHome, '.perch', 'agents', 'secret.md'), 'not sent');
   await expect(verifyPerchStartupIsolation(perchPaths(directory).work)).rejects.toMatchObject({ code: 'refused' });
+});
+it('checks Claude agents at the isolated project root without blocking home-folder Claude agents', async () => {
+  const root = perchPaths(directory).work;
+  const homeAgents = join(state.personalHome, '.claude', 'agents'), projectAgents = join(root, '.claude', 'agents');
+  await mkdir(homeAgents, { recursive: true });
+  await writeFile(join(homeAgents, 'private.md'), 'synthetic home agent');
+  await expect(verifyPerchStartupIsolation(root)).resolves.toBeUndefined();
+  await mkdir(projectAgents, { recursive: true });
+  await writeFile(join(projectAgents, 'private.md'), 'synthetic project agent');
+  await expect(verifyPerchStartupIsolation(root)).rejects.toMatchObject({ code: 'refused' });
 });
 it('discards personal skills, including colliding vendor names, while keeping workspace metadata absent', async () => {
   const content = 'SYNTHETIC_PRIVATE_SKILL_MUST_NOT_REACH_THE_CALLER';

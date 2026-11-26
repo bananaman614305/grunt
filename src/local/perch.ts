@@ -132,11 +132,13 @@ export async function assertPerchPrivateAuth(directory: string) {
 /** No global instructions may make the native empty-workspace metadata nonempty. Never modify those files. */
 export async function verifyPerchStartupIsolation(work: string, personalHome = homedir()) {
   const projectMetadata = join(resolve(work), '.perch');
-  const forbidden = [projectMetadata, join(personalHome, 'Documents', 'Perch', 'PERCH.md'), join(personalHome, '.perch', 'PERCH.md'),
+  // The pinned CLI reads Claude agents only at the project root. A .git
+  // ancestor that could change the root is already refused below.
+  const forbidden = [projectMetadata, join(resolve(work), '.claude', 'agents'), join(personalHome, 'Documents', 'Perch', 'PERCH.md'), join(personalHome, '.perch', 'PERCH.md'),
     join(personalHome, '.perch', 'agents'), join(personalHome, '.perch', 'skills'), join(personalHome, '.perch', 'plugins')];
   let current = resolve(work);
   while (current !== dirname(current)) {
-    forbidden.push(...['.git', 'AGENTS.md', 'CLAUDE.md', 'PERCH.md', '.perch/PERCH.md', '.perch/agents', '.claude/agents'].map(name => join(current, name)));
+    forbidden.push(...['.git', 'AGENTS.md', 'CLAUDE.md', 'PERCH.md', '.perch/PERCH.md', '.perch/agents'].map(name => join(current, name)));
     if (current === resolve(personalHome)) break;
     current = dirname(current);
   }
@@ -281,7 +283,13 @@ export class Perch implements Source {
     signal.throwIfAborted();
     if (!['linux', 'darwin'].includes(process.platform)) throw new SourceError('not_installed', 'Perch requires the vetted Linux or macOS CLI');
     if (!(await readDataSharingConsent(this.directory, ['perch'])).includes('perch')) throw new SourceError('refused', 'Perch data sharing is not approved; rerun usegrunt setup');
-    await verifyPerchInstallation(this.directory, signal); await assertPerchPrivateAuth(this.directory);
+    await verifyPerchInstallation(this.directory, signal);
+    try { await assertPerchPrivateAuth(this.directory); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      // Keep any plan receipt so setup can still check the same account on login.
+      throw new SourceError('not_installed', 'Perch native login is missing; run usegrunt setup');
+    }
     await verifyPerchStartupIsolation(perchPaths(this.directory).work);
     return readPerchFreePlanReceipt(this.directory);
   }

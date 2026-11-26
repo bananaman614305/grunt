@@ -3,6 +3,7 @@ import { PromotionalApi, PROMOTIONAL_PROVIDERS } from './promotional-api.js';
 import type { PromotionalProvider } from './promotional-api.js';
 import { firstWorkingGrant, writePrivateProviderGrant } from './provider-grant.js';
 import type { BrowserSquire, SetupSquire } from './setup.js';
+import { SetupRefusal } from './setup-failure.js';
 
 export const PROMOTIONAL_STORE = { service: 'fikra', label: 'Grunt Free', api_hosts: [PROMOTIONAL_PROVIDERS.fikra.host], auth_shape: 'bearer' };
 type Squire = SetupSquire & Partial<Pick<BrowserSquire, 'signup' | 'call'>>;
@@ -10,6 +11,7 @@ export async function setupPromotionalApi(id: PromotionalProvider, options: {
   directory: string; squire: Squire; notify(line: string): void; connect?: () => Promise<void>; signal?: AbortSignal; background: boolean;
 }) {
   const { directory, squire, notify, signal } = options, spec = PROMOTIONAL_PROVIDERS[id];
+  if (Date.now() >= Date.parse(spec.expires)) throw new SetupRefusal('free promotion expired', `${id}'s vetted free promotion has expired; use another free route`);
   if (!(await readDataSharingConsent(directory, [id])).includes(id)) throw new Error(`${id} requires current data-sharing approval`);
   signal?.throwIfAborted();
   if (await new PromotionalApi(id, { directory }).available()) { notify(`${id}: temporary free route reused`); return; }

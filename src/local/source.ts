@@ -343,6 +343,7 @@ export class Sources {
   setDiagnostics(store: DiagnosticsStore) { this.diagnostics = store; this.observation.setDiagnostics(store); }
   setRoutingHistory(store: RoutingHistory) { return this.observation.setRoutingHistory(store); }
   setFeedback(feedback: Parameters<SourceStatus['setFeedback']>[0]) { this.observation.setFeedback(feedback); }
+  setSetupFailure(id: string, reason: string | undefined) { this.observation.setSetupFailure(id, reason); }
   // The registry's liveliness scores weight the routers' draw (docs/router.md).
   setRegistryScores(score: (id: string) => number | null | undefined) { for (const router of [this.router, this.chainRouter]) router?.useRegistryScores(score); }
   flushRoutingHistory() { return this.observation.flushRoutingHistory(); }
@@ -531,13 +532,14 @@ export class Sources {
     const actor = parent?.actor ? { actor: parent.actor } : {};
     const context: DiagnosticContext = { ...actor, requestId: parent?.requestId ?? randomUUID(), kind: this.verifying.has(request.model) ? 'setup' : parent?.kind ?? 'user', ...(this.diagnostics ? { sink: this.diagnostics } : {}) };
     return withDiagnosticContext(context, async () => {
+      const skipped = new Map<string, string>();
       const started = Date.now(), startedMono = performance.now(), base = { version: 1 as const, requestId: context.requestId, kind: context.kind };
       if (!parent?.requestRecorded) {
         this.diagnostics?.record({ ...base, id: randomUUID(), at: started, type: 'request.start' });
         observeRequestInput(request);
       }
       try {
-        const result = await this.route(request, signal);
+        const result = await this.route(request, signal, skipped);
         const source = answeredBy.get(result);
         if (parent?.requestRecorded && result.finishReason === 'length') parent.incomplete = true;
         if (!signal.aborted && source && result.finishReason !== 'length' && (result.text.trim() || result.calls?.length)) {
@@ -552,11 +554,18 @@ export class Sources {
         if (!parent?.requestRecorded) this.diagnostics?.record({ ...base, id: randomUUID(), at: Date.now(), type: 'request.finish', outcome: signal.aborted ? 'cancelled' : 'failed', durationMs: Math.max(0, performance.now() - startedMono),
           errorCode: signal.aborted ? 'cancelled' : error instanceof SourceError ? error.code : 'upstream' });
         if (error instanceof SourceError && (error.code === 'quota' || error.code === 'not_installed' || error.code === 'logged_out')) this.recover?.();
+        if (error instanceof SourceError && !(error instanceof RequestError) && skipped.size
+          && ['quota', 'not_installed', 'logged_out', 'refused'].includes(error.code)) {
+          const details = [...skipped].map(([id, reason]) => `${id} (${reason})`).join(', ');
+          const reported = new SourceError(error.code, `${error.message}. Routes skipped: ${details}.`, error.retryAfter, error.output, error.diagnostics);
+          if (error.replay !== undefined) reported.replay = error.replay;
+          throw reported;
+        }
         throw error;
       }
     });
   }
-  private async route(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
+  private async route(request: ModelRequest, signal: AbortSignal, skipped: Map<string, string>): Promise<Completion> {
     signal.throwIfAborted();
     // Automatic selection translates function tools only. Naming a source keeps
     // that source's own behavior (OpenCode and Codex run their own tools).
@@ -587,15 +596,15 @@ export class Sources {
     }
     if (this.router) {
       const unrouted = this.sources.filter(source => this.unrouted(source.id));
-      if (!unrouted.length) return this.router.complete(request, signal);
+      if (!unrouted.length) return this.router.complete(request, signal, undefined, skipped);
       // Naming an unrouted source selects it alone, as in the fixed chain.
-      if (unrouted.some(source => source.id === request.model)) return this.chain(request, signal);
-      return this.router.complete(request, signal, (reason, signal) => this.chain(request, signal, unrouted, reason));
+      if (unrouted.some(source => source.id === request.model)) return this.chain(request, signal, skipped);
+      return this.router.complete(request, signal, (reason, signal) => this.chain(request, signal, skipped, unrouted, reason), skipped);
     }
-    return this.chain(request, signal);
+    return this.chain(request, signal, skipped);
   }
   // The fixed chain: first success in source order, or the named source alone.
-  private async chain(request: ModelRequest, signal: AbortSignal, pool: Source[] = this.sources, routedFailure?: SourceError): Promise<Completion> {
+  private async chain(request: ModelRequest, signal: AbortSignal, skipped: Map<string, string>, pool: Source[] = this.sources, routedFailure?: SourceError): Promise<Completion> {
     await this.observation.refreshRoutingHistory();
     signal.throwIfAborted();
     const known = this.sources.some(s => s.id === request.model);
@@ -616,10 +625,17 @@ export class Sources {
         : this.chainRouter?.listed(source.id) && !this.chainRouter.supportsInput(source.id, request.imageInput) ? 'input_unsupported'
         : this.chainRouter && knownAdapters.has(source.id) && !this.dispatchEligible(source.id)
           ? !this.chainRouter.listed(source.id) ? 'not_listed' : this.disabledModels.has(source.id) ? 'disabled' : 'cooldown' : undefined;
-      if (blocked) { this.observeRoute(source.id, blocked, true); continue; }
+      if (blocked) {
+        this.observeRoute(source.id, blocked, true);
+        const code = blocked === 'retired' || blocked === 'cooldown' ? this.registeredRouter?.cooldown(source.id)?.code : undefined;
+        const detail = this.observation.routeSkip(source.id, blocked, code);
+        if (detail) skipped.set(source.id, detail);
+        continue;
+      }
       if (source.acceptsRequest && !source.acceptsRequest(request)) {
         this.observeRoute(source.id, 'context_not_approved', true);
         if (!automatic) throw new SourceError('refused', `${source.id} requires approved request context`);
+        skipped.set(source.id, 'request context needs approval');
         continue;
       }
       this.observeRoute(source.id, !automatic ? 'explicit' : attempted || pool !== this.sources ? 'fallback' : undefined);
@@ -634,6 +650,8 @@ export class Sources {
           throw error;
         }
         const failure = error instanceof SourceError ? error : new SourceError('upstream', `Source ${source.id} failed`);
+        skipped.set(source.id, localRequestRefusal(failure) ? 'rejected the tool definitions or tool history'
+          : this.observation.routeFailure(source.id, failure.code) ?? 'request failed');
         await this.chainRouter?.recordFailure(source.id, failure);
         signal.throwIfAborted();
         console.error(`grunt source: ${source.id} failed (${failure.code}) for model ${this.safeModel(request.model)}`);
