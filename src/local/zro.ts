@@ -8,6 +8,7 @@ import type { FreeApiGrant } from './free-api.js';
 import { verifiedDeepSeekFetch } from './deepseek-response.js';
 import { SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
+import { readVaultGrant } from './vault.js';
 
 export const ZRO_STORE = { service: 'zro', label: 'grunt', api_hosts: ['zro.moonmath.ai'], auth_shape: 'bearer' };
 export const ZRO_DEEPSEEK = 'deepseek-v4.1-flash';
@@ -21,12 +22,14 @@ function validate(value: unknown): ZroGrant {
   if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw new Error('Invalid Zro grant endpoint');
   return { base_url: grant.base_url.replace(/\/$/, ''), token: grant.token, free_account_verified: true, verified_at: grant.verified_at };
 }
-export async function readZroGrant(location = directory()): Promise<ZroGrant> {
+export async function readZroGrant(location = directory(), env: NodeJS.ProcessEnv = process.env): Promise<ZroGrant> {
   const file = await open(join(location, 'zro.json'), constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = await file.stat();
     if (!stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.uid !== process.getuid?.()) throw new Error('Unsafe Zro grant file');
-    return validate(JSON.parse(await file.readFile('utf8')));
+    const saved = validate(JSON.parse(await file.readFile('utf8')));
+    const vaulted = await readVaultGrant('zro', location, env);
+    return vaulted ? validate({ ...saved, base_url: vaulted.base_url, token: vaulted.token }) : saved;
   } finally { await file.close(); }
 }
 // Called after Squire has confirmed Free plan, no purchased balance and no payment method.

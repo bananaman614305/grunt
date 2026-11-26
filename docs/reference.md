@@ -551,6 +551,32 @@ Squire has no batch-grant API. Shared credentials do not create shared provider
 accounts or bypass a provider's verification. Reusing one Google or GitHub
 identity does not remove each provider's own sign-in and security requirements.
 
+#### Local Grunt vault and direct HTTPS
+
+Grunt can also store provider API keys locally in `vault.json` inside `configRoot()`
+(`0700` directory, `0600` file, `O_NOFOLLOW`/`O_NONBLOCK`, owner UID check, atomic
+temp-file writes) so adapters call each provider's pinned HTTPS origin directly from
+the user's machine without routing prompts, source code or tool results through
+`trusty-squire-api.fly.dev`.
+
+- Manage stored keys with `usegrunt vault set <provider>` (reads the key from stdin
+  or a hidden prompt, never from command arguments), `usegrunt vault list [--json]`
+  (metadata only, never prints keys), and `usegrunt vault remove <provider>`.
+- Environment overrides use `GRUNT_VAULT_<PROVIDER>_KEY` (for example
+  `GRUNT_VAULT_BEATAPI_KEY`). Every local vault key and env override is strictly
+  pinned to that provider's allowlisted HTTPS origin(s); optional
+  `GRUNT_VAULT_<PROVIDER>_ORIGIN` values outside the allowlist are rejected.
+- Trusty Squire remains the browser signup engine. In `@trusty-squire/mcp`,
+  `operate_extract` writes captured keys directly into Squire's vault without
+  returning plaintext, and raw key export (`fetch_credential`) requires an explicit
+  human passkey approval (`BrowserSquire.materializeDirectVaultGrant` supports that
+  passkey-approved export directly into Grunt's local vault). When no local vault
+  key is present, existing Squire egress grants continue to work seamlessly as a
+  backwards-compatible fallback.
+- BeatAPI, Pollinations and all other provider adapters preserve every free-account
+  receipt, zero-price check and balance guard on direct HTTPS calls, and never write
+  keys or tokens to diagnostics, logs, terminal output or harness configs.
+
 Setup helpers can cancel one provider without stopping other jobs or the shared
 broker. A pending initial browser operation may finish before its owned tab can
 be closed; cancelled providers do not continue.

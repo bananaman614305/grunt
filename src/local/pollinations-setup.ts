@@ -1,9 +1,10 @@
 import { rm } from 'node:fs/promises';
 import { DATA_SHARING_POLICIES, readDataSharingConsent } from './data-sharing.js';
 import {
-  POLLINATIONS_MODEL, pollinationsGrantPath, readPollinationsGrant,
+  POLLINATIONS_MODEL, POLLINATIONS_ORIGIN, pollinationsGrantPath, readPollinationsGrant,
   verifyPollinationsAccess, writePollinationsGrant
 } from './pollinations.js';
+import { readVaultGrant, writeVaultEntry } from './vault.js';
 
 export const POLLINATIONS_STORE = { service: 'pollinations', label: 'grunt-free-pollinations', api_hosts: ['gen.pollinations.ai'], auth_shape: 'bearer' };
 
@@ -91,6 +92,22 @@ export async function setupPollinations(options: PollinationsSetupOptions): Prom
     } catch { if (signal.aborted) throw failure(); }
     // A failed fresh verification must never leave an older receipt usable.
     await invalidate();
+    const localVault = await bounded(() => readVaultGrant('pollinations', options.directory), signal).catch(() => undefined);
+    if (localVault) {
+      try {
+        await bounded(() => verifyPollinationsAccess(localVault, guards), signal);
+        if (signal.aborted) throw failure();
+        await writePollinationsGrant({
+          version: 1, base_url: localVault.base_url, token: localVault.token,
+          upstream_origin: POLLINATIONS_ORIGIN, model: POLLINATIONS_MODEL,
+          verified_at: new Date().toISOString(), free_account_verified: true,
+          key_zero_budget_verified: true, quest_pollen_only: true
+        }, options.directory);
+        if (signal.aborted) throw failure();
+        options.notify?.('Pollinations: zero-budget Quest-only free community GLM access connected through local Grunt vault');
+        return;
+      } catch { if (signal.aborted) throw failure(); }
+    }
     const before = await bounded(() => options.squire.credentials.list(), signal);
     const references = new Set(before.filter(eligible).map(credential => credential.reference));
     await bounded(() => options.squire.signup('pollinations', 'https://enter.pollinations.ai/keys',
@@ -103,8 +120,11 @@ export async function setupPollinations(options: PollinationsSetupOptions): Prom
     const grant = await bounded(() => options.squire.credentials.grant(credential.reference), signal);
     await bounded(() => verifyPollinationsAccess(grant, guards), signal);
     if (signal.aborted) throw failure();
+    if (grant.base_url.replace(/\/$/, '') === POLLINATIONS_ORIGIN) {
+      await writeVaultEntry('pollinations', { api_key: grant.token, origin: POLLINATIONS_ORIGIN, source: 'squire' }, options.directory);
+    }
     await writePollinationsGrant({
-      version: 1, ...grant, upstream_origin: 'https://gen.pollinations.ai', model: POLLINATIONS_MODEL,
+      version: 1, ...grant, upstream_origin: POLLINATIONS_ORIGIN, model: POLLINATIONS_MODEL,
       verified_at: new Date().toISOString(), free_account_verified: true,
       key_zero_budget_verified: true, quest_pollen_only: true
     }, options.directory);

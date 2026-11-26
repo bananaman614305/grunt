@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { compileToolSchemas } from './tool-schema.js';
 import { readDataSharingConsent } from './data-sharing.js';
 import { providerGrantDirectory } from './provider-grant.js';
+import { readVaultGrant, validateProviderEndpoint, validateVaultToken } from './vault.js';
 import { FreebuffTools } from './freebuff-tools.js';
 import { MetadataFlights } from './metadata-flight.js';
 import { lengthLimited, truncatedCompletion, withObservedEnding, SourceError, requestRefusal } from './source.js';
@@ -29,12 +30,12 @@ const obj = (value: unknown): Record<string, unknown> => value && typeof value =
 const rejected = () => new SourceError('logged_out', 'BeatAPI private free-account verification is missing or expired; rerun usegrunt setup');
 function access(value: unknown): BeatAPIAccess {
   const grant = obj(value);
-  if (typeof grant.base_url !== 'string' || typeof grant.token !== 'string' || !/^[\x21-\x7e]{1,16384}$/.test(grant.token)) throw rejected();
-  let url: URL;
-  try { url = new URL(grant.base_url); } catch { throw rejected(); }
-  if (url.origin !== 'https://trusty-squire-api.fly.dev' || url.username || url.password || url.search || url.hash
-    || !/^\/v1\/egress\/g_[A-Za-z0-9_-]{16,64}\/?$/.test(url.pathname)) throw rejected();
-  return { base_url: url.href.replace(/\/$/, ''), token: grant.token };
+  if (typeof grant.base_url !== 'string') throw rejected();
+  try {
+    const token = validateVaultToken(grant.token);
+    const endpoint = validateProviderEndpoint('beatapi', grant.base_url, { strictEgressLength: true });
+    return { base_url: endpoint.base_url, token };
+  } catch { throw rejected(); }
 }
 function validate(value: unknown): BeatAPIGrant {
   const grant = obj(value), auth = access(value), checked = typeof grant.verified_at === 'string' ? Date.parse(grant.verified_at) : NaN;
@@ -57,14 +58,19 @@ async function privateDirectory(directory: string, create = false) {
   const stat = await lstat(directory);
   if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o700) throw rejected();
 }
-export async function readBeatAPIGrant(directory = providerGrantDirectory()): Promise<BeatAPIGrant> {
+export async function readBeatAPIGrant(
+  directory = providerGrantDirectory(),
+  env: NodeJS.ProcessEnv = process.env
+): Promise<BeatAPIGrant> {
   let file;
   try {
     await privateDirectory(directory);
     file = await open(beatapiGrantPath(directory), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const stat = await file.stat();
     if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.size > 32768) throw rejected();
-    return validate(JSON.parse(await file.readFile('utf8')));
+    const saved = validate(JSON.parse(await file.readFile('utf8')));
+    const vaulted = await readVaultGrant('beatapi', directory, env);
+    return vaulted ? validate({ ...saved, base_url: vaulted.base_url, token: vaulted.token }) : saved;
   } catch { throw rejected(); }
   finally { await file?.close(); }
 }

@@ -52,6 +52,15 @@ import { configRoot, gruntEnv } from '../brand.js';
 import { KILO_PARTICLE, verifyKiloAccess } from './kilo.js';
 import { DATA_SHARING_POLICIES, dataSharingPolicies, readDataSharingConsent, requiresExplicitDataSharing } from './data-sharing.js';
 import { writePrivateProviderGrant } from './provider-grant.js';
+import {
+  defaultProviderOrigin,
+  extractCredentialSecret,
+  isVaultProvider,
+  readVaultGrant,
+  validateDirectOrigin,
+  writeVaultEntry
+} from './vault.js';
+import type { VaultProvider } from './vault.js';
 import { readSetupSession } from './setup-session.js';
 import { signupAgentTools, signupAgentResult, guardedSignupChoice, writeId } from './signup-mcp.js';
 import type { SignupAgent } from './signup-mcp.js';
@@ -177,6 +186,10 @@ export interface SetupSquire {
   };
   runs: { start(input: ProvisionInput): Promise<Run>; get(id: string): Promise<{ state: string; approval_url?: string; reason?: string; diagnostic?: SquireDiagnostic }>; timeout?(id: string): Promise<void> };
 }
+export type SquireCredentialExportResult =
+  | { status: 'credential_fetched'; fields: Record<string, unknown> }
+  | { status: 'approval_pending'; approval_id: string; approval_url: string; expires_at?: string }
+  | { status: 'refused'; reason: string };
 export class SetupPending extends Error {}
 export class SetupFailure extends Error {}
 
@@ -193,7 +206,7 @@ async function probeGrant(source: Source, location: string, caller?: AbortSignal
   } catch (error) { await rm(join(location, `${source.id}.json`), { force: true }); signal.throwIfAborted(); throw error; }
 }
 
-export async function setupProviders(squire: SetupSquire, router: { addGrant(platform: string, grant: { base_url: string; token: string }): Promise<void>; hasKey?(platform: string): Promise<boolean> }, options: { providers?: Provider[]; notify: (line: string) => void; reuseSaved?: boolean; dataSharingApproved?: readonly string[]; signal?: AbortSignal | undefined } ) {
+export async function setupProviders(squire: SetupSquire, router: { addGrant(platform: string, grant: { base_url: string; token: string }): Promise<void>; hasKey?(platform: string): Promise<boolean> }, options: { providers?: Provider[]; notify: (line: string) => void; reuseSaved?: boolean; dataSharingApproved?: readonly string[]; signal?: AbortSignal | undefined; directory?: string } ) {
   const pending: string[] = [];
   const dropped: string[] = [];
   const drop = (provider: string, reason?: string, diagnostic?: SquireDiagnostic) => {
@@ -212,6 +225,23 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
     try {
       if (await router.hasKey?.(provider)) { options.signal?.throwIfAborted(); options.notify(`${provider}: connected`); continue; }
     } catch (error) { rememberFailure(error); }
+    if (isVaultProvider(provider)) {
+      let vaulted: Awaited<ReturnType<typeof readVaultGrant>>;
+      try { vaulted = await readVaultGrant(provider, options.directory ?? configRoot()); }
+      catch (error) { rememberFailure(error); }
+      if (vaulted) {
+        try {
+          await router.addGrant(provider, { base_url: vaulted.base_url, token: vaulted.token });
+          options.signal?.throwIfAborted();
+          options.notify(`${provider}: connected through local Grunt vault`);
+          continue;
+        } catch (error) {
+          const status = rejectedStatus(error);
+          if (!status) rememberFailure(error);
+          else { options.signal?.throwIfAborted(); options.notify(`${provider}: local vault key rejected (HTTP ${status})`); }
+        }
+      }
+    }
     const matching = async () => (await squire.credentials.list()).filter(c => sameService(c, provider) && c.auth_strategy !== 'username_password' && apiKeyField(c, provider));
     const connect = async (credentials: Credential[]) => {
       for (const credential of credentials) {
@@ -504,6 +534,79 @@ export class BrowserSquire implements SetupSquire {
     const url = new URL(result.base_url);
     if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw new Error('Squire returned an invalid grant endpoint');
     return { base_url: result.base_url, token: result.token };
+  }
+  private parseExportResult(result: ObjectValue): SquireCredentialExportResult {
+    if (result.status === 'credential_fetched' && result.fields && typeof result.fields === 'object' && !Array.isArray(result.fields)) {
+      return { status: 'credential_fetched', fields: result.fields as Record<string, unknown> };
+    }
+    if (result.status === 'approval_pending' && typeof result.approval_id === 'string' && typeof result.approval_url === 'string') {
+      return {
+        status: 'approval_pending',
+        approval_id: result.approval_id,
+        approval_url: result.approval_url,
+        ...(typeof result.expires_at === 'string' ? { expires_at: result.expires_at } : {})
+      };
+    }
+    return { status: 'refused', reason: setupReason(result.reason, result.status) || 'credential export refused' };
+  }
+  async startCredentialExport(reference: string, options: { field?: string; reason?: string } = {}): Promise<SquireCredentialExportResult> {
+    const result = await this.call('fetch_credential', {
+      action: 'start',
+      reference,
+      ...(options.field ? { field: options.field } : {}),
+      reason: options.reason ?? 'Store provider API key in local Grunt vault for direct HTTPS calls'
+    });
+    return this.parseExportResult(result);
+  }
+  async resumeCredentialExport(approvalId: string): Promise<SquireCredentialExportResult> {
+    const result = await this.call('fetch_credential', { action: 'resume', approval_id: approvalId });
+    return this.parseExportResult(result);
+  }
+  /**
+   * Exports a captured credential from Squire (after Squire's passkey approval)
+   * directly into Grunt's private mode-0600 local vault pinned to the provider's
+   * allowed HTTPS origin. Never logs or echoes the secret value.
+   */
+  async materializeDirectVaultGrant(
+    provider: VaultProvider,
+    reference: string,
+    options: {
+      directory?: string;
+      origin?: string;
+      field?: string;
+      reason?: string;
+      onApproval?: (info: { approvalId: string; approvalUrl: string }) => Promise<void> | void;
+      pollIntervalMs?: number;
+      timeoutMs?: number;
+      signal?: AbortSignal;
+    } = {}
+  ): Promise<{ base_url: string; token: string }> {
+    const origin = validateDirectOrigin(provider, options.origin ?? defaultProviderOrigin(provider));
+    const signal = options.signal ? AbortSignal.any([options.signal, this.shutdown.signal]) : this.shutdown.signal;
+    signal.throwIfAborted();
+    let exported = await this.startCredentialExport(reference, {
+      ...(options.field ? { field: options.field } : {}),
+      ...(options.reason ? { reason: options.reason } : {})
+    });
+    if (exported.status === 'approval_pending') {
+      await options.onApproval?.({ approvalId: exported.approval_id, approvalUrl: exported.approval_url });
+      const deadline = Date.now() + (options.timeoutMs ?? 120000);
+      const interval = Math.max(50, options.pollIntervalMs ?? 2000);
+      const approvalId = exported.approval_id;
+      while (exported.status === 'approval_pending' && Date.now() < deadline) {
+        signal.throwIfAborted();
+        await delay(interval, undefined, { signal });
+        exported = await this.resumeCredentialExport(approvalId);
+      }
+    }
+    if (exported.status !== 'credential_fetched') {
+      const reason = exported.status === 'refused' ? exported.reason : 'passkey approval timed out';
+      throw new Error(`Could not export ${provider} key to local Grunt vault (${reason})`);
+    }
+    const secret = extractCredentialSecret(exported.fields, provider);
+    if (!secret) throw new Error(`Squire returned no usable API key field for ${provider}`);
+    await writeVaultEntry(provider, { api_key: secret, origin, source: 'squire' }, options.directory ?? configRoot());
+    return { base_url: origin, token: secret };
   }
 
   private async finishSession(provider: string, completed = false) {
@@ -1342,7 +1445,7 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
             await writeGrant(grant, location);
             await probeGrant(source, location, options.signal);
           }
-        }, { providers: [provider], notify, reuseSaved: false, signal: options.signal });
+        }, { providers: [provider], notify, reuseSaved: false, signal: options.signal, directory: location });
         if (result.dropped.length) throw new Error(`${provider} setup incomplete; rerun usegrunt setup`);
       } finally { await source.close(); }
       providers = providers.filter(id => id !== provider);
@@ -1358,7 +1461,7 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
             await writeZroGrant(grant, location);
             await probeGrant(source, location, options.signal);
           }
-        }, { providers: ['zro'], notify, reuseSaved: false, signal: options.signal });
+        }, { providers: ['zro'], notify, reuseSaved: false, signal: options.signal, directory: location });
         if (result.dropped.length) throw new Error('Zro setup incomplete; rerun usegrunt setup');
       } finally { await source.close(); }
       providers = providers.filter(provider => provider !== 'zro');
@@ -1374,22 +1477,22 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
             await writeTokenHarborGrant(grant, location);
             await probeGrant(source, location, options.signal);
           }
-        }, { providers: ['tokenharbor'], notify, reuseSaved: false, signal: options.signal });
+        }, { providers: ['tokenharbor'], notify, reuseSaved: false, signal: options.signal, directory: location });
         if (result.dropped.length) throw new Error('Token Harbor setup incomplete; rerun usegrunt setup');
       } finally { await source.close(); }
       providers = providers.filter(provider => provider !== 'tokenharbor');
       if (!providers.length) return {};
     }
     if (providers.includes('nvidia')) {
-      const source = new Nvidia();
+      const source = new Nvidia({ directory: location });
       try {
         const result = await setupProviders(squire, {
           hasKey: async provider => provider === 'nvidia' && await source.available(),
           addGrant: async (provider, grant) => {
             if (provider !== 'nvidia') throw new Error('Unexpected NVIDIA credential');
-            await writeNvidiaGrant(grant);
+            await writeNvidiaGrant(grant, location);
           }
-        }, { providers: ['nvidia'], notify, reuseSaved: false });
+        }, { providers: ['nvidia'], notify, reuseSaved: false, directory: location });
         if (result.dropped.length) throw new Error('NVIDIA setup incomplete; rerun usegrunt setup');
       } finally { await source.close(); }
       providers = providers.filter(provider => provider !== 'nvidia');
@@ -1398,7 +1501,7 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
     const router = await readyRouter(options.signal);
     options.signal?.throwIfAborted();
     for (const provider of providers) if (providerURL(provider)) await setupURL(squire as BrowserSquire, router, provider, notify);
-    const result = await setupProviders(squire, router, { providers: providers.filter(provider => !providerURL(provider)) as Provider[], notify, dataSharingApproved: approved });
+    const result = await setupProviders(squire, router, { providers: providers.filter(provider => !providerURL(provider)) as Provider[], notify, dataSharingApproved: approved, directory: location });
     const dropped = new Set(result.dropped);
     if (dropped.size) throw new Error(`Provider setup incomplete: ${[...dropped].join(', ')}`);
     await router.configureChain([...dropped], approved);

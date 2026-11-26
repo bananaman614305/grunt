@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { compileToolSchemas } from './tool-schema.js';
 import { FreebuffTools } from './freebuff-tools.js';
 import { readDataSharingConsent } from './data-sharing.js';
+import { readVaultGrant, validateProviderEndpoint, validateVaultToken } from './vault.js';
 import { lengthLimited, SourceError, requestRefusal } from './source.js';
 import type { Completion, ModelRequest, Source } from './source.js';
 import { MetadataFlights } from './metadata-flight.js';
@@ -38,12 +39,12 @@ const invalidCompletion = (message: string, failureReason: SafeDiagnosticMetadat
 const rejected = () => new SourceError('logged_out', 'Pollinations private free-access verification is missing or expired; rerun usegrunt setup');
 function accessGrant(value: unknown): AccessGrant {
   const grant = object(value);
-  if (typeof grant.base_url !== 'string' || typeof grant.token !== 'string' || !/^[\x21-\x7e]{1,16384}$/.test(grant.token)) throw rejected();
-  let url: URL;
-  try { url = new URL(grant.base_url); } catch { throw rejected(); }
-  if (url.origin !== POLLINATIONS_GRANT_ORIGIN || url.username || url.password || url.search || url.hash || /[?#]/.test(grant.base_url)
-    || !/^\/v1\/egress\/g_[A-Za-z0-9_-]{16,64}\/?$/.test(url.pathname)) throw rejected();
-  return { base_url: url.href.replace(/\/$/, ''), token: grant.token };
+  if (typeof grant.base_url !== 'string') throw rejected();
+  try {
+    const token = validateVaultToken(grant.token);
+    const endpoint = validateProviderEndpoint('pollinations', grant.base_url, { strictEgressLength: true });
+    return { base_url: endpoint.base_url, token };
+  } catch { throw rejected(); }
 }
 function validateGrant(value: unknown): PollinationsGrant {
   const grant = object(value), access = accessGrant(value);
@@ -54,13 +55,18 @@ function validateGrant(value: unknown): PollinationsGrant {
   return { ...access, version: 1, upstream_origin: POLLINATIONS_ORIGIN, model: POLLINATIONS_MODEL, verified_at: grant.verified_at as string,
     free_account_verified: true, key_zero_budget_verified: true, quest_pollen_only: true };
 }
-export async function readPollinationsGrant(location = directory()): Promise<PollinationsGrant> {
+export async function readPollinationsGrant(
+  location = directory(),
+  env: NodeJS.ProcessEnv = process.env
+): Promise<PollinationsGrant> {
   let file;
   try {
     file = await open(pollinationsGrantPath(location), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const stat = await file.stat();
     if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.size > 32768) throw rejected();
-    return validateGrant(JSON.parse(await file.readFile('utf8')));
+    const saved = validateGrant(JSON.parse(await file.readFile('utf8')));
+    const vaulted = await readVaultGrant('pollinations', location, env);
+    return vaulted ? validateGrant({ ...saved, base_url: vaulted.base_url, token: vaulted.token }) : saved;
   } catch { throw rejected(); }
   finally { await file?.close(); }
 }

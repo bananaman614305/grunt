@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { lengthLimited, truncatedCompletion, withObservedEnding, SourceError } from './source.js';
 import type { ModelRequest, Source, ToolCall } from './source.js';
+import { readVaultGrant } from './vault.js';
 
 export const NVIDIA_DEEPSEEK = 'deepseek-ai/deepseek-v4.1-flash';
 export interface NvidiaGrant { base_url: string; token: string }
@@ -17,7 +18,9 @@ function validateGrant(value: unknown): NvidiaGrant {
   if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw new Error('Invalid NVIDIA Squire endpoint');
   return { base_url: grant.base_url.replace(/\/$/, ''), token: grant.token };
 }
-export async function readNvidiaGrant(directory = configDirectory()): Promise<NvidiaGrant> {
+export async function readNvidiaGrant(directory = configDirectory(), env: NodeJS.ProcessEnv = process.env): Promise<NvidiaGrant> {
+  const vaulted = await readVaultGrant('nvidia', directory, env);
+  if (vaulted) return validateGrant({ base_url: vaulted.base_url, token: vaulted.token });
   const file = await open(join(directory, 'nvidia.json'), constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = await file.stat();
