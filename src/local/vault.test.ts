@@ -727,19 +727,27 @@ it('verifies Runcrate replacement keys and refreshed Squire egress grants throug
     autoRechargeEnabled: false,
     paymentMethods: []
   };
+  let squireCredentials = [
+    { service: 'runcrate', reference: 'vault://runcrate-squire', field_names: ['api_key'], allowed_hosts: ['api.runcrate.ai', 'www.runcrate.ai'] }
+  ];
   const squireCalls = vi.fn(async (name: string, args: Record<string, unknown>) => {
     if (name === 'list_credentials') {
-      return { credentials: [{ service: 'runcrate', reference: 'vault://runcrate-squire', field_names: ['api_key'] }] };
+      return { credentials: squireCredentials };
     }
     if (name === 'grant_app_access') {
       return { base_url: newEgressUrl, token: newEgressToken };
     }
     if (name === 'use_credential') {
-      expect(args.reference).toBe('vault://runcrate-squire');
+      const credential = squireCredentials.find(item => item.reference === args.reference);
+      expect(credential).toBeDefined();
       const http = args.http as { method: string; url: string; headers: Record<string, string> };
       expect(http.method).toBe('GET');
       expect(http.headers.Authorization).toBe('Bearer ${SECRET}');
-      expect(new URL(http.url).origin).toBe(RUNCRATE_BILLING_ORIGIN);
+      const targetUrl = new URL(http.url);
+      if (!credential!.allowed_hosts.includes(targetUrl.hostname)) {
+        throw new Error(`Host ${targetUrl.hostname} is not in credential allowed_hosts`);
+      }
+      expect(targetUrl.origin).toBe(RUNCRATE_BILLING_ORIGIN);
       if (http.url.endsWith('/api/v1/billing/balance')) {
         return { response: { status: 200, headers: {}, body: JSON.stringify({ data: { creditsBalance: squireBillingState.creditsBalance, activeUsageCost: 0 } }), truncated: false } };
       }
@@ -836,8 +844,24 @@ it('verifies Runcrate replacement keys and refreshed Squire egress grants throug
       credential_sha256: credentialFingerprint(oldEgressGrant)
     });
 
-    // 4. Refreshed Squire egress grant with passing billing verification replaces an expired egress receipt cleanly through normal CLI setup.
+    // 4. Refreshed Squire egress grant fails closed if the credential's allowed_hosts excludes www.runcrate.ai.
     squireBillingState = { creditsBalance: 0, autoRechargeEnabled: false, paymentMethods: [] };
+    squireCredentials = [
+      { service: 'runcrate', reference: 'vault://runcrate-squire', field_names: ['api_key'], allowed_hosts: ['api.runcrate.ai'] }
+    ];
+    server.seen.length = 0;
+    squireCalls.mockClear();
+    await expect(runCliAddRuncrate()).rejects.toBeInstanceOf(RuncrateVerificationError);
+    expect(server.seen.some(item => item.authorization === `Bearer ${newEgressToken}` && item.url.includes('/chat/completions'))).toBe(false);
+    expect(await readRuncrateGrant(directory, {})).toMatchObject({
+      ...oldEgressGrant,
+      credential_sha256: credentialFingerprint(oldEgressGrant)
+    });
+
+    // 5. Refreshed Squire egress grant with allowlisted ["api.runcrate.ai", "www.runcrate.ai"] and passing billing verification replaces an expired egress receipt cleanly through normal CLI setup.
+    squireCredentials = [
+      { service: 'runcrate', reference: 'vault://runcrate-squire', field_names: ['api_key'], allowed_hosts: ['api.runcrate.ai', 'www.runcrate.ai'] }
+    ];
     server.seen.length = 0;
     squireCalls.mockClear();
     await runCliAddRuncrate();
@@ -851,7 +875,7 @@ it('verifies Runcrate replacement keys and refreshed Squire egress grants throug
     });
     expect(await new Runcrate({ directory }).available()).toBe(true);
 
-    // 5. Safe env-var replacement key also verifies end-to-end through normal CLI setup.
+    // 6. Safe env-var replacement key also verifies end-to-end through normal CLI setup.
     vi.stubEnv(vaultEnvKeyName('runcrate'), envReplacementKey);
     server.seen.length = 0;
     squireCalls.mockClear();

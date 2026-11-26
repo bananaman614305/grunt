@@ -36,11 +36,16 @@ function squireCalls(provider: string, events: string[], drive?: (goal: string) 
   });
   return vi.spyOn(BrowserSquire.prototype, 'call').mockImplementation(async (name, args) => {
     events.push(name);
-    if (name === 'list_credentials') return { credentials: [{ service: provider, reference: `vault://${provider}`, field_names: ['api_key'] }] };
+    const allowedHosts = provider === 'runcrate' ? ['api.runcrate.ai', 'www.runcrate.ai'] : undefined;
+    if (name === 'list_credentials') return { credentials: [{ service: provider, reference: `vault://${provider}`, field_names: ['api_key'], ...(allowedHosts ? { allowed_hosts: allowedHosts } : {}) }] };
     if (name === 'operate_drive' && drive) return drive(String(args.goal));
     if (name === 'operate_finish') return {};
     if (name === 'grant_app_access') return { base_url: `https://egress.squire.test/${provider}`, token: 'synthetic-private-grant' };
-    if (name === 'use_credential') return runcrateBillingResponse(args);
+    if (name === 'use_credential') {
+      const targetUrl = new URL(String((args.http as { url?: unknown } | undefined)?.url ?? ''));
+      if (allowedHosts && !allowedHosts.includes(targetUrl.hostname)) throw new Error(`Host ${targetUrl.hostname} is not in credential allowed_hosts`);
+      return runcrateBillingResponse(args);
+    }
     throw new Error('Unexpected Squire call');
   });
 }
