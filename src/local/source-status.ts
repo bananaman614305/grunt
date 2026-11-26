@@ -50,6 +50,7 @@ interface Observation {
   availabilityCheckedAt?: number;
   available?: boolean;
   setupFailure?: string;
+  needsHumanVerification?: boolean;
   performance?: RoutingPerformance;
   profiles?: Partial<Record<RoutingWorkload, RoutingPerformance>>;
 }
@@ -109,21 +110,28 @@ export class SourceStatus {
     const entry = this.entry(id);
     entry.revision++;
     delete entry.failure; delete entry.retryAt; delete entry.availabilityQuota;
-    delete entry.setupFailure;
+    delete entry.setupFailure; delete entry.needsHumanVerification;
     if (entry.state !== 'ready') entry.state = 'available';
     entry.available = true; entry.availabilityCheckedAt = this.now();
   }
   observedAvailable(id: string) { return this.entry(id).available; }
   setSetupFailure(id: string, reason: string | undefined) {
     const entry = this.entry(id);
+    delete entry.needsHumanVerification;
     // Browser diagnostics can append page text. Only use fixed local classifications.
     switch (reason?.split(';', 1)[0]) {
       case undefined: case 'cancelled': case 'quota exhausted': delete entry.setupFailure; break;
       case 'free promotion expired': entry.setupFailure = 'free promotion expired; select another free route'; break;
       case 'startup isolation check failed': entry.setupFailure = 'startup isolation check failed; inspect startup config and rerun usegrunt setup'; break;
       case 'needs human verification': case 'browser requested an approval':
-        entry.setupFailure = 'setup incomplete: browser verification required; run usegrunt setup'; break;
-      case 'approval required': entry.setupFailure = 'setup incomplete: approval required; run usegrunt setup'; break;
+        entry.needsHumanVerification = true;
+        entry.setupFailure = `setup incomplete: browser verification required; run usegrunt add ${id}`; break;
+      case 'approval required':
+        entry.needsHumanVerification = true;
+        entry.setupFailure = `setup incomplete: approval required; run usegrunt add ${id}`; break;
+      case 'needs Nous login': case 'sign-in required':
+        entry.needsHumanVerification = true;
+        entry.setupFailure = `setup incomplete: sign-in required; run usegrunt add ${id}`; break;
       case 'provider refused': entry.setupFailure = 'setup incomplete: provider refused access; check provider access and rerun usegrunt setup'; break;
       case 'Squire unavailable': case 'browser could not continue':
         entry.setupFailure = 'setup incomplete: Squire could not finish; check Squire and rerun usegrunt setup'; break;
@@ -328,7 +336,7 @@ export class SourceStatus {
         else if (entry.state === 'unknown' || entry.state === 'unavailable') entry.state = 'available';
         const checkedAt = this.now();
         entry.available = result; entry.availabilityCheckedAt = checkedAt;
-        if (result) delete entry.setupFailure;
+        if (result) { delete entry.setupFailure; delete entry.needsHumanVerification; }
         this.notifyClosed(source.id, wasOpen);
         if (result) for (const observe of this.availabilityObservers) {
           try { observe(source.id, checkedAt); } catch { /* Observation cannot change admission. */ }
@@ -419,7 +427,7 @@ export class SourceStatus {
         entry.revision++;
         entry.state = 'ready'; entry.lastSuccessAt = this.now(); entry.lastReplyMs = Math.max(0, this.now() - started);
         entry.available = true; entry.availabilityCheckedAt = this.now();
-        delete entry.failure; delete entry.retryAt; delete entry.availabilityQuota; delete entry.setupFailure;
+        delete entry.failure; delete entry.retryAt; delete entry.availabilityQuota; delete entry.setupFailure; delete entry.needsHumanVerification;
         if (guard) guard.acceptedRevision = entry.revision;
         this.report(source.id, 'ok', this.now() - started);
         await this.performance(source.id, true, this.now() - started, request);
@@ -472,9 +480,10 @@ export class SourceStatus {
       else if (entry.retryAt !== undefined && entry.retryAt > now) row.retryAt = entry.retryAt;
       else if (entry.retryAt !== undefined && entry.state === 'limited') row.state = 'available';
       if (row.state !== 'disabled' && options.retired?.(id)) row.state = 'unavailable';
+      if (entry.needsHumanVerification && (row.state === 'unknown' || row.state === 'unavailable')) row.state = 'approval';
       if (entry.availabilityCheckedAt !== undefined) row.checkedAgoSeconds = Math.max(0, Math.floor((now - entry.availabilityCheckedAt) / 1000));
       row.routable = (row.state === 'available' || row.state === 'ready' || row.state === 'answering') && this.routingAvailability(id, AVAILABILITY_POSITIVE_MS, AVAILABILITY_NEGATIVE_MS) === true;
-      const problem = row.state === 'unavailable' || row.state === 'error' ? this.routeProblem(id, row.errorCode) : undefined;
+      const problem = row.state === 'unavailable' || row.state === 'error' || row.state === 'approval' ? this.routeProblem(id, row.errorCode) : undefined;
       row.detail = `${problem ?? detail[row.state]}${model ? '; model label comes from the registry, not response attestation' : ''}`;
       return row;
     });

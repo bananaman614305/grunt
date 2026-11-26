@@ -11,7 +11,7 @@ import { ManagedOpenCodeProcess } from './managed-opencode-process.js';
 import { lengthLimited, preventReplay, replayTimeout, withObservedEnding, SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
 
-export const DEFAULT_OPENCODE_MODELS = ['deepseek-v4.1-flash-free', 'glm-5.3-flash-free', 'big-pickle'] as const;
+export const DEFAULT_OPENCODE_MODELS = ['deepseek-v4.1-flash-free', 'big-pickle'] as const;
 const MODEL_QUOTA_COOLDOWN_MS = 60000;
 const MANAGED_IDLE_MS = 5 * 60000;
 const REQUEST_TIMEOUT_MS = 180000;

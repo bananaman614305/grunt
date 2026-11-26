@@ -4,7 +4,7 @@ import { POLLINATIONS_STORE } from './pollinations-setup.js';
 import { BEATAPI_STORE } from './beatapi-setup.js';
 import { KENARI_STORE } from './kenari-setup.js';
 import { GOEDEL_STORE } from './goedel-setup.js';
-import { PROMOTIONAL_STORE } from './promotional-setup.js';
+import { PROMOTIONAL_STORES } from './promotional-setup.js';
 import { DARUS_STORE } from './darus-setup.js';
 import { APERTURE_STORE } from './aperture-setup.js';
 import { MILLIONSEEK_STORE } from './millionseek-setup.js';
@@ -286,7 +286,7 @@ function keyNameField(label: string, url: unknown) {
   return field === 'name' && typeof url === 'string' && URL.canParse(url) && /key|token/i.test(new URL(url).pathname);
 }
 export function squireStore(service: string) {
-  return [ZRO_STORE, TOKENHARBOR_STORE, POLLINATIONS_STORE, BEATAPI_STORE, KENARI_STORE, GOEDEL_STORE, PROMOTIONAL_STORE, DARUS_STORE, APERTURE_STORE, MILLIONSEEK_STORE].find(store => store.service === service);
+  return [ZRO_STORE, TOKENHARBOR_STORE, POLLINATIONS_STORE, BEATAPI_STORE, KENARI_STORE, GOEDEL_STORE, ...Object.values(PROMOTIONAL_STORES), DARUS_STORE, APERTURE_STORE, MILLIONSEEK_STORE].find(store => store.service === service);
 }
 
 // operate_drive rejects a longer goal.
@@ -1352,7 +1352,7 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
       const source = new Zro({ directory: location });
       try {
         const result = await setupProviders(squire, {
-          hasKey: async provider => provider === 'zro' && await source.available(options.signal),
+          hasKey: async provider => provider === 'zro' && await source.healthCheck(options.signal),
           addGrant: async (provider, grant) => {
             if (provider !== 'zro') throw new Error('Unexpected Zro credential');
             await writeZroGrant(grant, location);

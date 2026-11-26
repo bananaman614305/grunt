@@ -223,9 +223,16 @@ it('does not let transport heartbeats or role-only events postpone the first-out
     expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/chat/completions'))).toHaveLength(1);
   } finally { clearInterval(heartbeat); await sources.close(); }
 });
-it.each(['fikra', 'openference'] as const)('includes qualified %s in automatic onboarding with the exact free alias', id => {
-  expect(bundledRegistry.adapters.find(adapter => adapter.id === id)?.model).toBe(PROMOTIONAL_PROVIDERS[id].model);
-  expect(localOptInAdapters.some(adapter => adapter.id === id)).toBe(false);
+const fikraRegistryAdapter = {
+  id: 'fikra', kind: 'model' as const, tier: 'experimental' as const, weight: 0.01, modalities: ['text' as const],
+  install: 'builtin:fikra', signup: PROMOTIONAL_PROVIDERS.fikra.signup, model: PROMOTIONAL_PROVIDERS.fikra.model
+};
+const preExpiryRegistry = { ...bundledRegistry, adapters: [...bundledRegistry.adapters, fikraRegistryAdapter] };
+
+it('includes active openference in automatic onboarding and omits expired fikra from bundledRegistry', () => {
+  expect(bundledRegistry.adapters.find(adapter => adapter.id === 'openference')?.model).toBe(PROMOTIONAL_PROVIDERS.openference.model);
+  expect(bundledRegistry.adapters.some(adapter => adapter.id === 'fikra')).toBe(false);
+  expect(localOptInAdapters.some(adapter => adapter.id === 'openference' || adapter.id === 'fikra')).toBe(false);
 });
 it('routes Fikra native tools through the Grunt HTTP interface with a mixed source configuration', async () => {
   await recordDataSharingConsent(directory, ['fikra']);
@@ -237,7 +244,7 @@ it('routes Fikra native tools through the Grunt HTTP interface with a mixed sour
     return Response.json({ model: PROMOTIONAL_PROVIDERS.fikra.model, choices: [{ message: { content: null,
       tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'ready', arguments: '{}' } }] } }] });
   }));
-  const sources = configure({ GRUNT_CONFIG_DIR: directory, GRUNT_SOURCES: 'freellmapi,fikra' });
+  const sources = configure({ GRUNT_CONFIG_DIR: directory, GRUNT_SOURCES: 'freellmapi,fikra' }, () => preExpiryRegistry);
   try {
     const response = await createLocalApp(sources, { cwd: directory }).request('http://127.0.0.1:8788/v1/chat/completions', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...request('fikra'), tools: [{ type: 'function', function: { name: 'ready', parameters: { type: 'object' } } }] })
@@ -303,7 +310,7 @@ it('falls back from an Openference upstream rejection to free Fikra automaticall
     return id === 'openference' ? Response.json({ error: { code: 'invalid_request_error' } }, { status: 422 })
       : Response.json({ model: PROMOTIONAL_PROVIDERS.fikra.model, choices: [{ message: { content: 'Hello' } }] });
   }));
-  const sources = configure({ GRUNT_CONFIG_DIR: directory, GRUNT_SOURCES: 'openference,fikra' });
+  const sources = configure({ GRUNT_CONFIG_DIR: directory, GRUNT_SOURCES: 'openference,fikra' }, () => preExpiryRegistry);
   try {
     // Routing may use the first ready source without waiting for slower metadata.
     // Admit both offers before draw 0 so this fixture exercises Openference's
@@ -371,7 +378,7 @@ it('retains the existing fifteen-minute router cooldown for malformed streamed t
     ? Promise.resolve(streamResponse(sse([{ model: PROMOTIONAL_PROVIDERS.openference.model, choices: [{ index: 0, delta: { tool_calls: [
       { index: 0, id: 'call', type: 'function', function: { name: 'ready', arguments: 'INVALID' } }
     ] }, finish_reason: 'tool_calls' }] }]))) : normal(url, init);
-  const registry = { ...bundledRegistry, adapters: bundledRegistry.adapters.filter(row => ['openference', 'fikra'].includes(row.id)).map(row => ({ ...row, weight: 0.5 })) };
+  const registry = { ...preExpiryRegistry, adapters: preExpiryRegistry.adapters.filter(row => ['openference', 'fikra'].includes(row.id)).map(row => ({ ...row, weight: 0.5 })) };
   const sources = new Sources([source('openference', fetcher), { id: 'fikra', available: async () => true, complete: async () => ({ text: 'fallback' }) }],
     { registry: () => registry, now: () => now, random: () => 0 });
   try {

@@ -2,7 +2,8 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { bundledRegistry, disabledAdapters, knownAdapters, validateRegistry } from './registry.js';
+import { adapterErrors, bundledRegistry, disabledAdapters, imageAdapters, knownAdapters, validateRegistry } from './registry.js';
+import { PROMOTIONAL_PROVIDERS } from './local/promotional-api.js';
 import { recommendedAdapters, scoutRetired } from './local/routing.js';
 import { RegistrySync, REGISTRY_INTERVAL } from './local/registry.js';
 import { registryRoutes } from './registry-routes.js';
@@ -38,7 +39,7 @@ it.each([
 
 it('validates OpenCode model pools without ambiguous scalar settings', () => {
   const opencode = bundledRegistry.adapters.find(adapter => adapter.id === 'opencode')!;
-  expect(opencode.models).toEqual(['deepseek-v4.1-flash-free', 'glm-5.3-flash-free', 'big-pickle']);
+  expect(opencode.models).toEqual(['deepseek-v4.1-flash-free', 'big-pickle']);
   for (const invalid of [[], [''], ['big-pickle', 'big-pickle'], [123], ['valid', null]]) {
     expect(() => validateRegistry({ ...bundledRegistry, adapters: [{ ...opencode, models: invalid }] })).toThrow();
   }
@@ -196,4 +197,31 @@ it('accepts absent, empty and 100 valid candidates without changing their fields
   const candidates = Array.from({ length: 100 }, (_, i) => ({ ...validCandidate, id: `candidate-${i}`,
     name: 'New provider', models: ['free-model'], docs: 'https://newco.example/docs', notes: 'Free tier.' }));
   expect(validateRegistry({ ...withoutCandidates, candidates }).candidates).toEqual(candidates);
+});
+
+it('keeps no active bundled promotional adapter past its configured expiry', () => {
+  const now = Date.now();
+  expect(bundledRegistry.adapters.some(adapter => adapter.id === 'fikra' && adapter.status !== 'inactive')).toBe(false);
+  for (const adapter of bundledRegistry.adapters) {
+    if (adapter.status === 'inactive') continue;
+    const promo = PROMOTIONAL_PROVIDERS[adapter.id as keyof typeof PROMOTIONAL_PROVIDERS];
+    if (!promo) continue;
+    expect(Date.parse(promo.expires), `${adapter.id} expired at ${promo.expires}`).toBeGreaterThan(now);
+  }
+});
+
+it('allows image modality for shipped adapters that explicitly support image input while locking text-only ones', () => {
+  const kilo = bundledRegistry.adapters.find(adapter => adapter.id === 'kilo')!;
+  expect(adapterErrors({ ...kilo, modalities: ['text', 'image'] })).toEqual([expect.objectContaining({ field: 'modalities' })]);
+  imageAdapters.add('kilo');
+  try {
+    expect(adapterErrors({ ...kilo, modalities: ['text', 'image'] })).toEqual([]);
+    const updated = validateRegistry({
+      ...bundledRegistry,
+      adapters: bundledRegistry.adapters.map(a => a.id === 'kilo' ? { ...a, modalities: ['text', 'image'] as ('text' | 'image')[] } : a)
+    });
+    expect(updated.adapters.find(a => a.id === 'kilo')?.modalities).toEqual(['text', 'image']);
+  } finally {
+    imageAdapters.delete('kilo');
+  }
 });

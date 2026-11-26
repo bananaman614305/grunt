@@ -237,6 +237,7 @@ export class Nous implements Source {
   constructor(private readonly options: { directory?: string; env?: NodeJS.ProcessEnv; loadGrant?: () => Promise<FreeApiGrant>; fetcher?: typeof fetch } = {}) {
     this.directory = options.directory ?? configRoot(options.env);
     this.source = new FreeApi('nous', {
+      allowStream: false,
       loadGrant: () => this.grant(),
       fetcher: options.fetcher ?? (async (input, init) => {
         if (String(input) !== completionURL || init?.method !== 'POST' || typeof init.body !== 'string' || !init.signal) {

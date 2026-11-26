@@ -123,7 +123,7 @@ function pass(ids: string[], opened: number, succeeds: (id: string) => boolean) 
 }
 
 it(`stops at N = ${MAX_OPEN_ROUTES} open routes when the registry lists more`, async () => {
-  const ids = ['tokenharbor', 'runcrate', 'beatapi', 'zro', 'kenari', 'numes', 'goedel', 'darus', 'fikra', 'openference'];
+  const ids = ['tokenharbor', 'runcrate', 'beatapi', 'zro', 'kenari', 'numes', 'goedel', 'darus', 'openference', 'aperture-ai', 'millionseek', 'livekit'];
   const run = pass(ids, 2, () => true);
   const recovery = new SourceRecovery({ directory: await consented(ids), ...run.options });
   recovery.trigger(); await finished(recovery); await recovery.close();
@@ -131,7 +131,7 @@ it(`stops at N = ${MAX_OPEN_ROUTES} open routes when the registry lists more`, a
 });
 
 it('lets the first route that signs up drive the rest, and makes at most N attempts per pass', async () => {
-  const ids = ['tokenharbor', 'runcrate', 'beatapi', 'zro', 'kenari', 'numes', 'goedel', 'darus'];
+  const ids = ['tokenharbor', 'runcrate', 'beatapi', 'zro', 'kenari', 'numes', 'goedel', 'darus', 'openference', 'aperture-ai', 'millionseek', 'livekit'];
   const run = pass(ids, 0, id => id === 'runcrate');
   const recovery = new SourceRecovery({ directory: await consented(ids), ...run.options });
   recovery.trigger(); await finished(recovery); await recovery.close();
@@ -139,14 +139,14 @@ it('lets the first route that signs up drive the rest, and makes at most N attem
 });
 
 it('moves last pass\'s failed signups to the end so they cannot starve the rest', async () => {
-  const ids = ['tokenharbor', 'runcrate', 'beatapi', 'zro', 'kenari', 'numes', 'goedel', 'darus'];
+  const ids = ['tokenharbor', 'runcrate', 'beatapi', 'zro', 'kenari', 'numes', 'goedel', 'darus', 'openference', 'aperture-ai', 'millionseek', 'livekit'];
   const run = pass(ids, 0, () => false);
   const recovery = new SourceRecovery({ directory: await consented(ids), ...run.options });
   recovery.trigger(); await finished(recovery);
   expect(run.order).toHaveLength(MAX_OPEN_ROUTES);
   recovery.trigger(); await finished(recovery);
   expect(run.order).toHaveLength(2 * MAX_OPEN_ROUTES);
-  expect(run.order.slice(MAX_OPEN_ROUTES, MAX_OPEN_ROUTES + 2).map(entry => entry.id)).toEqual(['goedel', 'darus']);
+  expect(run.order.slice(MAX_OPEN_ROUTES, MAX_OPEN_ROUTES + 2).map(entry => entry.id)).toEqual(['millionseek', 'livekit']);
   await recovery.close();
 });
 

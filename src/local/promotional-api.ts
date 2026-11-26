@@ -5,7 +5,7 @@ import type { SafeDiagnosticMetadata } from './diagnostics.js';
 import { readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
 import type { FreeApiGrant } from './free-api.js';
 import { nousQuotaDelay, readQuotaError } from './quota-timing.js';
-import { completionEnding, withEnding, lengthLimited, truncatedCompletion, SourceError } from './source.js';
+import { completionEnding, emitStreamText, withEnding, lengthLimited, truncatedCompletion, SourceError } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 
 export const PROMOTIONAL_PROVIDERS = {
@@ -112,7 +112,7 @@ export class PromotionalApi implements Source {
         throw new SourceError(response.status === 401 ? 'logged_out' : [402, 429].includes(response.status) ? 'quota' : response.status === 403 ? 'refused' : 'upstream',
           `${this.id} returned HTTP ${response.status}`, retry, undefined, { httpStatus: response.status, transport: 'http', httpMethod: 'POST', endpointLabel: 'chat.completions' });
       }
-      if (this.id === 'openference') return await readPromotionalStream(response, this.spec.model, signal, { ...(progress ? { progress } : {}), failure: reason => { completionFailure = reason; }, cleanup: () => {
+      if (this.id === 'openference') return await readPromotionalStream(response, this.spec.model, signal, { ...(progress ? { progress } : {}), ...(request.stream ? { text: delta => emitStreamText(delta) } : {}), failure: reason => { completionFailure = reason; }, cleanup: () => {
         recordTransport({ source: this.id, outcome: 'failed', transport: 'http', httpMethod: 'POST', endpointLabel: 'chat.completions',
           httpStatus: response.status, failureReason: 'stream_cleanup' });
       } });
@@ -154,9 +154,9 @@ function completion(text: string, calls: ToolCall[], usage: Record<string, unkno
 // SSE is transport even when the harness requests a non-streamed completion.
 // Bound memory, assemble indexed function fragments, require an explicit finish,
 // and reject errors/truncated streams instead of passing partial output as success.
-export async function readPromotionalStream(response: Response, model: string, signal: AbortSignal, observe?: { failure(reason: FailureReason): void; cleanup(): void; progress?: () => void; result?: (usage: Record<string, unknown>) => void;
-  // Optional: receives each reasoning delta (one field per delta), and raises the 4 MiB stream cap for a long reply.
-  reasoning?: (delta: string) => void; maxBytes?: number }): Promise<Completion> {
+export async function readPromotionalStream(response: Response, model: string | undefined, signal: AbortSignal, observe?: { failure(reason: FailureReason): void; cleanup(): void; progress?: () => void; result?: (usage: Record<string, unknown>) => void;
+  // Optional: receives each reasoning or text delta, custom model verification, relaxed finish/tool checks, and raises the 4 MiB stream cap for a long reply.
+  reasoning?: (delta: string) => void; text?: (delta: string) => void; verifyModel?: (model: unknown) => boolean; strictToolArgs?: boolean; allowAnyFinishReason?: boolean; maxBytes?: number }): Promise<Completion> {
   // Observers receive fixed reason codes only. Preserve thrown values (even
   // non-Error values), cancellation priority and all existing acceptance rules.
   const tagged = (error: unknown, reason: FailureReason) => {
@@ -168,11 +168,28 @@ export async function readPromotionalStream(response: Response, model: string, s
     try { return work(); } catch (error) { throw tagged(error, reason); }
   };
   if (!response.headers.get('content-type')?.includes('text/event-stream') || !response.body) throw invalid('stream_format', 'Expected SSE');
+  const checkModel = observe?.verifyModel ?? (model !== undefined ? (value: unknown) => value === model : undefined);
+  const requireModel = checkModel !== undefined;
   const reader = observed('stream_read', () => response.body!.getReader()), decoder = new TextDecoder();
-  let pending = '', text = '', size = 0, finished = false, done = false, seenModel = false;
+  let pending = '', text = '', bufferedText = '', size = 0, finished = false, done = false, seenModel = false;
   let usage: Record<string, unknown> = {};
   let truncated = false, finishReason: unknown;
   const calls = new Map<number, ToolCall>();
+  const flushText = (delta: string) => {
+    if (!observe?.text) return;
+    if (!requireModel || seenModel) {
+      if (bufferedText) {
+        const queued = bufferedText;
+        bufferedText = '';
+        try { observe.text(queued); } catch { /* Observation cannot alter stream validation. */ }
+      }
+      if (delta) {
+        try { observe.text(delta); } catch { /* Observation cannot alter stream validation. */ }
+      }
+    } else if (delta) {
+      bufferedText += delta;
+    }
+  };
   const event = (raw: string) => {
     const data = raw.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
     if (!data) return;
@@ -180,7 +197,11 @@ export async function readPromotionalStream(response: Response, model: string, s
     if (done) throw invalid('stream_format', 'Event after DONE');
     const chunk = object(observed('response_json', () => JSON.parse(data)));
     if (chunk.error) throw invalid('stream_format', 'Stream failed');
-    if (chunk.model !== undefined) { if (chunk.model !== model) throw invalid('completion_model', 'Unexpected model'); seenModel = true; }
+    if (chunk.model !== undefined) {
+      if (checkModel && !checkModel(chunk.model)) throw invalid('completion_model', 'Unexpected model');
+      seenModel = true;
+      if (bufferedText) flushText('');
+    }
     if (chunk.usage) usage = object(chunk.usage);
     // A usage-only chunk may omit `choices`; any other chunk must carry them.
     if (chunk.choices === undefined && chunk.usage) return;
@@ -200,6 +221,7 @@ export async function readPromotionalStream(response: Response, model: string, s
         if (finished || typeof delta.content !== 'string') throw invalid('response_content', 'Invalid stream content');
         text += delta.content;
         if (delta.content.trim()) progressing = true;
+        if (delta.content.length > 0) flushText(delta.content);
       }
       if (delta.tool_calls !== undefined) {
         if (finished || !Array.isArray(delta.tool_calls)) throw invalid('response_tools', 'Invalid tool fragments');
@@ -214,12 +236,12 @@ export async function readPromotionalStream(response: Response, model: string, s
         }
       }
       if (choice.finish_reason !== null && choice.finish_reason !== undefined) {
-        if (!['stop', 'tool_calls', 'length', 'max_tokens'].includes(String(choice.finish_reason))) throw invalid('stream_format', 'Invalid stream finish');
+        if (!observe?.allowAnyFinishReason && !['stop', 'tool_calls', 'length', 'max_tokens'].includes(String(choice.finish_reason))) throw invalid('stream_format', 'Invalid stream finish');
         truncated = lengthLimited(choice.finish_reason); finishReason = choice.finish_reason;
         finished = true;
       }
     }
-    if (seenModel && progressing) { try { observe?.progress?.(); } catch { /* Observation cannot alter stream validation. */ } }
+    if ((!requireModel || seenModel) && progressing) { try { observe?.progress?.(); } catch { /* Observation cannot alter stream validation. */ } }
   };
   const cleanupFailed = () => { try { observe?.cleanup(); } catch { /* Observation cannot change cleanup. */ } };
   const abort = () => { void reader.cancel().catch(cleanupFailed); };
@@ -239,8 +261,8 @@ export async function readPromotionalStream(response: Response, model: string, s
       while ((boundary = pending.indexOf('\n\n')) !== -1) { event(pending.slice(0, boundary)); pending = pending.slice(boundary + 2); }
     }
     const result = [...calls.entries()].sort(([a], [b]) => a - b).map(([, call]) => call);
-    if (!done || !finished || !seenModel) throw invalid('stream_incomplete', 'Incomplete stream');
-    if (!truncated && !validCalls(result)) throw invalid('response_tools', 'Incomplete stream');
+    if (!done || !finished || (requireModel && !seenModel)) throw invalid('stream_incomplete', 'Incomplete stream');
+    if (!truncated && observe?.strictToolArgs !== false && !validCalls(result)) throw invalid('response_tools', 'Incomplete stream');
     if (!truncated && !text && !result.length) throw invalid('stream_incomplete', 'Incomplete stream');
     signal.throwIfAborted();
     // The observer may reject usage it cannot accept; it never changes the reply.

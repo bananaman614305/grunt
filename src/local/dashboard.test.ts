@@ -190,7 +190,10 @@ it('finds the installed port safely and lets explicit configuration override a b
 it('derives pending approvals from daemon snapshots and rejects out-of-range timestamps', () => {
   const data = snapshot(); data.sources[2]!.state = 'approval';
   const view = renderDashboard(data, { width: 80, now });
-  expect(view).toContain('1 action needed'); expect(view).toContain('Run usegrunt setup');
+  expect(view).toContain('1 action needed'); expect(view).toContain('Run usegrunt setup'); expect(view).toContain('usegrunt add perch');
+  data.sources[3]!.state = 'approval';
+  const multi = renderDashboard(data, { width: 80, now });
+  expect(multi).toContain('2 actions needed'); expect(multi).toContain('usegrunt add <provider>');
   data.sources[0]!.lastSuccessAt = Number.MAX_VALUE;
   expect(() => parseStatus(data)).toThrow('Invalid local source status');
 });

@@ -229,3 +229,19 @@ it('keeps an active setup probe verifying until its successful reply is admitted
   sources.pending.delete('kilo'); sources.verifying.delete('kilo');
   expect(sources.status().sources[0]).toMatchObject({ state: 'ready', active: 0 });
 });
+
+it('surfaces providers blocked on human verification as approval state with a usegrunt add resume hint', async () => {
+  const source = fake('darus');
+  vi.mocked(source.available).mockResolvedValue(false);
+  const sources = new Sources([source], { registry: () => bundledRegistry });
+  try {
+    await sources.available(source);
+    sources.setSetupFailure('darus', 'needs human verification; Cloudflare challenge');
+    const row = sources.status().sources.find(item => item.id === 'darus')!;
+    expect(row.state).toBe('approval');
+    expect(row.detail).toContain('browser verification required; run usegrunt add darus');
+    expect(row.detail).not.toContain('Cloudflare');
+    sources.healthy('darus');
+    expect(sources.status().sources.find(item => item.id === 'darus')?.state).toBe('available');
+  } finally { await sources.close(); }
+});

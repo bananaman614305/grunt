@@ -342,7 +342,7 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
       const local = housekeeping(request);
       if (local !== undefined) { const context = currentDiagnosticContext(); if (context) context.local = true; }
       options.log?.(`${request.cwd}; cwd=${request.cwdSource}; classification=${local === undefined ? 'user' : 'housekeeping'}`);
-      const complete = (signal: AbortSignal): Promise<Completion> => local === undefined ? sources.complete(request, signal) : Promise.resolve({ text: local });
+      const complete = (signal: AbortSignal, onStreamText?: (source: string, text: string) => void): Promise<Completion> => local === undefined ? sources.complete(request, signal, onStreamText) : Promise.resolve({ text: local });
       const controller = new AbortController();
       const signal = AbortSignal.any([c.req.raw.signal, controller.signal]);
       const failure = (e: unknown) => {
@@ -351,9 +351,153 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
         return { err, body: { ...(api === 'messages' ? { type: 'error' } : {}), error: { type: invalid ? 'invalid_request_error' : api === 'messages' ? 'api_error' : 'server_error', code: err.code, message: err.message } } };
       };
       try {
-        // Agent adapters return final text, not incremental tokens. Resolve routing
-        // before committing SSE headers so exhausted routes still return HTTP 429.
         if (request.cwdSource === 'scratch') await mkdir(request.cwd, { recursive: true });
+        if (request.stream && local === undefined) {
+          // Wait until either the first verified text delta arrives (committing SSE headers
+          // so tokens stream incrementally) or the completion settles/fails (preserving HTTP
+          // 429/5xx failover before the first delta and non-streaming/tool-call fallback).
+          const queue: string[] = [];
+          let wake: (() => void) | undefined;
+          let startedSource: string | undefined;
+          let streamStarted = false;
+          let done = false;
+          let completionResult: Completion | undefined;
+          let completionError: unknown;
+          let resolveReady!: () => void;
+          const ready = new Promise<void>(resolve => { resolveReady = resolve; });
+          const notify = () => { wake?.(); wake = undefined; };
+          const onText = (sourceId: string, delta: string) => {
+            if (!delta) return;
+            if (!streamStarted) {
+              streamStarted = true;
+              startedSource = sourceId;
+              queue.push(delta);
+              resolveReady();
+            } else {
+              queue.push(delta);
+              notify();
+            }
+          };
+          void complete(signal, onText).then(
+            result => { completionResult = result; done = true; resolveReady(); notify(); },
+            error => { completionError = error; done = true; resolveReady(); notify(); }
+          );
+          await ready;
+          if (!streamStarted) {
+            if (completionError !== undefined) throw completionError;
+            signal.throwIfAborted();
+            const completion = completionResult!;
+            const context = currentDiagnosticContext();
+            if (context) context.responseBytes = Buffer.byteLength(completion.text);
+            const source = answeredBy.get(completion);
+            if (source) c.header('X-Grunt-Source', source);
+            if (sources.preparing.size) c.header('X-Grunt-Preparing', [...sources.preparing].join(','));
+            const result = encode(completion, request.model, api, request.responseNamespaces);
+            return streamSSE(c, async stream => {
+              stream.onAbort(() => controller.abort());
+              for (const event of events(result, api, { includeUsage })) await stream.writeSSE(event);
+            });
+          }
+          if (startedSource) c.header('X-Grunt-Source', startedSource);
+          if (sources.preparing.size) c.header('X-Grunt-Preparing', [...sources.preparing].join(','));
+          const context = currentDiagnosticContext();
+          return streamSSE(c, async stream => {
+            stream.onAbort(() => { controller.abort(); notify(); });
+            const nextDelta = async (): Promise<string | undefined> => {
+              while (!queue.length && !done && !signal.aborted) {
+                await new Promise<void>(resolve => { wake = resolve; });
+              }
+              return queue.shift();
+            };
+            const id = randomUUID(), created = Math.floor(Date.now() / 1000);
+            if (api === 'chat') {
+              const base = { id: `chatcmpl-${id}`, object: 'chat.completion.chunk', created, model: request.model };
+              const writeChunk = (delta: Obj, finish: unknown = null) => stream.writeSSE({
+                data: JSON.stringify({ ...base, choices: [{ index: 0, delta, finish_reason: finish }], ...(includeUsage ? { usage: null } : {}) })
+              });
+              await writeChunk({ role: 'assistant', content: '' });
+              for (let delta = await nextDelta(); delta !== undefined; delta = await nextDelta()) {
+                await writeChunk({ content: delta });
+              }
+              if (signal.aborted || completionError !== undefined || !completionResult) return;
+              if (context) context.responseBytes = Buffer.byteLength(completionResult.text);
+              for (let index = 0; index < (completionResult.calls?.length ?? 0); index++) {
+                await writeChunk({ tool_calls: [{ ...completionResult.calls![index]!, index }] });
+              }
+              const finishReason = completionResult.finishReason ?? (completionResult.calls?.length ? 'tool_calls' : 'stop');
+              await writeChunk({}, finishReason);
+              if (includeUsage) {
+                const usage = measuredChatUsage(completionResult.inputTokens, completionResult.outputTokens);
+                await stream.writeSSE({ data: JSON.stringify({ ...base, choices: [], usage }) });
+              }
+              await stream.writeSSE({ data: '[DONE]' });
+            } else if (api === 'messages') {
+              const msgId = `msg_${id}`;
+              await stream.writeSSE({ event: 'message_start', data: JSON.stringify({ type: 'message_start', message: { id: msgId, type: 'message', role: 'assistant', model: request.model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } }) });
+              await stream.writeSSE({ event: 'content_block_start', data: JSON.stringify({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }) });
+              for (let delta = await nextDelta(); delta !== undefined; delta = await nextDelta()) {
+                await stream.writeSSE({ event: 'content_block_delta', data: JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: delta } }) });
+              }
+              if (signal.aborted) return;
+              if (completionError !== undefined || !completionResult) {
+                const { err } = failure(completionError);
+                await stream.writeSSE({ event: 'error', data: JSON.stringify({ type: 'error', error: { type: 'api_error', message: err.message } }) });
+                return;
+              }
+              if (context) context.responseBytes = Buffer.byteLength(completionResult.text);
+              await stream.writeSSE({ event: 'content_block_stop', data: JSON.stringify({ type: 'content_block_stop', index: 0 }) });
+              for (let i = 0; i < (completionResult.calls?.length ?? 0); i++) {
+                const call = completionResult.calls![i]!, index = i + 1;
+                await stream.writeSSE({ event: 'content_block_start', data: JSON.stringify({ type: 'content_block_start', index, content_block: { type: 'tool_use', id: call.id, name: call.function.name, input: {} } }) });
+                await stream.writeSSE({ event: 'content_block_delta', data: JSON.stringify({ type: 'content_block_delta', index, delta: { type: 'input_json_delta', partial_json: JSON.stringify(toolInput(call.function.arguments)) } }) });
+                await stream.writeSSE({ event: 'content_block_stop', data: JSON.stringify({ type: 'content_block_stop', index }) });
+              }
+              const stopReason = completionResult.finishReason === 'length' ? 'max_tokens' : completionResult.calls?.length ? 'tool_use' : 'end_turn';
+              await stream.writeSSE({ event: 'message_delta', data: JSON.stringify({ type: 'message_delta', delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: completionResult.outputTokens ?? 0 } }) });
+              await stream.writeSSE({ event: 'message_stop', data: JSON.stringify({ type: 'message_stop' }) });
+            } else {
+              let seq = 0;
+              const respId = `resp_${id}`, msgId = `msg_${id}`;
+              const push = (event: string, data: Obj) => stream.writeSSE({ event, data: JSON.stringify({ ...data, sequence_number: seq++ }) });
+              const inProgress = { id: respId, object: 'response', created_at: created, status: 'in_progress', error: null, incomplete_details: null, model: request.model, output: [], usage: null, parallel_tool_calls: true, tools: [], tool_choice: 'auto' };
+              await push('response.created', { type: 'response.created', response: inProgress });
+              await push('response.in_progress', { type: 'response.in_progress', response: inProgress });
+              await push('response.output_item.added', { type: 'response.output_item.added', output_index: 0, item: { id: msgId, type: 'message', status: 'in_progress', role: 'assistant', content: [] } });
+              await push('response.content_part.added', { type: 'response.content_part.added', item_id: msgId, output_index: 0, content_index: 0, part: { type: 'output_text', text: '', annotations: [] } });
+              for (let delta = await nextDelta(); delta !== undefined; delta = await nextDelta()) {
+                await push('response.output_text.delta', { type: 'response.output_text.delta', item_id: msgId, output_index: 0, content_index: 0, delta, logprobs: [] });
+              }
+              if (signal.aborted) return;
+              if (completionError !== undefined || !completionResult) {
+                const { err } = failure(completionError);
+                await push('error', { type: 'error', code: err.code, message: err.message });
+                return;
+              }
+              if (context) context.responseBytes = Buffer.byteLength(completionResult.text);
+              const status = completionResult.finishReason === 'length' ? 'incomplete' : 'completed';
+              const part = { type: 'output_text', text: completionResult.text, annotations: [] };
+              const msgItem = { id: msgId, type: 'message', status, role: 'assistant', content: [part] };
+              await push('response.output_text.done', { type: 'response.output_text.done', item_id: msgId, output_index: 0, content_index: 0, text: completionResult.text, logprobs: [] });
+              await push('response.content_part.done', { type: 'response.content_part.done', item_id: msgId, output_index: 0, content_index: 0, part });
+              await push('response.output_item.done', { type: 'response.output_item.done', output_index: 0, item: msgItem });
+              const outputItems: Obj[] = [msgItem];
+              for (let i = 0; i < (completionResult.calls?.length ?? 0); i++) {
+                const call = completionResult.calls![i]!, outputIndex = i + 1;
+                const fcItem: Obj = { id: `fc_${call.id}`, type: 'function_call', status, call_id: call.id, ...(request.responseNamespaces?.get(call.function.name) ?? { name: call.function.name }), arguments: call.function.arguments };
+                outputItems.push(fcItem);
+                await push('response.output_item.added', { type: 'response.output_item.added', output_index: outputIndex, item: { ...fcItem, status: 'in_progress', arguments: '' } });
+                const common = { item_id: fcItem.id, output_index: outputIndex, content_index: 0 };
+                await push('response.function_call_arguments.delta', { type: 'response.function_call_arguments.delta', ...common, delta: call.function.arguments });
+                await push('response.function_call_arguments.done', { type: 'response.function_call_arguments.done', ...common, arguments: call.function.arguments });
+                await push('response.output_item.done', { type: 'response.output_item.done', output_index: outputIndex, item: fcItem });
+              }
+              const input = completionResult.inputTokens ?? 0, output = completionResult.outputTokens ?? 0;
+              const finalResponse = { ...inProgress, status, incomplete_details: status === 'incomplete' ? { reason: 'max_output_tokens' } : null, output: outputItems, usage: { input_tokens: input, output_tokens: output, total_tokens: input + output, input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } } };
+              const terminal = status === 'incomplete' ? 'response.incomplete' : 'response.completed';
+              await push(terminal, { type: terminal, response: finalResponse });
+            }
+          });
+        }
         const completion = await complete(signal);
         signal.throwIfAborted();
         const context = currentDiagnosticContext();

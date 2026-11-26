@@ -5,7 +5,7 @@ import { access, lstat, mkdir, mkdtemp, open, rename, rm, writeFile } from 'node
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { FreeApi } from './free-api.js';
+import { FreeApi, isDeepSeekV41Model } from './free-api.js';
 import { verifiedDeepSeekFetch } from './deepseek-response.js';
 import { SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
@@ -14,6 +14,8 @@ export const LIVEKIT_CLI_VERSION = '2.19.4';
 export const LIVEKIT_DEEPSEEK = 'deepseek-ai/deepseek-v4.1-flash';
 export const LIVEKIT_GATEWAY = 'https://agent-gateway.livekit.cloud';
 export const LIVEKIT_RECEIPT_MAX_AGE_MS = 30 * 86400000;
+// Minted inference tokens are valid for 10m; reuse in memory for 8m and clear on 401/close.
+export const LIVEKIT_TOKEN_TTL_MS = 8 * 60 * 1000;
 export interface LiveKitFreeBuildReceipt {
   version: 1;
   plan: 'Build';
@@ -135,7 +137,9 @@ export class LiveKit implements Source {
   readonly supportsFunctionTools = true;
   private shutdown = new AbortController();
   private pending = new Set<Promise<unknown>>();
-  constructor(private options: { directory?: string; binary?: string; fetcher?: typeof fetch; timeout?: number; nativeDirectory?: string } = {}) {}
+  private cachedToken: { token: string; key: string; expiresAt: number } | undefined;
+  constructor(private options: { directory?: string; binary?: string; fetcher?: typeof fetch; timeout?: number; nativeDirectory?: string; now?: () => number } = {}) {}
+  private get now() { return (this.options.now ?? Date.now)(); }
   private async ready() {
     const paths = livekitPaths(this.options.directory, this.options.nativeDirectory);
     try {
@@ -144,19 +148,20 @@ export class LiveKit implements Source {
       await access(this.options.binary ?? paths.binary, constants.X_OK);
       return { paths, receipt };
     } catch (error) {
+      this.cachedToken = undefined;
       if (error instanceof SourceError) throw error;
       throw new SourceError('logged_out', 'LiveKit native Free Build login is unavailable; rerun usegrunt setup');
     }
   }
   async available() { try { await this.ready(); return !this.shutdown.signal.aborted; } catch { return false; } }
   async healthCheck() { return this.available(); }
-  async complete(request: ModelRequest, caller: AbortSignal) {
+  async complete(request: ModelRequest, caller: AbortSignal, output?: () => void) {
     caller.throwIfAborted();
-    const task = this.completeOnce(request, caller); this.pending.add(task);
+    const task = this.completeOnce(request, caller, output); this.pending.add(task);
     try { return await task; }
     finally { this.pending.delete(task); }
   }
-  private async completeOnce(request: ModelRequest, caller: AbortSignal) {
+  private async completeOnce(request: ModelRequest, caller: AbortSignal, output?: () => void) {
     const signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(this.options.timeout ?? 180000)]);
     let temporary: string | undefined;
     try {
@@ -164,16 +169,27 @@ export class LiveKit implements Source {
       if (request.imageInput) throw new SourceError('upstream', 'LiveKit requires text input');
       if (request.tools.some(tool => tool.type !== 'function')) throw new SourceError('upstream', 'LiveKit requires function tools');
       const { paths, receipt } = await this.ready(); signal.throwIfAborted();
-      await privateDirectory(paths.work, true);
-      temporary = await mkdtemp(join(paths.work, '.token-'));
-      await writeFile(join(temporary, 'livekit.toml'), '', { mode: 0o600, flag: 'wx' });
-      const token = await inferenceToken(this.options.binary ?? paths.binary, receipt, temporary, signal);
+      const cacheKey = JSON.stringify([receipt.projectSelector, receipt.projectId, receipt.projectURL, receipt.checkedAt]);
+      let token: string;
+      if (this.cachedToken && this.cachedToken.key === cacheKey && this.now < this.cachedToken.expiresAt) {
+        token = this.cachedToken.token;
+      } else {
+        this.cachedToken = undefined;
+        await privateDirectory(paths.work, true);
+        temporary = await mkdtemp(join(paths.work, '.token-'));
+        await writeFile(join(temporary, 'livekit.toml'), '', { mode: 0o600, flag: 'wx' });
+        token = await inferenceToken(this.options.binary ?? paths.binary, receipt, temporary, signal);
+        this.cachedToken = { token, key: cacheKey, expiresAt: this.now + LIVEKIT_TOKEN_TTL_MS };
+      }
       signal.throwIfAborted();
-      const source = new FreeApi('livekit', { fetcher: verifiedDeepSeekFetch(this.options.fetcher), timeout: this.options.timeout ?? 180000,
+      const source = new FreeApi('livekit', { fetcher: verifiedDeepSeekFetch(this.options.fetcher), verifyModel: isDeepSeekV41Model, timeout: this.options.timeout ?? 180000,
         loadGrant: async () => ({ base_url: LIVEKIT_GATEWAY, token }) });
-      try { return await source.complete({ ...request, model: this.id }, signal); }
+      try { return await source.complete({ ...request, model: this.id }, signal, output); }
       finally { await source.close(); }
     } catch (error) {
+      if (error instanceof SourceError && (error.code === 'logged_out' || error.diagnostics?.httpStatus === 401)) {
+        this.cachedToken = undefined;
+      }
       caller.throwIfAborted();
       if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'LiveKit request cancelled during shutdown');
       if (signal.aborted) throw new SourceError('timeout', 'LiveKit request timed out');
@@ -181,5 +197,5 @@ export class LiveKit implements Source {
       throw new SourceError('upstream', 'LiveKit request failed; rerun usegrunt setup');
     } finally { if (temporary) await rm(temporary, { recursive: true, force: true }); }
   }
-  async close() { this.shutdown.abort(); await Promise.allSettled([...this.pending]); }
+  async close() { this.cachedToken = undefined; this.shutdown.abort(); await Promise.allSettled([...this.pending]); }
 }

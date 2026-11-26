@@ -1,4 +1,5 @@
 export type ErrorCode = 'not_installed' | 'logged_out' | 'quota' | 'timeout' | 'upstream' | 'refused' | 'cancelled';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { knownAdapters } from '../registry.js';
 import { providerQuotaPolicy, scheduledQuotaRefill } from './quota-policy.js';
 import type { SellerQuota } from './quota-policy.js';
@@ -134,6 +135,36 @@ export function observeRequestInput(request: ModelRequest) {
 }
 // Names the adapter that produced each completion; setup checks it against the requested adapter.
 export const answeredBy = new WeakMap<Completion, string>();
+// Per-request and per-attempt incremental text streaming context. Only adapters
+// that have verified the upstream HTTP 200 and model identity call emitStreamText;
+// tool-call arguments stay buffered until guardToolCalls validates them.
+export type StreamTextObserver = (source: string, text: string) => void;
+interface AttemptStreamContext { source: string; observer: StreamTextObserver; emitted: boolean }
+const streamObserverStorage = new AsyncLocalStorage<StreamTextObserver>();
+const attemptStreamStorage = new AsyncLocalStorage<AttemptStreamContext>();
+export function emitStreamText(text: string): boolean {
+  if (!text) return false;
+  const attempt = attemptStreamStorage.getStore();
+  if (!attempt) return false;
+  attempt.emitted = true;
+  attempt.observer(attempt.source, text);
+  return true;
+}
+export function hasEmittedStreamText(): boolean {
+  return attemptStreamStorage.getStore()?.emitted === true;
+}
+export async function withAttemptStream<T>(source: string, work: () => Promise<T>): Promise<T> {
+  const observer = streamObserverStorage.getStore();
+  if (!observer) return work();
+  const attempt: AttemptStreamContext = { source, observer, emitted: false };
+  try { return await attemptStreamStorage.run(attempt, work); }
+  catch (error) {
+    if (attempt.emitted && !(error instanceof Error && error.name === 'AbortError')) {
+      throw preventReplay(error, error instanceof Error ? error.message : 'Stream failed after output started');
+    }
+    throw error;
+  }
+}
 export interface QuotaWindow { startedAt: number; resetAt: number }
 // A slow upstream failure (HTTP 502/503/504/524, connection reset, stream cut
 // short, or an output deadline) with no Retry-After hint benches the source for
@@ -247,7 +278,7 @@ export class Sources {
     if (this.retired(source.id)) throw new SourceError('not_installed', `${source.id} routing is retired`);
     const timed: Source = { id: source.id, available: () => source.available(), complete: (r, s, output) => this.firstOutput(source, r, s, output) };
     try {
-      const result = await this.observation.complete(timed, request, signal);
+      const result = await withAttemptStream(source.id, () => this.observation.complete(timed, request, signal));
       signal.throwIfAborted();
       return result;
     }
@@ -527,11 +558,11 @@ export class Sources {
     const toolsRequired = !named && needsFunctionTools(request);
     return this.sources.some(source => (!named || source.id === request.model) && (!toolsRequired || toolCapable(source)) && !this.unrouted(source.id) && router.imageUsable(source.id));
   }
-  async complete(request: ModelRequest, signal: AbortSignal): Promise<Completion> {
+  async complete(request: ModelRequest, signal: AbortSignal, onStreamText?: StreamTextObserver): Promise<Completion> {
     const parent = currentDiagnosticContext();
     const actor = parent?.actor ? { actor: parent.actor } : {};
     const context: DiagnosticContext = { ...actor, requestId: parent?.requestId ?? randomUUID(), kind: this.verifying.has(request.model) ? 'setup' : parent?.kind ?? 'user', ...(this.diagnostics ? { sink: this.diagnostics } : {}) };
-    return withDiagnosticContext(context, async () => {
+    const run = () => withDiagnosticContext(context, async () => {
       const skipped = new Map<string, string>();
       const started = Date.now(), startedMono = performance.now(), base = { version: 1 as const, requestId: context.requestId, kind: context.kind };
       if (!parent?.requestRecorded) {
@@ -564,6 +595,7 @@ export class Sources {
         throw error;
       }
     });
+    return onStreamText ? streamObserverStorage.run(onStreamText, run) : run();
   }
   private async route(request: ModelRequest, signal: AbortSignal, skipped: Map<string, string>): Promise<Completion> {
     signal.throwIfAborted();

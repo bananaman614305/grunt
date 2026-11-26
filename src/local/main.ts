@@ -52,7 +52,7 @@ import { RouteFeedback } from './route-feedback.js';
 import { isDeepStrictEqual } from 'node:util';
 import { configDir } from './wizard.js';
 import { createSourceMaintenance } from './runtime-maintenance.js';
-import { SourceRecovery } from './recovery.js';
+import { MAX_OPEN_ROUTES, SourceRecovery, codingCapableRoute } from './recovery.js';
 import { readKiloRoute, readSetupSession } from './setup-session.js';
 import { DiagnosticsStore } from './diagnostics.js';
 import { installedRuntimeVersion } from './runtime-version.js';
@@ -219,7 +219,8 @@ export function start(env = process.env) {
     catch (error) { return error instanceof SourceError && error.code === 'timeout' ? undefined : false; }
   };
   const live = async (source: Source) => await configuredAccess(source) === true && sources.openRoute(source.id);
-  const recovery = new SourceRecovery({ directory, registry: () => registry,
+  const maxOpenRoutes = positive(gruntEnv('MAX_OPEN_ROUTES', env), MAX_OPEN_ROUTES);
+  const recovery = new SourceRecovery({ directory, registry: () => registry, maxOpenRoutes,
     eligible: id => routable(id) && recommendedAdapters(registry).some(adapter => adapter.id === id),
     candidates: async () => {
       const ids: string[] = [];
@@ -229,7 +230,9 @@ export function start(env = process.env) {
       }
       return ids;
     },
-    open: async () => (await Promise.all(sources.sources.map(live))).filter(Boolean).length,
+    // Count only open coding-capable routes so non-tool agents (opencode) or
+    // public-only sources (freepi, goedel) do not starve coding slots.
+    open: async () => (await Promise.all(sources.sources.filter(source => codingCapableRoute(source, directory)).map(live))).filter(Boolean).length,
     // Driver candidates follow docs/router.md: a coding harness on model grunt,
     // which the router sends to the best open tool-capable route, then each free
     // model an installed harness CLI reaches on its own.

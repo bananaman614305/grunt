@@ -162,6 +162,7 @@ it.each([
   ['kenari', 'Grunt Free', 'kenari.id'],
   ['goedel', 'Grunt Free', 'api.goedelmachines.com'],
   ['fikra', 'Grunt Free', 'api.fikraapi.co.ke'],
+  ['openference', 'Grunt Free', 'api.openference.com'],
   ['darus', 'Grunt Free', 'gateway.darusalfatah.id'],
   ['aperture-ai', 'Grunt Free', 'www.aperture-ai.run'],
   ['100milionseek', 'Grunt Free', '100milionseek.top']

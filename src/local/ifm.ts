@@ -9,7 +9,7 @@ import type { FreeApiGrant } from './free-api.js';
 import { FreebuffTools } from './freebuff-tools.js';
 import { readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
 import { quotaRetryAfter, quotaSeconds } from './quota-timing.js';
-import { completionEnding, endingOf, withEnding, lengthLimited, truncatedCompletion, SourceError, requestRefusal } from './source.js';
+import { completionEnding, emitStreamText, endingOf, withEnding, lengthLimited, truncatedCompletion, SourceError, requestRefusal } from './source.js';
 import type { Completion, Message, ModelRequest, Source, ToolCall } from './source.js';
 
 export const IFM_MODEL = 'IFM/K2-Horizon-375B-A23B';
@@ -252,10 +252,14 @@ export class Ifm implements Source {
       if (served !== null && served !== IFM_MODEL) throw new Error('Unexpected model');
       let reply: Completion, reasoning: string | undefined;
       if (response.headers.get('content-type')?.includes('text/event-stream')) {
-        // Streaming is for liveness only: a long reasoning reply can take minutes, and each delta, reasoning included,
-        // keeps the first-output and idle deadlines satisfied. Grunt still hands the client one whole reply.
-        let thinking = '';
-        reply = await readPromotionalStream(response, IFM_MODEL, signal, { ...(progress ? { progress } : {}), failure: reason => { streamFailure ??= reason; }, cleanup: () => {},
+        let thinking = '', leading = true;
+        const onText = request.stream ? (delta: string) => {
+          const text = leading ? delta.replace(/^\n+/, '') : delta;
+          if (!text) return;
+          leading = false;
+          emitStreamText(text);
+        } : undefined;
+        reply = await readPromotionalStream(response, IFM_MODEL, signal, { ...(progress ? { progress } : {}), ...(onText ? { text: onText } : {}), failure: reason => { streamFailure ??= reason; }, cleanup: () => {},
           maxBytes: IFM_STREAM_BYTES, reasoning: delta => { if (thinking.length < IFM_REASONING_CHARS) thinking += delta; },
           // A stream without usage is not accepted: the token counts and the zero-charge check need it.
           result: usage => { if (!usable(usage)) throw new Error('Invalid completion'); } });
