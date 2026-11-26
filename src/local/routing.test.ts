@@ -1,6 +1,6 @@
 import { idleEvents } from './fixtures/opencode-events.js';
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdtemp, readFile, rm, writeFile, mkdir, copyFile, chmod } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -8,7 +8,6 @@ import { RequestError, Sources, replayTimeout, requestRefusal, SourceError } fro
 import { StickyRouter } from './routing.js';
 import type { ModelRequest, Source } from './source.js';
 import { bundledRegistry } from '../registry.js';
-import { Freebuff } from './freebuff.js';
 import { OpenCode } from './opencode.js';
 import { createLocalApp } from './api.js';
 // Router behavior is tested independently of the changing published pool and weights.
@@ -351,33 +350,22 @@ it('keeps actual OpenCode login bars through an unhealthy models check', async (
   await sources.models();
   expect(await run('fourth')).toEqual({ text: 'ready' });
 });
-it('does not hand off a native Freebuff turn with partial output and an ambiguous quota failure', async () => {
-  const cwd = await mkdtemp(join(tmpdir(), 'grunt-current-output-'));
-  try {
-    await copyFile(new URL('./fixtures/fake-freebuff.cjs', import.meta.url), join(cwd, 'freebuff')); await chmod(join(cwd, 'freebuff'), 0o755);
-    // The injected multiplexer never runs tmux; satisfy its availability check locally.
-    await writeFile(join(cwd, 'tmux'), '#!/bin/sh\nexit 99\n', { mode: 0o700 });
-    vi.stubEnv('PATH', `${cwd}:${process.env.PATH}`);
-    vi.stubEnv('GRUNT_TEST_DOCTOR_DELAY', '0');
-    vi.stubEnv('GRUNT_TEST_DOCTOR_ERROR', '');
-    const mux = { start: async (_id: string, _cwd: string, binary: string) => { expect(binary).toBe(join(cwd, 'freebuff')); }, stop: async () => {}, send: async (_id: string, prompt: string) => {
-      const dir = join(cwd, '.config/manicode/projects', cwd.split('/').at(-1)!, 'chats/current');
-      await mkdir(dir, { recursive: true });
-      await writeFile(join(dir, 'chat-messages.json'), JSON.stringify([{ variant: 'user', content: prompt }, { variant: 'ai', isComplete: false, blocks: [{ type: 'text', content: 'CURRENT PARTIAL WORK' }] }]));
-      await writeFile(join(dir, 'log.jsonl'), 'quota exhausted');
-    } };
-    const driver = new Freebuff({ home: cwd, mux, startup: 1, poll: 10 });
-    const next = source('kilo');
-    const legacyRegistry = { ...launchRegistry, adapters: launchRegistry.adapters.map(adapter => adapter.id === 'opencode'
-      ? { id: 'freebuff', kind: 'agent' as const, tier: 'stable' as const, weight: 0.5, modalities: ['text' as const], install: 'npm:freebuff' } : adapter) };
-    const sources = new Sources([driver, next], { registry: () => legacyRegistry, random: () => 0 });
-    // This test exercises an already-admitted native route's partial handoff,
-    // rather than racing its filesystem admission against a ready mock.
-    await sources.models();
-    await expect(sources.complete({ ...request, cwd }, AbortSignal.timeout(2000)))
-      .rejects.toMatchObject({ code: 'quota', output: 'CURRENT PARTIAL WORK', replay: 'unsafe' });
-    expect(next.complete).not.toHaveBeenCalled();
-  } finally { vi.unstubAllEnvs(); await rm(cwd, { recursive: true, force: true }); }
+it('does not hand off a turn with partial output and an unsafe-replay quota failure', async () => {
+  const failing: Source = {
+    id: 'opencode',
+    available: async () => true,
+    complete: async () => {
+      const error = new SourceError('quota', 'quota exhausted', undefined, 'CURRENT PARTIAL WORK');
+      error.replay = 'unsafe';
+      throw error;
+    }
+  };
+  const next = source('kilo');
+  const sources = new Sources([failing, next], { registry: () => launchRegistry, random: () => 0 });
+  await sources.models();
+  await expect(sources.complete(request, AbortSignal.timeout(2000)))
+    .rejects.toMatchObject({ code: 'quota', output: 'CURRENT PARTIAL WORK', replay: 'unsafe' });
+  expect(next.complete).not.toHaveBeenCalled();
 });
 
 it('includes vetted Kilo in weighted default routing and falls through after its quota', async () => {

@@ -20,7 +20,6 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
-import type { ProvisionInput } from '@trusty-squire/sdk';
 import { freeConfig, loopback } from './freellmapi.js';
 import { bundledRegistry } from '../registry.js';
 import type { Registry } from '../registry.js';
@@ -29,7 +28,6 @@ import { Nvidia, writeNvidiaGrant } from './nvidia.js';
 import { Zro, writeZroGrant } from './zro.js';
 import { TokenHarbor, writeTokenHarborGrant } from './tokenharbor.js';
 import { Runcrate, writeRuncrateGrant } from './runcrate.js';
-import { Apinex, writeApinexGrant } from './apinex.js';
 import { setupMistralVibe } from './mistral-vibe-setup.js';
 import { setupLiveKit } from './livekit-setup.js';
 import { setupPollinations } from './pollinations-setup.js';
@@ -59,12 +57,20 @@ import { setupFailureReason, signupOperatorUnavailable } from './setup-failure.j
 import { SourceError } from './source.js';
 import type { Source } from './source.js';
 
+export interface ProvisionInput {
+  service: string;
+  plan: string;
+  project_name: string;
+  category: string;
+  cost_cents: number;
+  recurrence: 'one_time' | 'monthly' | 'yearly' | 'none';
+  idempotency_key?: string;
+}
 const exec = promisify(execFile);
 export const FREELLMAPI_IMAGE = 'ghcr.io/tashfeenahmed/freellmapi@sha256:845a4b568a20fffd5112e1b9c0258e7782d9eabbba2430612d2f7c811eee267e';
-export const PROVIDERS: Record<string, string> = { groq: 'https://console.groq.com/keys', cerebras: 'https://cloud.cerebras.ai/platform/api-keys', kilo: 'https://app.kilo.ai/profile', nvidia: 'https://build.nvidia.com/settings/api-keys', zro: 'https://zro.moonmath.ai/overview', tokenharbor: 'https://tokenharbor.ai/dashboard', runcrate: 'https://www.runcrate.ai/auth/signup', apinex: 'https://apinex.bond/register', 'mistral-vibe': 'https://console.mistral.ai', livekit: 'https://cloud.livekit.io', pollinations: 'https://enter.pollinations.ai', beatapi: 'https://beatapi.io', perch: 'https://www.perchai.app', nous: 'https://portal.nousresearch.com/login', kenari: 'https://kenari.id/login', numes: 'https://numes.ai/dashboard', goedel: 'https://inference.goedelmachines.com/keys', crowllm: 'https://crowllm.com/keys', fikra: 'https://fikraapi.co.ke/account/signup', openference: 'https://openference.com/register', darus: 'https://gateway.darusalfatah.id/', 'aperture-ai': 'https://www.aperture-ai.run/login.html', 'reflection-beam': 'https://kilo.ai/docs/getting-started/using-kilo-for-free', 'antseed-vikey': 'https://antseed.com/docs/', millionseek: 'https://100milionseek.top/signup', freepi: 'https://freepi.ai', ifm: 'https://platform.ifm.ai/api-keys' };
+export const PROVIDERS: Record<string, string> = { groq: 'https://console.groq.com/keys', cerebras: 'https://cloud.cerebras.ai/platform/api-keys', kilo: 'https://app.kilo.ai/profile', nvidia: 'https://build.nvidia.com/settings/api-keys', zro: 'https://zro.moonmath.ai/overview', tokenharbor: 'https://tokenharbor.ai/dashboard', runcrate: 'https://www.runcrate.ai/auth/signup', 'mistral-vibe': 'https://console.mistral.ai', livekit: 'https://cloud.livekit.io', pollinations: 'https://enter.pollinations.ai', beatapi: 'https://beatapi.io', perch: 'https://www.perchai.app', nous: 'https://portal.nousresearch.com/login', kenari: 'https://kenari.id/login', numes: 'https://numes.ai/dashboard', goedel: 'https://inference.goedelmachines.com/keys', crowllm: 'https://crowllm.com/keys', fikra: 'https://fikraapi.co.ke/account/signup', openference: 'https://openference.com/register', darus: 'https://gateway.darusalfatah.id/', 'aperture-ai': 'https://www.aperture-ai.run/login.html', 'reflection-beam': 'https://kilo.ai/docs/getting-started/using-kilo-for-free', 'antseed-vikey': 'https://antseed.com/docs/', millionseek: 'https://100milionseek.top/signup', freepi: 'https://freepi.ai', ifm: 'https://platform.ifm.ai/api-keys' };
 const freeProviderInstructions: Record<string, string> = {
-  runcrate: ' Go straight to the API keys page at https://www.runcrate.ai/dashboard/api-keys. Leave optional marketing unchecked. Do not open or change billing settings or create another account. Capture the API key with api_hosts ["api.runcrate.ai"] and auth_shape "bearer", service runcrate, label grunt. Capture an existing key where the site shows its value; never reset or rotate it.',
-  apinex: ' Go straight to the API keys page. Use the personal @gmail.com Google identity already connected to Squire; do not choose a workspace identity or switch accounts. Do not use or change any existing paid wallet balance. Dismiss any paid upsell. Do not add billing, top up a wallet, buy credits, or use any paid balance. Capture the API key with api_hosts ["api.apinex.bond"] and auth_shape "bearer", service apinex, label grunt. Capture an existing key where the site shows its value; never reset or rotate it.'
+  runcrate: ' Go straight to the API keys page at https://www.runcrate.ai/dashboard/api-keys. Leave optional marketing unchecked. Do not open or change billing settings or create another account. Capture the API key with api_hosts ["api.runcrate.ai"] and auth_shape "bearer", service runcrate, label grunt. Capture an existing key where the site shows its value; never reset or rotate it.'
 };
 export type Provider = keyof typeof PROVIDERS;
 export function providerURL(value: string): URL | undefined {
@@ -234,7 +240,8 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
     const saved = await matching();
     if (await connect(saved)) continue;
     if (saved.length) options.notify(`${provider}: no saved key works; opening the provider site to capture working access`);
-    // Preserve the provisioning identity so upgrades do not repeat an existing signup.
+    // Keep the legacy 'milo-free-' idempotency_key prefix: Trusty Squire deduplicates
+    // provisioning runs by this key, so renaming it would duplicate live user signups on upgrade.
     const result = await squire.runs.start({ service: provider, plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none', idempotency_key: `milo-free-${provider}` });
     if (result.decision === 'reject') throw setupStopped(`Squire refused ${provider} signup; setup stopped`, result.reason);
     if (result.decision === 'needs_approval' || result.decision === 'drop') { drop(provider, result.reason, result.diagnostic); continue; }
@@ -566,7 +573,7 @@ export class BrowserSquire implements SetupSquire {
     // Hints precede the shared safety rules (data sharing, no paid plan, terms), which stay last.
     const compose = (hints: string) => {
     const customGoal = goal === undefined ? undefined : `${goal}${hints}${this.options.dataSharingApproved?.includes(provider) ? ' Grunt setup enables this free source by default. You may accept its required data-sharing disclosure.' : ' Do not opt in to optional prompt/response retention, staff review or model training; report any required consent for grouped setup approval.'}`;
-    return (customGoal ?? `Use the user's existing ${provider} account or sign up for one. ${provider === 'runcrate' ? 'Use GitHub OAuth for the free path; do not use Google OAuth because that path requires billing.' : provider === 'apinex' ? 'Use Google OAuth with the personal @gmail.com identity already connected to Squire.' : "Prefer Google OAuth using the user's Squire-connected identity."} Capture an existing working API key when the site can show its value; create one API key for grunt only when none can be captured. Store it in this user's Squire vault with service ${provider}. Use operate_extract to capture the key directly into the vault; never put its value in your answer.${provider === 'kilo' ? ' Reuse the existing profile API key without resetting it. Capture with api_hosts ["api.kilo.ai", "ai-gateway.kilo.ai"] in that order and auth_shape "bearer"; grunt uses /api/gateway beneath the grant.' : ''}${provider === 'nvidia' ? ' Capture the API key with api_hosts ["integrate.api.nvidia.com"] and auth_shape "bearer". Never reset or rotate an existing key.' : ''}${provider === 'zro' ? ` Go straight to the API keys page; do not open billing or plan pages, and do not cancel, downgrade, remove a payment method or create another account. Capture the API key with api_hosts ["${ZRO_STORE.api_hosts[0]}"] and auth_shape "bearer". Store service zro, label ${ZRO_STORE.label}. Only the newest Zro key answers, so capture the newest key when its value is shown. Never reset or rotate an existing key.` : ''}${provider === 'tokenharbor' ? ` Go straight to the API keys page. Capture with api_hosts ["${TOKENHARBOR_STORE.api_hosts[0]}"] and auth_shape "bearer", service tokenharbor, label ${TOKENHARBOR_STORE.label}. Do not create a second key if an existing key can be captured, and never reset or rotate an existing key.` : ''}${freeProviderInstructions[provider] ?? ''}${hints}${this.options.dataSharingApproved?.includes(provider) ? ' Grunt setup enables this free source by default. You may accept its required prompt/response retention, staff review and provider training disclosure.' : ' Do not opt in to optional prompt/response retention, staff review or model training; if the API key requires that consent, report it for the grouped setup approval.'} No paid plan or payment method. Use Squire's configured verification tools, including its configured CAPTCHA solver when needed. Stop on provider refusal.`) + termsInstruction;
+    return (customGoal ?? `Use the user's existing ${provider} account or sign up for one. ${provider === 'runcrate' ? 'Use GitHub OAuth for the free path; do not use Google OAuth because that path requires billing.' : "Prefer Google OAuth using the user's Squire-connected identity."} Capture an existing working API key when the site can show its value; create one API key for grunt only when none can be captured. Store it in this user's Squire vault with service ${provider}. Use operate_extract to capture the key directly into the vault; never put its value in your answer.${provider === 'kilo' ? ' Reuse the existing profile API key without resetting it. Capture with api_hosts ["api.kilo.ai", "ai-gateway.kilo.ai"] in that order and auth_shape "bearer"; grunt uses /api/gateway beneath the grant.' : ''}${provider === 'nvidia' ? ' Capture the API key with api_hosts ["integrate.api.nvidia.com"] and auth_shape "bearer". Never reset or rotate an existing key.' : ''}${provider === 'zro' ? ` Go straight to the API keys page; do not open billing or plan pages, and do not cancel, downgrade, remove a payment method or create another account. Capture the API key with api_hosts ["${ZRO_STORE.api_hosts[0]}"] and auth_shape "bearer". Store service zro, label ${ZRO_STORE.label}. Only the newest Zro key answers, so capture the newest key when its value is shown. Never reset or rotate an existing key.` : ''}${provider === 'tokenharbor' ? ` Go straight to the API keys page. Capture with api_hosts ["${TOKENHARBOR_STORE.api_hosts[0]}"] and auth_shape "bearer", service tokenharbor, label ${TOKENHARBOR_STORE.label}. Do not create a second key if an existing key can be captured, and never reset or rotate an existing key.` : ''}${freeProviderInstructions[provider] ?? ''}${hints}${this.options.dataSharingApproved?.includes(provider) ? ' Grunt setup enables this free source by default. You may accept its required prompt/response retention, staff review and provider training disclosure.' : ' Do not opt in to optional prompt/response retention, staff review or model training; if the API key requires that consent, report it for the grouped setup approval.'} No paid plan or payment method. Use Squire's configured verification tools, including its configured CAPTCHA solver when needed. Stop on provider refusal.`) + termsInstruction;
     };
     const withHints = hinted ? compose(` Provider hints (page, control, value, in order): ${hinted}`) : undefined;
     // Hints are optional; drop them rather than exceed the drive's goal limit.
@@ -594,7 +601,7 @@ export class BrowserSquire implements SetupSquire {
       await this.finishSession(provider);
       return { run: { id: provider, state: 'dropped' }, decision: 'drop', reason, diagnostic };
     };
-    const checkCaptured = !goal && !['zro', 'tokenharbor', 'runcrate', 'apinex'].includes(provider);
+    const checkCaptured = !goal && !['zro', 'tokenharbor', 'runcrate'].includes(provider);
     let answer: string | undefined;
     let waits = 0;
     // key_name answers key-name fields; a provider's own signup facts may name a different key.
@@ -1330,22 +1337,20 @@ export async function setup(notify = console.log, providers: string[] = ['groq']
       await setupMistralVibe({ directory: location, squire: browser, notify, ...(options.signal ? { signal: options.signal } : {}) });
       providers = providers.filter(provider => provider !== 'mistral-vibe');
     }
-    for (const provider of ['runcrate', 'apinex'] as const) {
-      if (!providers.includes(provider)) continue;
-      const source = provider === 'runcrate' ? new Runcrate({ directory: location }) : new Apinex({ directory: location });
-      const writeGrant = provider === 'runcrate' ? writeRuncrateGrant : writeApinexGrant;
+    if (providers.includes('runcrate')) {
+      const source = new Runcrate({ directory: location });
       try {
         const result = await setupProviders(squire, {
-          hasKey: async id => id === provider && await source.available(),
+          hasKey: async id => id === 'runcrate' && await source.available(),
           addGrant: async (id, grant) => {
-            if (id !== provider) throw new Error(`Unexpected ${provider} credential`);
-            await writeGrant(grant, location);
+            if (id !== 'runcrate') throw new Error('Unexpected runcrate credential');
+            await writeRuncrateGrant(grant, location);
             await probeGrant(source, location, options.signal);
           }
-        }, { providers: [provider], notify, reuseSaved: false, signal: options.signal });
-        if (result.dropped.length) throw new Error(`${provider} setup incomplete; rerun usegrunt setup`);
+        }, { providers: ['runcrate'], notify, reuseSaved: false, signal: options.signal });
+        if (result.dropped.length) throw new Error('runcrate setup incomplete; rerun usegrunt setup');
       } finally { await source.close(); }
-      providers = providers.filter(id => id !== provider);
+      providers = providers.filter(id => id !== 'runcrate');
     }
     if (!providers.length) return {};
     if (providers.includes('zro')) {

@@ -1,10 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, readFile, readdir, rm, copyFile, chmod, mkdir, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { serve } from '@hono/node-server';
 import { createLocalApp, decode, encode } from './api.js';
-import { Freebuff, parseChat } from './freebuff.js';
 import { Gateway, Sources, SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
 import { configure, HOST } from './main.js';
@@ -77,6 +76,7 @@ it('advertises the grunt model while preserving legacy requests and source confi
   const models = await (await app.request('http://localhost:8788/v1/models')).json();
   expect(models.data).toEqual(['grunt', 'custom-app'].map(id => ({ id, object: 'model', created: 0, owned_by: 'grunt' })));
   expect(decode({ input: 'hello' }, 'responses', '/tmp').model).toBe('grunt');
+  expect(decode({ input: 'hello', model: 'milo' }, 'responses', '/tmp').model).toBe('grunt');
   for (const model of ['grunt', 'milo', 'custom-app']) {
     expect(await sources.complete(decode({ input: 'hello', model }, 'responses', '/tmp'), new AbortController().signal)).toEqual({ text: 'hello' });
   }
@@ -98,84 +98,17 @@ it('gateway only calls configured origin, preserves tools, rejects redirects and
   const bad = new Gateway('https://configured.invalid/v1', '', async () => { throw new Error('offline'); });
   expect(await new Sources([bad, fake()]).complete(request, new AbortController().signal)).toMatchObject({ text: request.messages.at(-1)!.content });
 });
-it('cwd inference and changed Freebuff format fail clearly', async () => {
-  const sample = await fixture('freebuff');
-  expect(parseChat(sample, sample[1].content)).toBe('bridge works 42');
-  const final = await fixture('freebuff-final');
-  expect(parseChat(final, final[0].content)).toBe('hello');
-  expect(() => parseChat({}, '')).toThrow('format changed');
+it('cwd inference validates absolute paths and falls back cleanly', async () => {
   expect(decode(await fixture('claude'), 'messages', '/fallback').cwd).toBe('/tmp/grunt-harness-cwd');
   expect(decode({ input: 'hi', instructions: '<cwd>/tmp/codex</cwd>' }, 'responses', '/fallback').cwd).toBe('/tmp/codex');
   expect(decode({ messages: [{ role: 'user', content: 'hi' }] }, 'chat', '/fallback').cwd).toBe('/fallback');
   expect(() => decode({ input: 'hi', cwd: 'relative' }, 'responses', '/fallback')).toThrow('absolute');
 });
-const storyBlocks = [
-  { type: 'text', textType: 'reasoning', content: 'I am Buffy; I should consider my tools before telling a story.' },
-  { type: 'text', textType: 'text', content: 'Once upon a time, a jellybean sailed the moon.' },
-  { type: 'tool', name: 'suggest_followups' },
-];
-it('Reproduction R1 returns only the story before trailing followups', () => {
-  const chat = [{ variant: 'user', content: 'Tell a story' }, { variant: 'ai', isComplete: true, blocks: storyBlocks }];
-  expect(parseChat(chat, 'Tell a story')).toBe(storyBlocks[1]!.content);
-  expect(() => parseChat(chat, 'Tell a story', true)).toThrow('native tools');
-  expect(parseChat([{ variant: 'user', content: 'Tell a story' }, { variant: 'ai', isComplete: true, blocks: storyBlocks.slice(0, 1) }], 'Tell a story')).toBeUndefined();
+it('fails over to the next source when the first refuses a request', async () => {
+  const req: ModelRequest = { model: 'grunt', messages: [{ role: 'user', content: 'REFUSE' }], tools: [], stream: false, cwd: '/tmp' };
+  const refused: Source = { ...fake('refused'), complete: async () => { throw new SourceError('refused', 'policy'); } };
+  expect(await new Sources([refused, fake()]).complete(req, new AbortController().signal)).toEqual({ text: 'REFUSE' });
 });
-it.each([false, true])('Reproduction R1 exposes only story text through completion or partial output (partial=%s)', async partial => {
-  const home = await mkdtemp(join(tmpdir(), 'grunt-story-'));
-  const mux = {
-    start: async () => {}, stop: async () => {},
-    send: async (_id: string, prompt: string) => {
-      const dir = join(home, '.config/manicode/projects', home.split('/').at(-1)!, 'chats', 'story');
-      await mkdir(dir, { recursive: true });
-      if (partial) await writeFile(join(dir, 'log.jsonl'), '{"code":"prompt_policy_refused"}\n');
-      await writeFile(join(dir, 'chat-messages.json'), JSON.stringify([{ variant: 'user', content: prompt }, { variant: 'ai', isComplete: !partial, blocks: storyBlocks }]));
-    },
-  };
-  const driver = new Freebuff({ home, mux, startup: 1, poll: 5, timeout: 1000 });
-  try {
-    await copyFile(new URL('./fixtures/fake-freebuff.cjs', import.meta.url), join(home, 'freebuff')); await chmod(join(home, 'freebuff'), 0o755);
-    vi.stubEnv('PATH', `${home}:${process.env.PATH}`);
-    if (partial) {
-      await expect(driver.complete(decode({ model: 'freebuff', cwd: home, input: 'Tell a story' }, 'responses', home), new AbortController().signal)).rejects.toMatchObject({ code: 'refused', output: storyBlocks[1]!.content });
-      return;
-    }
-    const app = createLocalApp(new Sources([driver]));
-    const response = await app.request('http://localhost:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'freebuff', cwd: home, messages: [{ role: 'user', content: 'Tell a story' }] }) });
-    expect(response.status).toBe(200);
-    expect((await response.json()).choices[0].message.content).toBe(storyBlocks[1]!.content);
-  } finally { await driver.close(); await rm(home, { recursive: true, force: true }); }
-});
-it('fake Freebuff on real tmux isolates concurrent identical requests, queues, cleans up, times out and makes no fetch calls', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'grunt-app-'));
-  const originalPath = process.env.PATH;
-  const fetcher = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('local path must not fetch'));
-  const driver = new Freebuff({ home: dir, pool: 2, timeout: 8000, startup: 200, poll: 20 });
-  try {
-    await copyFile(new URL('./fixtures/fake-freebuff.cjs', import.meta.url), join(dir, 'freebuff')); await chmod(join(dir, 'freebuff'), 0o755);
-    vi.stubEnv('PATH', `${dir}:${originalPath}`); vi.stubEnv('GRUNT_TEST_HOME', dir);
-    expect(await driver.available()).toBe(true);
-    const request: ModelRequest = { model: 'freebuff', messages: [{ role: 'user', content: 'same prompt' }], tools: [], stream: false, cwd: dir };
-    const app = createLocalApp(new Sources([driver]));
-    vi.stubEnv('GRUNT_TEST_UNIQUE','1');
-    for (let batch = 0; batch < 8; batch++) {
-      const results = await Promise.all(Array.from({ length: 3 }, async () => {
-        const response = await app.request('http://localhost:8788/v1/chat/completions', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ ...request, messages: [{role:'user',content:`same prompt ${batch}`}] }) });
-        return {status:response.status,body:await response.json()};
-      }));
-      for (const result of results) expect(result).toMatchObject({status:200,body:{choices:[{message:{role:'assistant',content:expect.any(String)}}]}});
-      expect(new Set(results.map(r => r.body.choices[0].message.content)).size).toBe(3);
-    }
-    vi.stubEnv('GRUNT_TEST_UNIQUE','');
-    expect(fetcher).not.toHaveBeenCalled();
-    const timeout = new Freebuff({ home: dir, timeout: 500, startup: 100, poll: 20 });
-    await expect(timeout.complete({ ...request, messages: [{ role: 'user', content: 'NEVER_COMPLETE' }] }, new AbortController().signal)).rejects.toMatchObject({ code: 'timeout' });
-    await timeout.close();
-    vi.stubEnv('PATH', dir);
-    await expect(driver.complete(request, new AbortController().signal)).rejects.toMatchObject({ code: 'not_installed' });
-    vi.stubEnv('PATH', '/nonexistent');
-    expect(await driver.available()).toBe(false);
-  } finally { vi.stubEnv('PATH', originalPath ?? ''); await driver.close(); fetcher.mockRestore(); await rm(dir, { recursive: true, force: true }); }
-}, 30000);
 it('gateway tool replies retain their wire shapes and tool results survive translation', async () => {
   const tool = { id: 'call_1', type: 'function' as const, function: { name: 'read', arguments: '{"path":"a.txt"}' } };
   const source: Source = { ...fake(), complete: async () => ({ text: '', calls: [tool] }) };
@@ -224,95 +157,6 @@ it('answers housekeeping locally before starting any source', async () => {
   }
   expect(complete).toHaveBeenCalledTimes(3);
 });
-it('answers through Freebuff when freebuff doctor takes longer than 5 seconds', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'grunt-slow-doctor-'));
-  const driver = new Freebuff({home:dir, startup:200, poll:20, timeout:15000});
-  try {
-    await copyFile(new URL('./fixtures/fake-freebuff.cjs', import.meta.url), join(dir,'freebuff')); await chmod(join(dir,'freebuff'),0o755);
-    vi.stubEnv('PATH', `${dir}:${process.env.PATH}`); vi.stubEnv('GRUNT_TEST_HOME',dir); vi.stubEnv('GRUNT_TEST_DOCTOR_DELAY','5500');
-    const response = await createLocalApp(new Sources([driver])).request('http://localhost:8788/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'freebuff',cwd:dir,messages:[{role:'user',content:'slow doctor'}]})});
-    expect(response.status).toBe(200);
-    expect(response.headers.get('X-Grunt-Source')).toBe('freebuff');
-    expect((await response.json()).choices[0].message.content).toBe('slow doctor');
-  } finally { vi.stubEnv('GRUNT_TEST_DOCTOR_DELAY',''); await driver.close(); await rm(dir,{recursive:true,force:true}); }
-}, 30000);
-it.each(['missing','unreadable'])('recovers a %s continuation, matches CR turns, resumes chats and stops on refusal', async state => {
-  const dir = await mkdtemp(join(tmpdir(), 'grunt-resume-'));
-  const { readdir } = await import('node:fs/promises');
-  const driver = new Freebuff({home:dir, startup:200, poll:20, timeout:5000});
-  try {
-    await copyFile(new URL('./fixtures/fake-freebuff.cjs', import.meta.url), join(dir,'freebuff')); await chmod(join(dir,'freebuff'),0o755);
-    vi.stubEnv('PATH', `${dir}:${process.env.PATH}`); vi.stubEnv('GRUNT_TEST_HOME',dir);
-    const req: ModelRequest = {model:'grunt',messages:[{role:'user',content:'first\nline'}], tools:[], stream:false,cwd:dir};
-    expect(await driver.complete(req,new AbortController().signal)).toEqual({text:'first\nline'});
-    req.messages.push({role:'assistant',content:'first\nline'},{role:'user',content:'second'});
-    expect(await driver.complete(req,new AbortController().signal)).toEqual({text:'second'});
-    const chats = join(dir,'.config/manicode/projects',dir.split('/').at(-1)!,'chats');
-    const files = await readdir(chats); expect(files).toHaveLength(1);
-    const messages = JSON.parse(await readFile(join(chats,files[0]!,'chat-messages.json'),'utf8'));
-    expect(messages.filter((m: {variant:string})=>m.variant==='user').map((m: {textAttachments:{content:string}[]})=>m.textAttachments[0]!.content)).toEqual(['first\nline','second']);
-    const saved=join(chats,files[0]!,'chat-messages.json');
-    await rm(saved);
-    if(state==='unreadable') {const {mkdir}=await import('node:fs/promises');await mkdir(saved);}
-    req.messages.push({role:'user',content:' recovered\rturn '});
-    expect(await driver.complete(req,new AbortController().signal)).toEqual({text:' recovered\nturn '});
-    for (const [name, api] of [['claude','messages'],['codex','responses'],['pi','chat'],['opencode','chat']]) {
-      const harness = decode(await fixture(name!),api!,dir); harness.cwd=dir;
-      const expected = name === 'opencode' ? '"Reply with exactly: bridge works 42. Do not use tools."' : 'Reply with exactly: bridge works 42. Do not use tools.';
-      expect(await driver.complete(harness,new AbortController().signal)).toEqual({text:expected});
-    }
-    req.messages.push({role:'assistant',content:'second'},{role:'user',content:'REFUSE'});
-    const start=Date.now();
-    await expect(driver.complete(req,new AbortController().signal)).rejects.toMatchObject({code:'refused',message:'Freebuff refused this request under its usage policy'});
-    expect(Date.now()-start).toBeLessThan(3000);
-    for (const [prompt,code] of [['STARTUP_LOGIN','logged_out'],['STARTUP_QUOTA','quota']]) {
-      const started = Date.now();
-      await expect(driver.complete({...req,messages:[{role:'user',content:prompt!}]},new AbortController().signal)).rejects.toMatchObject({code});
-      expect(Date.now()-started).toBeLessThan(3000);
-    }
-    const mux = {start:vi.fn(),send:vi.fn(),stop:vi.fn()};
-    const diagnosed = new Freebuff({mux,home:dir});
-    for (const [message,code] of [['Not signed in','logged_out'],['Free hours exhausted','quota']]) {
-      vi.stubEnv('GRUNT_TEST_DOCTOR_ERROR',message!);
-      await expect(diagnosed.complete(req,new AbortController().signal)).rejects.toMatchObject({code});
-    }
-    vi.stubEnv('GRUNT_TEST_DOCTOR_ERROR','');
-    expect(mux.start).not.toHaveBeenCalled();
-    expect(mux.send).not.toHaveBeenCalled();
-    await diagnosed.close();
-    const refused: Source = {...fake('refused'),complete:async()=>{throw new SourceError('refused','policy');}};
-    expect(await new Sources([refused,fake()]).complete(req,new AbortController().signal)).toEqual({text:'REFUSE'});
-  } finally {await driver.close(); await rm(dir,{recursive:true,force:true});}
-},10000);
-
-it.each([false, true])('attributes shared-basename chats and follow-ups to their originating process (quota=%s)', async quota => {
-  const { mkdir } = await import('node:fs/promises');
-  const { OwnershipMux } = await import('./fixtures/ownership-mux.js');
-  const home = await mkdtemp(join(tmpdir(),'grunt-owner-'));
-  const a = join(home,'A','project'), b = join(home,'B','project');
-  await mkdir(a,{recursive:true}); await mkdir(b,{recursive:true});
-  await copyFile(new URL('./fixtures/fake-freebuff.cjs',import.meta.url),join(home,'freebuff')); await chmod(join(home,'freebuff'),0o755);
-  vi.stubEnv('PATH',`${home}:${process.env.PATH}`);
-  const driver = new Freebuff({home,mux:new OwnershipMux(home),startup:1,poll:5,timeout:3000});
-  const app=createLocalApp(new Sources([driver]));
-  const send=async(cwd:string,messages:{role:string;content:string}[])=>{
-    const response=await app.request('http://localhost:8788/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'freebuff',cwd,messages})});
-    return {status:response.status,body:await response.json()};
-  };
-  try {
-    const first=quota ? 'quota please' : 'same user text';
-    const [ra,rb]=await Promise.all([send(a,[{role:'user',content:first}]),send(b,[{role:'user',content:quota ? 'different user text' : first}])]);
-    if(quota) expect(ra).toMatchObject({status:429,body:{error:{code:'quota'}}});
-    else expect(JSON.parse(ra.body.choices[0].message.content)).toEqual({cwd:a,chat:'A-chat'});
-    expect(rb.status).toBe(200);
-    expect(JSON.parse(rb.body.choices[0].message.content)).toEqual({cwd:b,chat:'B-chat'});
-    for(const cwd of quota ? [b] : [a,b]) {
-      const follow=await send(cwd,[{role:'user',content:quota ? 'different user text' : first},{role:'assistant',content:'previous reply'},{role:'user',content:'follow up'}]);
-      expect(follow.status).toBe(200);
-      expect(JSON.parse(follow.body.choices[0].message.content)).toEqual({cwd,chat:cwd===a ? 'A-chat' : 'B-chat'});
-    }
-  } finally {await driver.close();await rm(home,{recursive:true,force:true});}
-},10000);
 
 // Reproduction local-hardening: exercise public wire translation and process startup.
 it.each([{Host:'evil.invalid:8788'}, {Host:'localhost:8788',Origin:''}, {Host:'localhost:8788','Content-Type':'text/plain'}])('rejects unsafe loopback requests without starting a session: %j', async headers => {
@@ -369,9 +213,6 @@ it('caps gateway completions when max tokens are omitted and preserves explicit 
   const gateway=new Gateway('https://configured.invalid/v1','synthetic',fetcher);
   for(const maxTokens of [undefined,123]) {await gateway.complete({...decode({input:'hi'},'responses','/tmp'),maxTokens},new AbortController().signal);expect(JSON.parse(String(fetcher.mock.calls.at(-1)![1]!.body)).max_tokens).toBe(maxTokens);}
 });
-it('matches saved user turns with normalized newlines and surrounding whitespace',()=>{
-  expect(parseChat([{variant:'user',textAttachments:[{content:'  first\nsecond\nthird  '}]},{variant:'ai',isComplete:true,blocks:[{type:'text',content:'ok'}]}],'first\r\nsecond\rthird')).toBe('ok');
-});
 it.each(['grunt-local', 'milo-local'])('starts the daemon through the compatible %s bin symlink',async bin=>{
   const {symlink}=await import('node:fs/promises');
   const {spawn}=await import('node:child_process');
@@ -405,27 +246,6 @@ it('starts setup from the usegrunt bin without arguments', async () => {
     expect(result.output).toContain('Install tar using your system package manager.');
     expect(result.output).not.toContain('grunt model API:');
   } finally { await rm(directory, { recursive: true, force: true }); }
-});
-
-it.each([
-  ['prompt_policy_refused', 'refused', 'Freebuff refused this request under its usage policy'],
-  ['quota', 'quota', 'Freebuff free-hours allowance is exhausted'],
-  ['logged_out', 'logged_out', 'Freebuff login is unavailable; rerun setup']
-])('redacts native diagnostic payloads from %s failures', async (nativeCode, code, message) => {
-  const home = await mkdtemp(join(tmpdir(), 'grunt-freebuff-redaction-'));
-  const mux = { start: vi.fn(), send: vi.fn(), stop: vi.fn() };
-  const source = new Freebuff({ home, mux });
-  try {
-    await copyFile(new URL('./fixtures/fake-freebuff.cjs', import.meta.url), join(home, 'freebuff'));
-    await chmod(join(home, 'freebuff'), 0o755);
-    vi.stubEnv('PATH', `${home}:${process.env.PATH}`);
-    vi.stubEnv('GRUNT_TEST_DOCTOR_ERROR', JSON.stringify({ code: nativeCode, message: nativeCode === 'logged_out' ? 'Login required' : 'Provider diagnostic',
-      userEmail: 'private-user@example.test', upstreamBody: 'SENSITIVE_UPSTREAM_PAYLOAD', authToken: 'synthetic-sensitive-token' }));
-    const request: ModelRequest = { model: 'freebuff', cwd: home, messages: [{ role: 'user', content: 'hello' }], tools: [], stream: false };
-    await expect(source.complete(request, AbortSignal.timeout(2000))).rejects.toMatchObject({ code, message });
-    expect(mux.start).not.toHaveBeenCalled();
-    expect(mux.send).not.toHaveBeenCalled();
-  } finally { await source.close(); await rm(home, { recursive: true, force: true }); }
 });
 
 it('translates Codex MCP namespaces through the completion and tool-result turns', async () => {

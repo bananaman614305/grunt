@@ -18,7 +18,7 @@ BrowserSquire.prototype.connect = async () => {};
 BrowserSquire.prototype.close = async () => {};
 BrowserSquire.prototype.call = async function(name, args) {
   if (process.env.GRUNT_PROOF_CASE.startsWith('admin')) {
-    if (name === 'list_credentials') return { credentials: [{ service: ' MILO-FREELLMAPI-ADMIN ', reference: 'admin', field_names: ['password', 'encryption_key'] }] };
+    if (name === 'list_credentials') return { credentials: [{ service: ' GRUNT-FREELLMAPI-ADMIN ', reference: 'admin', field_names: ['password', 'encryption_key'] }] };
     if (name === 'fetch_credential') {
       if (process.env.GRUNT_PROOF_CASE === 'admin-resume') {
         if (args.action !== 'resume' || args.approval_id !== 'admin') throw new Error('Unexpected replacement approval');
