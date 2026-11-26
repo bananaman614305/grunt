@@ -2,9 +2,10 @@ import { serve } from '@hono/node-server';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, expect, it, onTestFinished, vi } from 'vitest';
 import { createLocalApp } from './api.js';
 import { recordDataSharingConsent } from './data-sharing.js';
+import { DiagnosticsStore } from './diagnostics.js';
 import { FreeApi } from './free-api.js';
 import { Kilo, KILO_ORIGIN, KILO_PARTICLE } from './kilo.js';
 import { Sources, SourceError, emitStreamText } from './source.js';
@@ -143,6 +144,7 @@ it('buffers streamed tool-call arguments until validated by guardToolCalls, and 
   const badTool = new FreeApi('zro', {
     loadGrant: async () => grant,
     fetcher: vi.fn<typeof fetch>(async () => sse([
+      JSON.stringify({ model: ZRO_DEEPSEEK, choices: [{ index: 0, delta: { content: 'é'.repeat(128) }, finish_reason: null }] }),
       JSON.stringify({ model: ZRO_DEEPSEEK, choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_bad', type: 'function', function: { name: 'read_file', arguments: '{"path":' } }] }, finish_reason: null }] }),
       JSON.stringify({ model: ZRO_DEEPSEEK, choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }),
       '[DONE]'
@@ -172,6 +174,7 @@ it('buffers streamed tool-call arguments until validated by guardToolCalls, and 
   expect(response.status).toBe(200);
   expect(response.headers.get('x-grunt-source')).toBe('runcrate');
   const wire = await response.text();
+  expect(wire).not.toContain('é');
   expect(wire).not.toContain('call_bad');
   expect(wire).toContain('Checking file.');
   expect(wire).toContain('"id":"call_ok"');
@@ -230,14 +233,21 @@ it('streams incremental tokens from Kilo while still verifying model identity an
   expect(received).toContain('data: [DONE]');
 });
 
-it('does not replay onto another route after incremental text has already been emitted', async () => {
+it.each([
+  { text: 'Hello', tools: [], cancel: false },
+  { text: 'é'.repeat(128) + '!', tools: [{ type: 'function', function: { name: 'read_file' } }], cancel: false },
+  { text: 'Hello', tools: [], cancel: true }
+])('records stream-midflight-false-pass after settlement or cancellation ($cancel)', async ({ text, tools, cancel }) => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
   const first: Source = {
     id: 'first',
     supportsFunctionTools: true,
     available: async () => true,
     complete: async (): Promise<Completion> => {
-      emitStreamText('partial ');
-      throw new SourceError('upstream', 'connection reset mid-stream');
+      emitStreamText(text);
+      await gate;
+      throw new SourceError('upstream', 'cut stream', undefined, undefined, { failureReason: 'stream_incomplete' });
     }
   };
   const backup: Source = {
@@ -246,18 +256,94 @@ it('does not replay onto another route after incremental text has already been e
     available: async () => true,
     complete: vi.fn(async (): Promise<Completion> => ({ text: 'should not run' }))
   };
-  const local = await startLocal(new Sources([first, backup]));
+  const pool = new Sources([first, backup]);
+  const directory = await mkdtemp(join(tmpdir(), 'grunt-stream-diagnostics-'));
+  dirs.push(directory);
+  const store = await DiagnosticsStore.open({ directory });
+  onTestFinished(() => store.close());
+  pool.setDiagnostics(store);
+  const records = vi.spyOn(store, 'record');
+  const finishes = () => records.mock.calls.map(([event]) => event).filter(event => event.type === 'request.finish');
+  const local = await startLocal(pool);
+  const client = new AbortController();
   const response = await fetch(local.url('chat/completions'), {
+    signal: client.signal,
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: 'grunt', messages: [{ role: 'user', content: 'hi' }], stream: true })
+    body: JSON.stringify({ model: 'grunt', messages: [{ role: 'user', content: 'hi' }], tools, stream: true })
   });
+  const beforeFailure = finishes();
+  if (cancel) {
+    client.abort();
+    try {
+      await vi.waitFor(() => expect(finishes()).toEqual([expect.objectContaining({ outcome: 'cancelled' })]));
+    } finally { release(); }
+    return;
+  }
+  release();
   expect(response.status).toBe(200);
   const wire = await response.text();
-  expect(wire).toContain('partial ');
+  expect(wire).toContain(text);
+  expect(wire).toContain(JSON.stringify({ error: { type: 'server_error', code: 'upstream', message: 'cut stream' } }));
+  expect(beforeFailure).toEqual([]);
+  expect(finishes()).toEqual([expect.objectContaining({ outcome: 'failed', errorCode: 'upstream', responseBytes: Buffer.byteLength(text), httpStatus: 200 })]);
   expect(wire).not.toContain('should not run');
   expect(wire).not.toContain('data: [DONE]');
   expect(backup.complete).not.toHaveBeenCalled();
+});
+
+async function kiloWithStream(reply: () => Response) {
+  const directory = await mkdtemp(join(tmpdir(), 'grunt-stream-recovery-'));
+  dirs.push(directory);
+  await recordDataSharingConsent(directory, ['kilo']);
+  return new Kilo({ directory, anonymous: () => true, fetcher: async url => String(url) === `${KILO_ORIGIN}/models`
+    ? Response.json({ data: [{ id: KILO_PARTICLE, isFree: true, pricing: { prompt: '0', completion: '0' }, context_length: 1048576, supported_parameters: ['tools', 'max_tokens'] }] })
+    : reply() });
+}
+
+it('discards the rejected Kilo sample before buffering the retry preamble', async () => {
+  const rejected = 'x'.repeat(200), accepted = 'y'.repeat(200);
+  let samples = 0;
+  const kilo = await kiloWithStream(() => {
+    const first = ++samples === 1;
+    return sse([
+      JSON.stringify({ model: KILO_PARTICLE, choices: [{ index: 0, delta: { content: first ? rejected : accepted }, finish_reason: first ? 'tool_calls' : 'stop' }] }),
+      JSON.stringify({ model: KILO_PARTICLE, choices: [], usage: { prompt_tokens: 3, completion_tokens: 1, cost: 0, cost_details: { upstream_inference_cost: 0, upstream_inference_prompt_cost: 0, upstream_inference_completions_cost: 0 } } }),
+      '[DONE]'
+    ]);
+  });
+  const local = await startLocal(new Sources([kilo]));
+  const response = await fetch(local.url('chat/completions'), {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'kilo', stream: true, messages: [{ role: 'user', content: 'hi' }],
+      tools: [{ type: 'function', function: { name: 'read_file', parameters: { type: 'object', properties: {} } } }] })
+  });
+  const wire = await response.text();
+  expect(samples).toBe(2);
+  expect(wire).not.toContain(rejected);
+  expect(wire).toContain(accepted);
+  expect(wire).toContain('data: [DONE]');
+});
+
+it.each(['kilo', 'runcrate'])('cuts off an open %s stream after its first token', async id => {
+  const reply = () => new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      const frame = { model: KILO_PARTICLE, choices: [{ index: 0, delta: { content: 'Hello' }, finish_reason: null }] };
+      controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(frame)}\n\n`));
+    }
+  }), { headers: { 'Content-Type': 'text/event-stream' } });
+  const source = id === 'kilo' ? await kiloWithStream(reply) : new FreeApi('runcrate', {
+    loadGrant: async () => ({ base_url: 'https://grant.test/p', token: 'synthetic' }), fetcher: async () => reply()
+  });
+  const local = await startLocal(new Sources([source], undefined, new Set(), 150));
+  const response = await fetch(local.url('chat/completions'), {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(2000),
+    body: JSON.stringify({ model: id, stream: true, messages: [{ role: 'user', content: 'hi' }] })
+  });
+  const wire = await response.text();
+  expect(wire).toContain('Hello');
+  expect(wire).toContain('"code":"timeout"');
+  expect(wire).not.toContain('data: [DONE]');
 });
 
 it.each([
