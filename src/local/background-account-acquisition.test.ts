@@ -38,7 +38,7 @@ afterEach(async () => {
 
 it.each([
   { settings: { GRUNT_BACKGROUND_ACCOUNT_ACQUISITION: '0' }, enabled: false },
-  { settings: { MILO_BACKGROUND_ACCOUNT_ACQUISITION: '0' }, enabled: false },
+  { settings: { MILO_BACKGROUND_ACCOUNT_ACQUISITION: '0' }, enabled: true },
   { settings: { GRUNT_BACKGROUND_ACCOUNT_ACQUISITION: '0', MILO_BACKGROUND_ACCOUNT_ACQUISITION: '1' }, enabled: false },
   { settings: {}, enabled: true },
   { settings: { GRUNT_BACKGROUND_ACCOUNT_ACQUISITION: '1' }, enabled: true },

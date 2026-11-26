@@ -25,7 +25,6 @@ export const PROVIDER_DIRECT_ORIGINS = {
   zro: ['https://zro.moonmath.ai'],
   tokenharbor: ['https://tokenharbor.ai'],
   runcrate: ['https://api.runcrate.ai'],
-  apinex: ['https://api.apinex.bond'],
   nvidia: ['https://integrate.api.nvidia.com'],
   kilo: ['https://api.kilo.ai', 'https://ai-gateway.kilo.ai'],
   kenari: ['https://kenari.id'],

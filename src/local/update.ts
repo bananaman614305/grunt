@@ -11,6 +11,7 @@ import { configRoot, gruntEnv } from '../brand.js';
 import { serviceEnvironment, serviceEnvironmentTokens as environmentTokens } from './service-environment.js';
 import { migrateManagedPiWorkingContext } from './harnesses.js';
 import { migrateAutomaticPool } from './automatic-pool.js';
+import { localRuntimeDependencies } from './runtime-dependencies.js';
 
 const execute = promisify(execFile);
 const LATEST = 'https://registry.npmjs.org/usegrunt/latest';
@@ -221,7 +222,8 @@ export async function updateRuntime(options: UpdateOptions = {}): Promise<{ vers
     if (manifest.name !== 'usegrunt' || manifest.version !== download.version || manifest.type !== 'module' || !manifest.dependencies || typeof manifest.dependencies !== 'object' || Array.isArray(manifest.dependencies)) throw failed('The downloaded Grunt package does not match its release metadata');
     if (Object.entries(manifest.dependencies).some(([name, version]) => !/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/.test(name)
       || typeof version !== 'string' || !version.trim() || version.length > 256 || !/^[0-9A-Za-z.*^~<>=| +_-]+$/.test(version))) throw failed('The downloaded Grunt package has an unsupported dependency source');
-    await writeFile(join(candidate, 'package.json'), JSON.stringify({ name: 'grunt-runtime', version: download.version, private: true, type: 'module', dependencies: manifest.dependencies }), { mode: 0o600 });
+    const runtimeDependencies = localRuntimeDependencies(manifest.dependencies as Record<string, string>);
+    await writeFile(join(candidate, 'package.json'), JSON.stringify({ name: 'grunt-runtime', version: download.version, private: true, type: 'module', dependencies: runtimeDependencies }), { mode: 0o600 });
     notify(`Preparing Grunt ${download.version}`);
     await run('npm', ['install', '--prefix', candidate, '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--workspaces=false', '--registry=https://registry.npmjs.org'], { env: preparationEnv, signal, timeout: 300000 });
     // Import without executing the CLI guard, including older releases where

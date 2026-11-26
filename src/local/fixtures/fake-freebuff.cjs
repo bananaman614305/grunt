@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-const testEnv = name => process.env['GRUNT_TEST_' + name] ?? process.env['MILO_TEST_' + name];
+const testEnv = name => process.env['GRUNT_TEST_' + name];
 /* eslint-disable @typescript-eslint/no-require-imports */
 // Offline TUI stand-in: accept bracketed paste on the PTY and persist Freebuff's real message shape.
 const fs = require('node:fs');

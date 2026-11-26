@@ -15,7 +15,6 @@ export const FREE_API_PROVIDERS = {
   amd: { model: 'DeepSeek-V4.1-Flash', prefix: '/radeon/api/v1' },
   tokenharbor: { model: 'deepseek-v4.1-flash:free', prefix: '/v1' },
   runcrate: { model: 'deepseek-ai/DeepSeek-V4.1-Flash', prefix: '/v1' },
-  apinex: { model: 'free/deepseek-v4.1-flash', prefix: '/v1' },
   livekit: { model: 'deepseek-ai/deepseek-v4.1-flash', prefix: '/v1' },
   nous: { model: 'qwen/qwen4-max:free', prefix: '/v1' },
   crowllm: { model: 'glm-5.3-flash:free', prefix: '/v1' },
@@ -85,7 +84,7 @@ export class FreeApi implements Source {
   }
   async completeWithGrant(request: ModelRequest, caller: AbortSignal, verifiedGrant?: FreeApiGrant) {
     caller.throwIfAborted();
-    if (![this.id, 'grunt', 'milo'].includes(request.model)) throw new SourceError('upstream', 'Free API probe requires an explicit provider');
+    if (![this.id, 'grunt'].includes(request.model)) throw new SourceError('upstream', 'Free API probe requires an explicit provider');
     if (request.tools.some(tool => tool.type !== 'function')) throw new SourceError('upstream', 'Free API probe requires function tools');
     let grant: FreeApiGrant;
     try { grant = verifiedGrant ?? await this.grant(); }

@@ -1,6 +1,6 @@
 import { compileToolSchemas } from './tool-schema.js';
 import type { ValidateFunction } from 'ajv';
-import { FreebuffTools } from './freebuff-tools.js';
+import { JsonToolBridge } from './json-tool-bridge.js';
 import { configRoot } from '../brand.js';
 import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
@@ -112,7 +112,7 @@ export class FreePi implements Source {
   async healthCheck() { return this.available(); }
   async complete(request: ModelRequest, caller: AbortSignal): Promise<Completion> {
     caller.throwIfAborted();
-    if (!this.acceptsRequest(request) || ![this.id, 'grunt', 'milo'].includes(request.model) || request.tools.some(tool => tool.type !== 'function')) throw new SourceError('refused', 'Free-Pi requires a reviewed public-only request');
+    if (!this.acceptsRequest(request) || ![this.id, 'grunt'].includes(request.model) || request.tools.some(tool => tool.type !== 'function')) throw new SourceError('refused', 'Free-Pi requires a reviewed public-only request');
     if (Buffer.byteLength(JSON.stringify({ messages: request.messages, tools: request.tools }), 'utf8') > 1024 * 1024) throw new SourceError('refused', 'Free-Pi request exceeds the verified context envelope');
     const prepared = prepareTools(request);
     const token = await this.token();
@@ -161,7 +161,7 @@ function prepareTools(request: ModelRequest) {
       else messages.push({ ...message });
     }
     // Validation only: never render a bridge prompt or execute a tool.
-    new FreebuffTools({ ...request, messages });
+    new JsonToolBridge({ ...request, messages });
   } catch { throw requestRefusal('Free-Pi rejected invalid tools or an uncorrelated conversation'); }
   return { messages, validators: compileToolSchemas(request.tools, 'Free-Pi rejected a function tool schema') };
 }

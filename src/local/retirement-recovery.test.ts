@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { bundledRegistry } from '../registry.js';
 import type { Registry } from '../registry.js';
-import { FreebuffTools } from './freebuff-tools.js';
+import { JsonToolBridge } from './json-tool-bridge.js';
 import { RETIRED_REOPEN_MS, MAX_RETIRED_REOPEN_MS, retiredReopenDelay } from './routing-history.js';
 import { RETIRE_AFTER_FAILURES } from './routing.js';
 import { SourceError, Sources, requestRefusal } from './source.js';
@@ -44,10 +44,10 @@ it.each(['request_tools', 'request_tool_schema', 'request_body', 'request_size']
   } finally { await routes.sources.close(); }
 });
 
-it('marks the FreebuffTools conversation refusal as a local request refusal', () => {
+it('marks the JsonToolBridge conversation refusal as a local request refusal', () => {
   const broken = { model: 'grunt', cwd: '/tmp', stream: false, tools: [], messages: [{ role: 'user', content: 'x' }, { role: 'tool', content: 'orphan', tool_call_id: 'nope' }] };
   let error: unknown;
-  try { new FreebuffTools(broken); } catch (e) { error = e; }
+  try { new JsonToolBridge(broken); } catch (e) { error = e; }
   expect(error).toBeInstanceOf(SourceError);
   expect(error).toMatchObject({ code: 'refused', diagnostics: { failureReason: 'request_tools' } });
   expect(requestRefusal('x', 'request_tool_schema').diagnostics).toEqual({ failureReason: 'request_tool_schema' });

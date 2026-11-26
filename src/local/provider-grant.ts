@@ -18,8 +18,8 @@ import {
 import type { VaultEntrySource, VaultProvider } from './vault.js';
 
 export const providerGrantDirectory = () => configRoot();
-type Provider = 'runcrate' | 'apinex' | 'kilo' | 'goedel' | 'crowllm' | 'fikra' | 'openference' | 'darus' | 'aperture-ai' | 'millionseek' | 'ifm';
-const RECEIPT_PROVIDERS = new Set<Provider>(['runcrate', 'apinex']);
+type Provider = 'runcrate' | 'kilo' | 'goedel' | 'crowllm' | 'fikra' | 'openference' | 'darus' | 'aperture-ai' | 'millionseek' | 'ifm';
+const RECEIPT_PROVIDERS = new Set<Provider>(['runcrate']);
 export interface SquireGrantSource {
   credentials: { grant(reference: string): Promise<{ base_url: string; token: string }> };
   materializeDirectVaultGrant?(
@@ -43,7 +43,7 @@ export interface ResolvedSquireGrant extends FreeApiGrant {
   storedInVault: boolean;
 }
 function name(provider: Provider) {
-  if (provider !== 'runcrate' && provider !== 'apinex' && provider !== 'kilo' && provider !== 'goedel' && provider !== 'crowllm' && provider !== 'fikra' && provider !== 'openference' && provider !== 'darus' && provider !== 'aperture-ai' && provider !== 'millionseek' && provider !== 'ifm') throw new Error('Invalid private provider');
+  if (provider !== 'runcrate' && provider !== 'kilo' && provider !== 'goedel' && provider !== 'crowllm' && provider !== 'fikra' && provider !== 'openference' && provider !== 'darus' && provider !== 'aperture-ai' && provider !== 'millionseek' && provider !== 'ifm') throw new Error('Invalid private provider');
   return provider;
 }
 export function validateProviderGrant(value: unknown): FreeApiGrant {
