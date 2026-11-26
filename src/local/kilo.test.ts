@@ -387,8 +387,14 @@ it.each([
   await expect(f.source.complete(request(), new AbortController().signal)).rejects.toThrow(); expect(f.posts()).toHaveLength(1);
 });
 it('does not move on after a request timeout', async () => {
-  const fetcher = vi.fn<typeof fetch>(async url => String(url).endsWith('/models') ? Response.json({ data: rotation() }) : new Promise<Response>(() => {}));
-  const source = new Kilo({ directory, fetcher, timeout: 5 }); sources.push(source);
+  const deadline = new AbortController();
+  vi.spyOn(AbortSignal, 'timeout').mockReturnValueOnce(deadline.signal);
+  const fetcher = vi.fn<typeof fetch>(async url => {
+    if (String(url).endsWith('/models')) return Response.json({ data: rotation() });
+    queueMicrotask(() => deadline.abort());
+    return new Promise<Response>(() => {});
+  });
+  const source = new Kilo({ directory, fetcher }); sources.push(source);
   await expect(source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'timeout' });
   expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
 });

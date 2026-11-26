@@ -24,6 +24,7 @@ const load = async (path, query) => {
 };
 const metrics = await load('metrics', window);
 if (!metrics.streamId) throw new Error('No diagnostics stream');
+if (!Array.isArray(metrics.adapters)) console.error('Active registry unavailable from this daemon. Tier recommendations require updated diagnostics.');
 const events = [];
 let after = '0';
 for (;;) {
@@ -52,4 +53,4 @@ if (exposureFile) {
   }
   beat = measureBeatAPI(events, exposure, coverage);
 }
-console.log(JSON.stringify(buildRecoveryAudit(events, window, metrics, beat)));
+console.log(JSON.stringify(buildRecoveryAudit(events, window, metrics, beat, metrics.adapters)));

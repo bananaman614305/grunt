@@ -59,6 +59,7 @@ export interface ModelRequest {
   messages: Message[];
   userMessages?: string[];
   tools: Tool[];
+  expectedFunctionCall?: { name?: string };
   cwd: string;
   stream: boolean;
   maxTokens?: number;
@@ -403,6 +404,7 @@ export class Sources {
   // The registry's liveliness scores weight the routers' draw (docs/router.md).
   setRegistryScores(score: (id: string) => number | null | undefined) { for (const router of [this.router, this.chainRouter]) router?.useRegistryScores(score); }
   flushRoutingHistory() { return this.observation.flushRoutingHistory(); }
+  auditAdapters() { return this.registeredRouter?.auditAdapters() ?? []; }
   diagnosticStore() { return this.diagnostics; }
   observationConfig() {
     return {
