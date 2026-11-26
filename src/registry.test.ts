@@ -213,17 +213,27 @@ it('keeps no active bundled promotional adapter past its configured expiry', () 
 
 it('allows image modality for shipped adapters that explicitly support image input while locking text-only ones', () => {
   const kilo = bundledRegistry.adapters.find(adapter => adapter.id === 'kilo')!;
-  expect(adapterErrors({ ...kilo, modalities: ['text', 'image'] })).toEqual([expect.objectContaining({ field: 'modalities' })]);
-  imageAdapters.add('kilo');
+  const beam = bundledRegistry.adapters.find(adapter => adapter.id === 'reflection-beam')!;
+  const runcrate = bundledRegistry.adapters.find(adapter => adapter.id === 'runcrate')!;
+  expect(imageAdapters.has('kilo')).toBe(true);
+  expect(kilo.modalities).toEqual(['text', 'image']);
+  expect(adapterErrors(kilo)).toEqual([]);
+  expect(beam.modalities).toEqual(['text']);
+  expect(adapterErrors({ ...beam, modalities: ['text', 'image'] })).toEqual([expect.objectContaining({ field: 'modalities' })]);
+  expect(adapterErrors({ ...runcrate, modalities: ['text', 'image'] })).toEqual([expect.objectContaining({ field: 'modalities' })]);
+  for (const adapter of bundledRegistry.adapters) {
+    if (adapter.id !== 'kilo') expect(adapter.modalities).toEqual(['text']);
+  }
+  imageAdapters.add('runcrate');
   try {
-    expect(adapterErrors({ ...kilo, modalities: ['text', 'image'] })).toEqual([]);
+    expect(adapterErrors({ ...runcrate, modalities: ['text', 'image'] })).toEqual([]);
     const updated = validateRegistry({
       ...bundledRegistry,
-      adapters: bundledRegistry.adapters.map(a => a.id === 'kilo' ? { ...a, modalities: ['text', 'image'] as ('text' | 'image')[] } : a)
+      adapters: bundledRegistry.adapters.map(a => a.id === 'runcrate' ? { ...a, modalities: ['text', 'image'] as ('text' | 'image')[] } : a)
     });
-    expect(updated.adapters.find(a => a.id === 'kilo')?.modalities).toEqual(['text', 'image']);
+    expect(updated.adapters.find(a => a.id === 'runcrate')?.modalities).toEqual(['text', 'image']);
   } finally {
-    imageAdapters.delete('kilo');
+    imageAdapters.delete('runcrate');
   }
 });
 

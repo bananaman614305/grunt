@@ -10,6 +10,8 @@ import type { ModelRequest, Source } from './source.js';
 import { bundledRegistry } from '../registry.js';
 import { OpenCode } from './opencode.js';
 import { createLocalApp } from './api.js';
+import { Kilo, KILO_ORIGIN, KILO_PARTICLE } from './kilo.js';
+import { recordDataSharingConsent } from './data-sharing.js';
 // Router behavior is tested independently of the changing published pool and weights.
 const launchRegistry = { ...bundledRegistry, adapters: ['opencode', 'kilo'].map(id => ({
   ...bundledRegistry.adapters.find(adapter => adapter.id === id)!, weight: 0.5
@@ -291,17 +293,32 @@ it.each([false, true])('returns HTTP 429 with earliest retry when all candidates
   const response = await app.request('http://localhost:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...request, stream }) });
   expect(response.status).toBe(429); expect(Number(response.headers.get('retry-after'))).toBeGreaterThan(0); expect(Number(response.headers.get('retry-after'))).toBeLessThanOrEqual(30);
 });
-it('filters disabled, unavailable and unsupported image adapters before drawing', async () => {
+it('routes image requests only to image-capable adapters and substitutes when only text-only adapters exist', async () => {
   const { a, b, sources } = routed();
-  vi.mocked(a.available).mockResolvedValue(false);
-  expect(await sources.complete(request, AbortSignal.timeout(1000))).toEqual({ text: 'kilo done' });
-  expect(a.complete).not.toHaveBeenCalled();
   const app = createLocalApp(sources);
-  const response = await app.request('http://localhost:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...request, messages: [{ role: 'user', content: [{ type: 'text', text: 'describe' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } }] }] }) });
-  // No registry adapter lists images, so the image becomes a text note and the conversation is served instead of failing.
-  expect(response.status).toBe(200); expect(b.complete).toHaveBeenCalledTimes(2);
-  expect(vi.mocked(b.complete).mock.calls.at(-1)![0]).toMatchObject({ messages: [{ content: expect.stringContaining('[image omitted (image/png, 1 bytes)') }] });
-  expect(vi.mocked(b.complete).mock.calls.at(-1)![0].imageInput).toBeUndefined();
+  const imagePayload = { ...request, messages: [{ role: 'user', content: [{ type: 'text', text: 'describe' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } }] }] };
+  // First turn binds the task to text-only opencode (a).
+  expect(await sources.complete(request, AbortSignal.timeout(1000))).toEqual({ text: 'opencode done' });
+  expect(a.complete).toHaveBeenCalledTimes(1);
+  // Second turn attaches an image: routing skips text-only opencode and sends the structured image only to kilo (b).
+  const vision = await app.request('http://localhost:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(imagePayload) });
+  expect(vision.status).toBe(200);
+  expect(a.complete).toHaveBeenCalledTimes(1);
+  expect(b.complete).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(b.complete).mock.calls[0]![0]).toMatchObject({
+    imageInput: true,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'describe' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } }] }]
+  });
+
+  // When only text-only adapters exist in the pool, the image becomes a deterministic text note and never leaks image parts.
+  const textOnly = source('opencode'), textOnly2 = source('runcrate');
+  const textSources = new Sources([textOnly, textOnly2], { registry: () => bundledRegistry, random: () => 0 });
+  try {
+    const fallback = await createLocalApp(textSources).request('http://localhost:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(imagePayload) });
+    expect(fallback.status).toBe(200);
+    expect(vi.mocked(textOnly.complete).mock.calls[0]![0]).toMatchObject({ messages: [{ content: expect.stringContaining('[image omitted (image/png, 1 bytes)') }] });
+    expect(vi.mocked(textOnly.complete).mock.calls[0]![0].imageInput).toBeUndefined();
+  } finally { await textSources.close(); }
 });
 it('hands off the live working tree against a dirty task-start checkpoint', async () => {
   const cwd = await mkdtemp(join(tmpdir(), 'grunt-handoff-'));
@@ -520,4 +537,70 @@ it.each(['primary', 'backup'])('binds first stream text from the %s and mutes la
     expect(seen).toEqual([first + '/winner']);
     expect(pool.status().sources.find(row => row.id === other)?.errorCode).toBeUndefined();
   } finally { for (const end of finish.values()) end(); await pool.close(); }
+});
+
+it.each(['quota', 'upstream'] as const)('never forwards an image request to an unregistered legacy fallback when kilo fails (%s)', async code => {
+  const kilo = source('kilo'), legacy = source('legacy');
+  vi.mocked(kilo.complete).mockRejectedValue(new SourceError(code, 'kilo retryable failure', code === 'quota' ? 60 : undefined));
+  const pool = new Sources([kilo, legacy], { registry: () => bundledRegistry, unrouted: new Set([legacy.id]), random: () => 0 });
+  const imageRequest: ModelRequest = {
+    ...request,
+    imageInput: true,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'describe' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } }] }]
+  };
+  try {
+    await expect(pool.complete(imageRequest, AbortSignal.timeout(1000))).rejects.toMatchObject({ code: 'quota' });
+    expect(kilo.complete).toHaveBeenCalledOnce();
+    expect(legacy.complete).not.toHaveBeenCalled();
+
+    // Naming the unregistered legacy adapter explicitly on an image request is also blocked.
+    await expect(pool.complete({ ...imageRequest, model: legacy.id }, AbortSignal.timeout(1000))).rejects.toBeInstanceOf(RequestError);
+    expect(legacy.complete).not.toHaveBeenCalled();
+  } finally { await pool.close(); }
+});
+
+it('returns a vision-specific refusal without cooling down Kilo for text requests when no free vision model is in the catalog', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'grunt-kilo-vision-cooldown-'));
+  await recordDataSharingConsent(directory, ['kilo']);
+  const fetcher = vi.fn<typeof fetch>(async url => {
+    if (String(url) === `${KILO_ORIGIN}/models`) {
+      return Response.json({ data: [{
+        id: KILO_PARTICLE, isFree: true, pricing: { prompt: '0', completion: '0' },
+        context_length: 1048576, supported_parameters: ['tools', 'max_tokens'],
+        architecture: { input_modalities: ['text'] }
+      }] });
+    }
+    return Response.json({
+      model: KILO_PARTICLE,
+      choices: [{ message: { role: 'assistant', content: 'text still works' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 10, completion_tokens: 4, cost: 0, cost_details: { upstream_inference_cost: 0, upstream_inference_prompt_cost: 0, upstream_inference_completions_cost: 0 } }
+    });
+  });
+  const kilo = new Kilo({ directory, fetcher, anonymous: () => true });
+  const legacy = source('legacy');
+  const pool = new Sources([kilo, legacy], { registry: () => bundledRegistry, unrouted: new Set([legacy.id]), random: () => 0 });
+  const imageRequest: ModelRequest = {
+    ...request,
+    cwd: directory,
+    imageInput: true,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'describe' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } }] }]
+  };
+  try {
+    const error = await pool.complete(imageRequest, AbortSignal.timeout(2000)).catch(e => e);
+    expect(error).toBeInstanceOf(SourceError);
+    expect(error).toMatchObject({ code: 'refused', diagnostics: { failureReason: 'request_body' } });
+    expect(error.message).toMatch(/No Kilo :free model currently supports image input/);
+    expect(legacy.complete).not.toHaveBeenCalled();
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
+
+    // Kilo has no cooldown or failure status from the vision-catalog refusal.
+    const route = pool.observationRoutes().find(row => row.id === 'kilo')!;
+    expect(route.cooldown).toBeNull();
+    expect(route.retired).toBe(false);
+    expect(route.errorCode).toBeUndefined();
+
+    // A subsequent text request immediately reaches Kilo and succeeds.
+    await expect(pool.complete({ ...request, cwd: directory }, AbortSignal.timeout(2000))).resolves.toMatchObject({ text: 'text still works', servedModel: KILO_PARTICLE });
+    expect(legacy.complete).not.toHaveBeenCalled();
+  } finally { await pool.close(); await rm(directory, { recursive: true, force: true }); }
 });

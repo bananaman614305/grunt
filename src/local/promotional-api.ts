@@ -224,10 +224,12 @@ export async function readPromotionalStream(response: Response, model: string | 
       const thinking = ['reasoning_content', 'reasoning'].map(field => delta[field]).find((value): value is string => typeof value === 'string');
       if (thinking !== undefined) { try { observe?.reasoning?.(thinking); } catch { /* Observation cannot alter stream validation. */ } }
       if (delta.content !== undefined && delta.content !== null) {
-        if (finished || typeof delta.content !== 'string') throw invalid('response_content', 'Invalid stream content');
-        text += delta.content;
-        if (delta.content.trim()) progressing = true;
-        if (delta.content.length > 0) flushText(delta.content);
+        if (typeof delta.content !== 'string' || (finished && delta.content.length > 0)) throw invalid('response_content', 'Invalid stream content');
+        if (delta.content.length > 0) {
+          text += delta.content;
+          if (delta.content.trim()) progressing = true;
+          flushText(delta.content);
+        }
       }
       if (delta.tool_calls !== undefined) {
         if (finished || !Array.isArray(delta.tool_calls)) throw invalid('response_tools', 'Invalid tool fragments');

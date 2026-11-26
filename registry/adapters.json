@@ -22,7 +22,8 @@
       "tier": "stable",
       "weight": 0.3368421052631579,
       "modalities": [
-        "text"
+        "text",
+        "image"
       ],
       "install": "builtin:kilo",
       "model": "particle-ai/particle-1:free"

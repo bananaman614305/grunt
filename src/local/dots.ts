@@ -2,7 +2,7 @@ import { observeAttemptDispatch } from './diagnostics.js';
 import { gruntEnv } from '../brand.js';
 import { userTurns } from './harness.js';
 import { readDotsLink } from './dots-link.js';
-import { replayTimeout, SourceError } from './source.js';
+import { messageText, replayTimeout, SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
 
 export const DOTS_INSTRUCTION = 'Answer here in this conversation. Do not start Codex or Work tasks.';
@@ -32,6 +32,7 @@ export class Dots implements Source {
   }
   async complete(request: ModelRequest, caller: AbortSignal) {
     if (!this.enabled) throw new SourceError('not_installed', 'Add dots to GRUNT_SOURCES to enable it');
+    if (request.imageInput) throw new SourceError('refused', 'Dots supports text inputs only');
     const link = await readDotsLink(this.options.env);
     if (!link) throw new SourceError('not_installed', 'Run usegrunt dots link to configure your dot');
     const prompt = userTurns(request).at(-1);
@@ -40,7 +41,7 @@ export class Dots implements Source {
     const signal = AbortSignal.any([caller, this.shutdown.signal, AbortSignal.timeout(timeout)]);
     let id: string | undefined;
     try {
-      const messages = request.messages.filter(m => ['user', 'assistant'].includes(m.role)).map(m => ({ role: m.role, content: m.content }));
+      const messages = request.messages.filter(m => ['user', 'assistant'].includes(m.role)).map(m => ({ role: m.role, content: messageText(m.content) }));
       // The harness may supply canonical user turns separately from wire messages.
       const latest = messages.findLastIndex(m => m.role === 'user');
       if (latest < 0) messages.push({ role: 'user', content: prompt + '\n\n' + DOTS_INSTRUCTION });

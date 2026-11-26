@@ -9,7 +9,7 @@ import type { FreeApiGrant } from './free-api.js';
 import { JsonToolBridge } from './json-tool-bridge.js';
 import { readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
 import { quotaRetryAfter, quotaSeconds } from './quota-timing.js';
-import { completionEnding, emitStreamText, endingOf, withEnding, lengthLimited, truncatedCompletion, SourceError, requestRefusal } from './source.js';
+import { completionEnding, emitStreamText, endingOf, messageText, withEnding, lengthLimited, truncatedCompletion, SourceError, requestRefusal } from './source.js';
 import type { Completion, Message, ModelRequest, Source, ToolCall } from './source.js';
 
 export const IFM_MODEL = 'IFM/K2-Horizon-375B-A23B';
@@ -129,7 +129,7 @@ class ReasoningMemory {
     while (this.entries.size > MEMORY_LIMIT) this.entries.delete(this.entries.keys().next().value!);
   }
   recall(message: Message) {
-    return this.entries.get(message.tool_calls?.length ? `c:${callKey(message.tool_calls)}` : `t:${textKey(message.content)}`);
+    return this.entries.get(message.tool_calls?.length ? `c:${callKey(message.tool_calls)}` : `t:${textKey(messageText(message.content))}`);
   }
 }
 

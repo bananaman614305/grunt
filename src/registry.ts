@@ -83,7 +83,7 @@ export const knownAdapters = new Set(Object.keys(installers));
 // Shipped adapters with kind "model"; the other shipped adapters are agents.
 export const modelAdapters = new Set(['kilo', 'nvidia', 'zro', 'tokenharbor', 'runcrate', 'apinex', 'livekit', 'pollinations', 'beatapi', 'nous', 'kenari', 'numes', 'goedel', 'crowllm', 'fikra', 'openference', 'darus', 'aperture-ai', 'reflection-beam', 'antseed-vikey', 'millionseek', 'freepi', 'ifm']);
 // Shipped adapters whose code explicitly supports image input in addition to text.
-export const imageAdapters = new Set<string>();
+export const imageAdapters = new Set<string>(['kilo']);
 // Shipped adapters whose code serves exactly one model.
 export const pinnedModels: Readonly<Record<string, string>> = { 'aperture-ai': 'baidu/ernie-5.5-flash-preview:free', darus: 'darus/deepseek-v4.1-flash-1017-FREE', fikra: 'deepseek-v4-1-flash-economy-free', openference: 'DeepSeek-V4.1-Flash-1017-Free', crowllm: 'glm-5.3-flash:free', 'reflection-beam': 'reflection/beam-free', millionseek: 'deepseek-v4.1-flash-free', freepi: 'deepseek-v4.1-flash', ifm: 'IFM/K2-Horizon-375B-A23B', 'antseed-vikey': 'deepseek/deepseek-v4.1-flash-free', goedel: 'deepseek/deepseek-v4.1-flash', nous: 'qwen/qwen4-max:free' };
 // Explicit fallback descriptors do not enroll sources in the bundled registry.
@@ -247,7 +247,7 @@ export function adapterErrors(value: unknown): RegistryError[] {
   if (known) {
     check(a.kind === (modelAdapters.has(id as string) ? 'model' : 'agent'), 'kind');
     check(a.install === installers[id as string], 'install');
-    check(!modalities || modalities.every(m => m === 'text' || m === 'image' && imageAdapters.has(id as string)), 'modalities');
+    check(!modalities || modalities.includes('text') && modalities.every(m => m === 'text' || m === 'image' && imageAdapters.has(id as string)), 'modalities');
     check(pinnedModels[id as string] === undefined || a.model === pinnedModels[id as string], 'model');
     check(a.declarative === undefined, 'declarative');
   } else if (declarativeInstall && !disabled) {

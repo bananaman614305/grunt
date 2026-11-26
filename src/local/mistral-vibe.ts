@@ -6,7 +6,7 @@ import { constants } from 'node:fs';
 import { access, chmod, lstat, mkdir, mkdtemp, open, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { replayTimeout, SourceError, requestRefusal } from './source.js';
+import { messageText, replayTimeout, SourceError, requestRefusal } from './source.js';
 import { JsonToolBridge } from './json-tool-bridge.js';
 import type { Completion, ModelRequest, Source } from './source.js';
 
@@ -215,7 +215,7 @@ export class MistralVibe implements Source {
       signal.throwIfAborted(); const paths = await this.ready(); signal.throwIfAborted();
       await mkdir(paths.work, { recursive: true, mode: 0o700 });
       temporary = await mkdtemp(join(paths.home, '.request-')); await chmod(temporary, 0o700);
-      const prompt = request.handoffPrompt ?? (request.messages.length === 1 && request.messages[0]?.role === 'user' ? request.messages[0].content
+      const prompt = request.handoffPrompt ?? (request.messages.length === 1 && request.messages[0]?.role === 'user' ? messageText(request.messages[0].content)
         : `Continue this conversation and answer the latest user request. The following JSON is the complete conversation, including its system and developer instructions:\n${JSON.stringify(request.messages)}`);
       if (!prompt.trim()) throw new SourceError('upstream', 'No text in the Mistral Vibe request');
       const promptFile = join(temporary, 'prompt.txt'), output = join(temporary, 'export');
