@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { lstat, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, open, readdir, readFile, rename, rm, rmdir, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { basename, dirname, join } from 'node:path';
 import { configRoot } from '../brand.js';
@@ -63,8 +63,10 @@ export async function prepareServiceMigration(options: {
   const stat = await lstat(file);
   if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o022) || stat.size > 262144) throw new Error('The existing Grunt service file is unsafe');
   const backup = join(dirname(file), `.${oldName}-${randomUUID()}`);
-  const dropIns = linux && existsSync(file + '.d');
-  if (dropIns && existsSync(replacement + '.d')) throw new Error('Both Grunt identities have service overrides');
+  const previousOverrides = file + '.d', replacementOverrides = replacement + '.d';
+  const dropIns = linux && existsSync(previousOverrides);
+  const replacementDropIns = linux && existsSync(replacementOverrides);
+  if (dropIns && replacementDropIns) throw new Error('Both Grunt identities have service overrides');
   const systemctl = (...args: string[]) => run('systemctl', ['--user', ...args]);
   const domain = `gui/${process.getuid!()}`;
   const enable = (name: string, state = enabled) => state === 'enabled' || state === 'enabled-runtime'
@@ -75,17 +77,45 @@ export async function prepareServiceMigration(options: {
   const additions = Object.fromEntries(Object.entries(env).filter(
     ([name]) => name.startsWith('GRUNT_') && options.original[name] === undefined
   ));
-  const contents = linux ? (await readFile(file, 'utf8')).trimEnd() + '\n\n[Service]\n'
-    + systemdEnvironment(additions) + '\n' : launchAgent('grunt', node, entry, env);
+  const environment = systemdEnvironment(additions);
+  let translatedDropIn: string | undefined;
+  if (linux && environment) {
+    const localDirectory = dropIns ? previousOverrides : replacementDropIns ? replacementOverrides : undefined;
+    if (localDirectory) {
+      const info = await lstat(localDirectory);
+      if (!info.isDirectory() || info.uid !== process.getuid?.()) throw new Error('The existing Grunt service overrides are unsafe');
+    }
+    const active = await systemctl('show', oldName, '-p', 'DropInPaths', '--value');
+    const activeNames = typeof active === 'string'
+      ? [...active.matchAll(/(?:^|\s)(\/.*?\.conf)(?=\s|$)/g)].map(([, path]) => basename(path!)) : [];
+    const names = [...activeNames, ...(localDirectory ? await readdir(localDirectory) : [])];
+    const last = names.filter(name => name.endsWith('.conf')).sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b))).at(-1);
+    // An empty Environment= clears earlier assignments. Apply the translated
+    // values after the existing overrides, which keep their original contents.
+    if (last) translatedDropIn = join(replacementOverrides, last.slice(0, -5) + '~grunt-migration.conf');
+  }
+  const contents = linux ? await readFile(file, 'utf8') : launchAgent('grunt', node, entry, env);
+  const unit = linux && environment && !translatedDropIn ? contents.trimEnd() + '\n\n[Service]\n' + environment + '\n' : contents;
   let installed = false, moved = false, movedDropIns = false, disabling = false, starting = false;
+  let addedDropIn = false, createdDropInDirectory = false;
   return {
     async apply() {
       if (linux) { disabling = true; await systemctl('disable', oldName); }
       await rename(file, backup);
       moved = true;
-      await writeFile(replacement, contents, { flag: 'wx', mode: 0o600 });
+      await writeFile(replacement, unit, { flag: 'wx', mode: 0o600 });
       installed = true;
-      if (dropIns) { await rename(file + '.d', replacement + '.d'); movedDropIns = true; }
+      if (dropIns) { await rename(previousOverrides, replacementOverrides); movedDropIns = true; }
+      if (translatedDropIn) {
+        if (!movedDropIns && !replacementDropIns) {
+          await mkdir(replacementOverrides, { mode: 0o700 });
+          createdDropInDirectory = true;
+        }
+        const handle = await open(translatedDropIn, 'wx', 0o600);
+        addedDropIn = true;
+        try { await handle.writeFile('[Service]\n' + environment + '\n'); }
+        finally { await handle.close(); }
+      }
       if (linux) { await systemctl('daemon-reload'); await enable(newName, options.enableNew ? 'enabled' : enabled); }
     },
     async start() {
@@ -99,7 +129,9 @@ export async function prepareServiceMigration(options: {
         else await bootoutService(run, domain, 'ai.grunt.service');
       }
       if (linux && installed) await systemctl('disable', newName);
-      if (movedDropIns) await rename(replacement + '.d', file + '.d');
+      if (addedDropIn && translatedDropIn) await rm(translatedDropIn);
+      if (createdDropInDirectory) await rmdir(replacementOverrides);
+      if (movedDropIns) await rename(replacementOverrides, previousOverrides);
       if (installed) await rm(replacement);
       if (moved) await rename(backup, file);
       if (linux && disabling) { await systemctl('daemon-reload'); await enable(oldName); }

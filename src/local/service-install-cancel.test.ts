@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
-import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type * as ChildProcess from 'node:child_process';
 import type * as FileSystem from 'node:fs/promises';
@@ -23,6 +23,7 @@ vi.mock('node:os', async original => {
 
 import { installService, installBackgroundService } from './wizard.js';
 import { automaticPoolSelection } from './automatic-pool.js';
+import { serviceEnvironment } from './service-environment.js';
 
 let directory: string;
 const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
@@ -57,6 +58,19 @@ afterEach(async () => {
   vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.restoreAllMocks();
   await rm(directory, { recursive: true, force: true });
 });
+
+async function effectiveEnvironment(unit: string, inherited: string[] = []) {
+  const files = (await readdir(unit + '.d')).filter(name => name.endsWith('.conf')).map(name => join(unit + '.d', name));
+  const overrides = [...inherited, ...files].sort((a, b) => Buffer.compare(Buffer.from(basename(a)), Buffer.from(basename(b))));
+  let environment: NodeJS.ProcessEnv = {};
+  for (const file of [unit, ...overrides]) {
+    for (const [, assignment] of (await readFile(file, 'utf8')).matchAll(/^Environment=(.*)$/gm)) {
+      if (assignment) Object.assign(environment, serviceEnvironment(assignment));
+      else environment = {};
+    }
+  }
+  return environment;
+}
 
 it('does not start an already-cancelled runtime installation', async () => {
   fixture.controller!.abort();
@@ -172,15 +186,16 @@ it.each(['milo', 'grunt'])('uses grunt.service and keeps the effective port and 
   await installService(['kilo', 'antseed-vikey']);
   const current = await readFile(join(units, 'grunt.service'), 'utf8');
   expect(await readFile(join(units, 'grunt.service.d/custom.conf'), 'utf8')).toBe(custom);
+  expect(current).toBe(original);
   if (identity === 'milo') {
-    expect(current).toContain('Environment="GRUNT_PORT=8792"');
-    expect(current).toContain('Environment="GRUNT_OPENCODE_URL=http://127.0.0.1:3301/v1"');
+    expect(await effectiveEnvironment(join(units, 'grunt.service'))).toMatchObject({
+      GRUNT_PORT: '8792', GRUNT_OPENCODE_URL: 'http://127.0.0.1:3301/v1'
+    });
     expect(fixture.spawn.mock.calls.map(([, args]) => args)).toContainEqual(['--user', 'stop', 'milo.service']);
     expect(fixture.execFile.mock.calls.map(([, args]) => args)).toEqual(expect.arrayContaining([
       ['--user', 'disable', 'milo.service'], ['--user', 'enable', 'grunt.service'], ['--user', 'start', 'grunt.service']
     ]));
   } else {
-    expect(current).toBe(original);
     expect(fixture.spawn.mock.calls.map(([, args]) => args)).toContainEqual(['--user', 'restart', 'grunt.service']);
   }
   expect(JSON.parse(await readFile(join(directory, 'grunt/installed-port.json'), 'utf8'))).toBe(8792);
@@ -192,13 +207,45 @@ it.each(['milo', 'grunt'])('uses grunt.service and keeps the effective port and 
   await expect(readFile(join(units, 'milo.service'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
+it.each([false, true])('keeps the effective state directory and port after migrating an environment reset (inherited override: %s)', async inherited => {
+  const units = join(directory, 'xdg/systemd/user');
+  const legacy = join(units, 'milo.service'), current = join(units, 'grunt.service');
+  const state = join(directory, 'grunt'), entry = join(state, 'runtime/dist/local/main.js');
+  const ownerOverride = 'zz-owner.conf';
+  const reset = `[Service]\nEnvironment=\nEnvironment="MILO_CONFIG_DIR=${state}" "MILO_PORT=8792"\n`;
+  const inheritedOverride = join(units, 'service.d', 'zzzz-type.conf');
+  const inheritedFiles = inherited ? [inheritedOverride] : [];
+  if (inherited) {
+    await mkdir(join(units, 'service.d'), { recursive: true });
+    await writeFile(inheritedOverride, reset, { mode: 0o600 });
+  }
+  await mkdir(legacy + '.d', { recursive: true });
+  await writeFile(legacy, `[Service]\nExecStart="${process.execPath}" "${entry}"\nEnvironment="MILO_PORT=8788"\n`, { mode: 0o600 });
+  await writeFile(join(legacy + '.d', ownerOverride), reset, { mode: 0o600 });
+  fixture.execFile.mockImplementation(async (_binary: string, args: string[]) => {
+    if (args.includes('Environment')) {
+      const effective = await effectiveEnvironment(legacy, inheritedFiles);
+      return { stdout: Object.entries(effective).map(([name, value]) => `"${name}=${value}"`).join(' ') };
+    }
+    if (args.includes('DropInPaths')) return { stdout: [join(legacy + '.d', ownerOverride), ...inheritedFiles].join(' ') };
+    if (args.includes('start') && args.includes('grunt.service')) {
+      expect(await effectiveEnvironment(current, inheritedFiles)).toMatchObject({ GRUNT_CONFIG_DIR: state, GRUNT_PORT: '8792' });
+    }
+    return { stdout: '' };
+  });
+  await installService(['kilo']);
+  expect(await readFile(join(current + '.d', ownerOverride), 'utf8')).toBe(reset);
+  expect(await readFile(join(state, 'installed-port.json'), 'utf8')).toBe('8792');
+});
+
 it('restores the old runtime before restarting the legacy unit when migration cannot start Grunt', async () => {
   const units = join(directory, 'xdg/systemd/user'), oldUnit = join(units, 'milo.service');
   const state = join(directory, 'grunt'), runtime = join(state, 'runtime');
   const entry = join(runtime, 'dist/local/main.js');
   const original = `[Service]\nExecStart="${process.execPath}" "${entry}"\n`;
-  await mkdir(units, { recursive: true });
+  await mkdir(oldUnit + '.d', { recursive: true });
   await writeFile(oldUnit, original, { mode: 0o600 });
+  await writeFile(join(oldUnit + '.d', 'owner.conf'), '[Service]\nEnvironment=MILO_PORT=8792\n', { mode: 0o600 });
   await mkdir(runtime, { mode: 0o700 });
   const oldRuntime = join(runtime, 'previous-runtime');
   await writeFile(oldRuntime, 'old runtime');
@@ -212,7 +259,9 @@ it('restores the old runtime before restarting the legacy unit when migration ca
   });
   await expect(installService(['kilo'])).rejects.toThrow('Synthetic start failure');
   expect(await readFile(oldUnit, 'utf8')).toBe(original);
+  expect(await readdir(oldUnit + '.d')).toEqual(['owner.conf']);
   await expect(readFile(join(units, 'grunt.service'))).rejects.toMatchObject({ code: 'ENOENT' });
+  await expect(readdir(join(units, 'grunt.service.d'))).rejects.toMatchObject({ code: 'ENOENT' });
   expect(fixture.execFile.mock.calls.map(([, args]) => args)).toContainEqual(['--user', 'start', 'milo.service']);
 });
 
