@@ -7,8 +7,8 @@ import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { housekeeping, userText } from './harness.js';
-import { RequestError, SourceError, answeredBy, observeRequestInput } from './source.js';
-import type { Completion, Message, ModelRequest, Tool, ToolCall, Sources } from './source.js';
+import { RequestError, SourceError, answeredBy, currentStreamReplyId, needsFunctionTools, observeRequestInput } from './source.js';
+import type { Completion, Message, ModelRequest, Tool, ToolCall, Sources, StreamTextObserver } from './source.js';
 import { currentDiagnosticContext, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticContext } from './diagnostics.js';
 import { OBSERVATION_PATH, observationLimit, observeDaemon } from './observe.js';
@@ -244,7 +244,7 @@ const callerAgents = [['claude-code', /\bclaude-cli\b|\bclaude-code\b/i], ['code
   ['opencode', /\bopencode\b/i], ['beeline', /\bbeeline\b/i], ['pi', /\bpi-coding-agent\b/i]] as const;
 
 export function createLocalApp(sources: Sources, options: { cwd?: string; port?: number; log?: (cwd: string) => void; dotsEnv?: NodeJS.ProcessEnv; observation?: () => ObservationRuntime } = {}) {
-  const app = new Hono();
+  const app = new Hono<{ Variables: { streamFinished?: Promise<boolean> } }>();
   const startedAt = Date.now();
   app.use('*', async (c, next) => {
     const port = options.port ?? 8788;
@@ -268,13 +268,18 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
         await next();
       } catch (error) { status = 500; throw error; }
       finally {
-        if (tracked) {
+        const finish = (cancelled: boolean) => {
           const httpStatus = status ?? c.res.status, source = c.res.headers.get('X-Grunt-Source');
           store?.record({ version: 1, id: randomUUID(), at: Date.now(), requestId, kind: context.kind, type: 'request.finish', httpStatus,
-            durationMs: Math.max(0, performance.now() - startedMono), outcome: c.req.raw.signal.aborted ? 'cancelled' : httpStatus >= 400 ? 'failed' : 'passed',
+            durationMs: Math.max(0, performance.now() - startedMono), outcome: (cancelled || c.req.raw.signal.aborted) ? 'cancelled' : httpStatus >= 400 || context.errorCode ? 'failed' : 'passed',
             ...(source ? { source } : {}), ...(context.local ? { reason: 'local' } : {}), ...(context.errorCode ? { errorCode: context.errorCode } : {}),
             ...(context.responseBytes === undefined ? {} : { responseBytes: context.responseBytes }),
             ...(context.incomplete ? { failureReason: 'length' } : {}) });
+        };
+        if (tracked) {
+          const pending = c.get('streamFinished');
+          if (pending) void pending.then(finish);
+          else finish(false);
         }
       }
     };
@@ -344,20 +349,40 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
       const local = housekeeping(request);
       if (local !== undefined) { const context = currentDiagnosticContext(); if (context) context.local = true; }
       options.log?.(`${request.cwd}; cwd=${request.cwdSource}; classification=${local === undefined ? 'user' : 'housekeeping'}`);
-      const complete = (signal: AbortSignal, onStreamText?: (source: string, text: string) => void): Promise<Completion> => local === undefined ? sources.complete(request, signal, onStreamText) : Promise.resolve({ text: local });
+      const complete = (signal: AbortSignal, onStreamText?: StreamTextObserver): Promise<Completion> => local === undefined ? sources.complete(request, signal, onStreamText) : Promise.resolve({ text: local });
       const controller = new AbortController();
       const signal = AbortSignal.any([c.req.raw.signal, controller.signal]);
+      const context = currentDiagnosticContext();
+      const sendStream = (write: Parameters<typeof streamSSE>[1]) => {
+        let finish!: (cancelled: boolean) => void;
+        c.set('streamFinished', new Promise<boolean>(resolve => { finish = resolve; }));
+        return streamSSE(c, async stream => {
+          const abort = () => stream.abort();
+          stream.onAbort(() => { controller.abort(); finish(true); });
+          c.req.raw.signal.addEventListener('abort', abort, { once: true });
+          try {
+            if (signal.aborted) abort();
+            else await write(stream);
+          } catch (error) {
+            if (context) context.errorCode = 'upstream';
+            throw error;
+          } finally {
+            c.req.raw.signal.removeEventListener('abort', abort);
+            finish(signal.aborted);
+          }
+        });
+      };
       const failure = (e: unknown) => {
         const err = e instanceof SourceError ? e : new SourceError('upstream', 'grunt source failed');
+        if (context) context.errorCode = signal.aborted ? 'cancelled' : err.code;
         const invalid = err instanceof RequestError;
         return { err, body: { ...(api === 'messages' ? { type: 'error' } : {}), error: { type: invalid ? 'invalid_request_error' : api === 'messages' ? 'api_error' : 'server_error', code: err.code, message: err.message } } };
       };
       try {
         if (request.cwdSource === 'scratch') await mkdir(request.cwd, { recursive: true });
         if (request.stream && local === undefined) {
-          // Wait until either the first verified text delta arrives (committing SSE headers
-          // so tokens stream incrementally) or the completion settles/fails (preserving HTTP
-          // 429/5xx failover before the first delta and non-streaming/tool-call fallback).
+          const bufferPreamble = needsFunctionTools(request);
+          let preamble = '', preambleReply: symbol | undefined;
           const queue: string[] = [];
           let wake: (() => void) | undefined;
           let startedSource: string | undefined;
@@ -368,17 +393,24 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
           let resolveReady!: () => void;
           const ready = new Promise<void>(resolve => { resolveReady = resolve; });
           const notify = () => { wake?.(); wake = undefined; };
-          const onText = (sourceId: string, delta: string) => {
-            if (!delta) return;
+          const onText: StreamTextObserver = (sourceId, delta) => {
+            if (!delta || signal.aborted) return false;
+            if (!streamStarted && bufferPreamble) {
+              const replyId = currentStreamReplyId();
+              preamble = (preambleReply === replyId ? preamble : '') + delta;
+              preambleReply = replyId;
+              // Short preambles are included in the validated completion if this attempt wins.
+              if (Buffer.byteLength(preamble) <= 256) return false;
+              delta = preamble;
+              preamble = '';
+            }
+            queue.push(delta);
             if (!streamStarted) {
               streamStarted = true;
               startedSource = sourceId;
-              queue.push(delta);
               resolveReady();
-            } else {
-              queue.push(delta);
-              notify();
-            }
+            } else notify();
+            return true;
           };
           void complete(signal, onText).then(
             result => { completionResult = result; done = true; resolveReady(); notify(); },
@@ -389,27 +421,26 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
             if (completionError !== undefined) throw completionError;
             signal.throwIfAborted();
             const completion = completionResult!;
-            const context = currentDiagnosticContext();
             if (context) context.responseBytes = Buffer.byteLength(completion.text);
             const source = answeredBy.get(completion);
             if (source) c.header('X-Grunt-Source', source);
             if (sources.preparing.size) c.header('X-Grunt-Preparing', [...sources.preparing].join(','));
             const result = encode(completion, request.model, api, request.responseNamespaces);
-            return streamSSE(c, async stream => {
-              stream.onAbort(() => controller.abort());
+            return sendStream(async stream => {
               for (const event of events(result, api, { includeUsage })) await stream.writeSSE(event);
             });
           }
           if (startedSource) c.header('X-Grunt-Source', startedSource);
           if (sources.preparing.size) c.header('X-Grunt-Preparing', [...sources.preparing].join(','));
-          const context = currentDiagnosticContext();
-          return streamSSE(c, async stream => {
-            stream.onAbort(() => { controller.abort(); notify(); });
+          return sendStream(async stream => {
+            stream.onAbort(notify);
             const nextDelta = async (): Promise<string | undefined> => {
               while (!queue.length && !done && !signal.aborted) {
                 await new Promise<void>(resolve => { wake = resolve; });
               }
-              return queue.shift();
+              const delta = queue.shift();
+              if (context && delta !== undefined) context.responseBytes = (context.responseBytes ?? 0) + Buffer.byteLength(delta);
+              return delta;
             };
             const id = randomUUID(), created = Math.floor(Date.now() / 1000);
             if (api === 'chat') {
@@ -421,7 +452,12 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
               for (let delta = await nextDelta(); delta !== undefined; delta = await nextDelta()) {
                 await writeChunk({ content: delta });
               }
-              if (signal.aborted || completionError !== undefined || !completionResult) return;
+              if (signal.aborted) return;
+              if (completionError !== undefined || !completionResult) {
+                const { err } = failure(completionError);
+                await stream.writeSSE({ data: JSON.stringify({ error: { type: 'server_error', code: err.code, message: err.message } }) });
+                return;
+              }
               if (context) context.responseBytes = Buffer.byteLength(completionResult.text);
               for (let index = 0; index < (completionResult.calls?.length ?? 0); index++) {
                 await writeChunk({ tool_calls: [{ ...completionResult.calls![index]!, index }] });
@@ -502,14 +538,12 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
         }
         const completion = await complete(signal);
         signal.throwIfAborted();
-        const context = currentDiagnosticContext();
         if (context) context.responseBytes = Buffer.byteLength(completion.text);
         const source = answeredBy.get(completion);
         if (source) c.header('X-Grunt-Source', source);
         if (sources.preparing.size) c.header('X-Grunt-Preparing', [...sources.preparing].join(','));
         const result = encode(completion, request.model, api, request.responseNamespaces);
-        if (request.stream) return streamSSE(c, async stream => {
-          stream.onAbort(() => controller.abort());
+        if (request.stream) return sendStream(async stream => {
           for (const event of events(result, api, { includeUsage })) await stream.writeSSE(event);
         });
         return c.json(result);

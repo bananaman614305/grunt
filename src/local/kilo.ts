@@ -4,7 +4,7 @@ import { readDataSharingConsent } from './data-sharing.js';
 import { providerGrantDirectory, readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
 import { JsonToolBridge } from './json-tool-bridge.js';
 import { readPromotionalStream } from './promotional-api.js';
-import { completionEnding, emitStreamText, endingOf, hasEmittedStreamText, withEnding, lengthLimited, truncatedCompletion, needsFunctionTools, SourceError } from './source.js';
+import { completionEnding, emitStreamText, endingOf, hasEmittedStreamText, resetUncommittedStreamReply, withEnding, lengthLimited, truncatedCompletion, needsFunctionTools, SourceError } from './source.js';
 import { diagnosticFetch, observeAttemptDispatch, recordAttemptFailure } from './diagnostics.js';
 import type { SafeDiagnosticMetadata } from './diagnostics.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
@@ -230,6 +230,7 @@ export class Kilo implements Source {
   }
   private async ask(model: string, body: string, origin: string, grant: { token: string } | undefined, request: ModelRequest, messages: ModelRequest['messages'],
     validators: Map<string, ValidateFunction>, limit: number | undefined, signal: AbortSignal, output?: () => void): Promise<Completion> {
+    resetUncommittedStreamReply();
     observeAttemptDispatch({ model, account: grant ? 'vaulted' : 'anonymous', ...(limit === undefined ? {} : { maxOutputTokens: limit }) });
     const response = await abortable(diagnosticFetch(this.options.fetcher ?? fetch, this.id, 'chat.completions')(`${origin}/chat/completions`, { method: 'POST', redirect: 'error', signal,
       headers: { 'Content-Type': 'application/json', ...(grant ? { Authorization: `Bearer ${grant.token}` } : {}) }, body }), signal); status(response);
