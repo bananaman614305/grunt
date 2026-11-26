@@ -446,30 +446,35 @@ it.each([false, true])('rejects an unsupported tool type with 400 and records no
   expect(a.complete).toHaveBeenCalledOnce();
 });
 
-it.each(['backup wins', 'primary fails', 'primary wins'] as const)('settles one pre-output hedge when %s', async ending => {
+it.each(['backup wins', 'primary fails', 'primary wins', 'backup fails'] as const)('settles one pre-output hedge when %s', async ending => {
   const primary = source('runcrate'), backup = source('kilo');
   let failPrimary!: (error: SourceError) => void, finishPrimary!: () => void, finishBackup!: () => void;
-  let primarySignal!: AbortSignal, backupSignal!: AbortSignal;
+  let primarySignal!: AbortSignal, backupSignal!: AbortSignal, failBackup!: (error: SourceError) => void;
   vi.mocked(primary.complete).mockImplementationOnce((_request, signal) => {
     primarySignal = signal;
     return new Promise((resolve, reject) => { failPrimary = reject; finishPrimary = () => resolve({ text: 'primary' }); });
   });
   vi.mocked(backup.complete).mockImplementationOnce((_request, signal) => {
     backupSignal = signal;
-    return new Promise(resolve => { finishBackup = () => resolve({ text: 'backup' }); });
+    return new Promise((resolve, reject) => { failBackup = reject; finishBackup = () => resolve({ text: 'backup' }); });
   });
   const pool = new Sources([primary, backup], { registry: () => bundledRegistry, random: () => 0, hedgeAfterMs: 10 });
   try {
     const reply = pool.complete(request, AbortSignal.timeout(2000));
     await vi.waitFor(() => expect(backup.complete).toHaveBeenCalledOnce());
-    if (ending === 'primary wins') {
+    if (ending === 'primary wins' || ending === 'backup fails') {
+      if (ending === 'backup fails') {
+        failBackup(replayTimeout('no output', false));
+        await vi.waitFor(() => expect(pool.status().sources.find(s => s.id === backup.id)?.retryAt).toBeDefined());
+      }
+      expect(primarySignal.aborted).toBe(false);
       finishPrimary();
       expect(await reply).toEqual({ text: 'primary' });
-      expect(backupSignal.aborted).toBe(true);
+      if (ending === 'primary wins') expect(backupSignal.aborted).toBe(true);
       finishBackup();
     } else {
       if (ending === 'primary fails') {
-        failPrimary(new SourceError('upstream', 'gateway'));
+        failPrimary(replayTimeout('no output', false));
         await vi.waitFor(() => expect(pool.status().sources.find(s => s.id === primary.id)?.retryAt).toBeDefined());
       }
       finishBackup();

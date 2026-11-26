@@ -496,19 +496,33 @@ export class Sources {
       const changed = eligible();
       this.checking.add(id);
       if (changed) return changed;
+      const probeTools = this.registeredRouter?.needsToolProbe(id) === true;
+      if (probeTools && !toolCapable(source)) return { outcome: 'deferred', code: 'upstream' };
+      const name = 'check_access';
+      const tools: Tool[] = probeTools ? [{ type: 'function', function: { name, parameters: { type: 'object', properties: {}, additionalProperties: false } } }] : [];
+      const prompt = probeTools ? 'Call check_access once with an empty object.' : 'Say hello in one short sentence.';
       const guarded: Source = { id, available: () => source.available(), complete: async (request, signal) => {
         const reply = await source.complete(request, signal);
         signal.throwIfAborted();
+        if (probeTools) {
+          const checked = guardToolCalls(reply, request);
+          const call = checked.calls?.[0];
+          if (checked.calls?.length !== 1 || !call?.id || call.type !== 'function' || call.function.name !== name
+            || Object.keys(JSON.parse(call.function.arguments)).length) {
+            throw new SourceError('upstream', 'Maintenance received no valid probe call', undefined, undefined, { httpStatus: 200, failureReason: 'response_tools' });
+          }
+          return checked;
+        }
         if (!reply.text.trim()) throw new SourceError('upstream', 'Maintenance received no reply');
         return reply;
       } };
       guard = this.observation.guard(id);
       // This fixed synthetic probe never contains caller or repository data.
-      await this.observation.complete(guarded, { model: id, cwd, messages: [{ role: 'user', content: 'Say hello in one short sentence.' }], tools: [], stream: false, maxTokens: 1024, publicContext: true }, signal, guard);
+      await this.observation.complete(guarded, { model: id, cwd, messages: [{ role: 'user', content: prompt }], tools, stream: false, maxTokens: 1024, publicContext: true }, signal, guard);
       signal.throwIfAborted();
       const newer = newerEvidence();
       if (newer) return newer;
-      this.registeredRouter?.verified(id);
+      this.registeredRouter?.verified(id, probeTools);
       return { outcome: 'passed', evidence: 'reply', lastSuccessAt: now() };
     } catch (error) {
       caller.throwIfAborted();
@@ -519,7 +533,9 @@ export class Sources {
       if (failure.code === 'cancelled') return { outcome: 'deferred', code: 'cancelled' };
       const retryAfter = failure.code === 'quota' ? (typeof failure.retryAfter === 'number' && Number.isFinite(failure.retryAfter) && failure.retryAfter >= 0 ? failure.retryAfter : 3600) : undefined;
       this.observation.failed(id, failure.code, retryAfter);
-      await this.registeredRouter?.recordFailure(id, failure);
+      // A failed recovery trial extends its existing hold. Routine access
+      // checks keep their observation and can recover on fresh availability.
+      if (this.observation.routingBackoff(id)) await this.registeredRouter?.recordFailure(id, failure);
       const retryAt = retryAfter === undefined ? undefined : now() + retryAfter * 1000;
       return { outcome: 'failed', code: failure.code, ...(retryAt !== undefined && Number.isFinite(retryAt) ? { retryAt } : {}) };
     } finally {

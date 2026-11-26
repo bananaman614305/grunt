@@ -7,8 +7,7 @@ import { RETIRE_AFTER_FAILURES } from './routing.js';
 import { SourceError, Sources, requestRefusal } from './source.js';
 import type { ModelRequest, Source } from './source.js';
 
-// Retirement must follow provider health: local request-shape refusals never count, short Retry-After hints are
-// cooldowns, and a retired route gets one real trial after a bounded wait instead of waiting a day.
+// Exercise provider health transitions through real route selection.
 afterEach(() => vi.restoreAllMocks());
 const registry: Registry = { ...bundledRegistry, adapters: ['opencode', 'kilo'].map(id => ({ ...bundledRegistry.adapters.find(adapter => adapter.id === id)!, weight: 0.5 })) };
 const ask = (content: string): ModelRequest => ({ model: 'grunt', messages: [{ role: 'user', content }], cwd: '/tmp', tools: [], stream: false });
@@ -53,15 +52,19 @@ it('marks the JsonToolBridge conversation refusal as a local request refusal', (
   expect(requestRefusal('x', 'request_tool_schema').diagnostics).toEqual({ failureReason: 'request_tool_schema' });
 });
 
-it('treats a 503 with a short Retry-After as a cooldown that never retires the route', async () => {
+it('counts gateway failures toward retirement while honoring their retry hints', async () => {
   const routes = pool(() => new SourceError('upstream', 'Overloaded', 20, undefined, { httpStatus: 503 }));
   try {
-    for (let i = 0; i < RETIRE_AFTER_FAILURES * 2; i++) {
+    for (let i = 1; i <= RETIRE_AFTER_FAILURES; i++) {
       await turn(routes);
-      expect(routes.sources.retired('opencode')).toBe(false);
-      routes.advance(21 * 1000);
+      expect(routes.sources.retired('opencode')).toBe(i === RETIRE_AFTER_FAILURES);
+      if (i < RETIRE_AFTER_FAILURES) {
+        routes.advance(19000);
+        await turn(routes);
+        expect(routes.a.complete).toHaveBeenCalledTimes(i);
+        routes.advance(2000);
+      }
     }
-    expect(routes.a.complete).toHaveBeenCalledTimes(RETIRE_AFTER_FAILURES * 2);
   } finally { await routes.sources.close(); }
 });
 

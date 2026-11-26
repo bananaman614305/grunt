@@ -178,7 +178,7 @@ no longer accepted; operators who previously used it must set
   hours. A parallel failure inside the delay does not extend the slow cooldown.
   Alternating outage symptoms share one retirement streak. Invalid function
   calls have their own escalating tool hold. Text successes preserve it until
-  a tool turn succeeds or the route is explicitly verified. Quota failures use the provider's reset time instead;
+  a tool turn succeeds or a synthetic function probe returns the requested valid call. Quota failures use the provider's reset time instead;
   successful recovery preserves that quota deadline. Missing installations
   and expired logins stay barred until a successful health check.
   On the first upgrade to Kilo's free-model rotation, routing history clears
@@ -186,8 +186,8 @@ no longer accepted; operators who previously used it must set
   Other holds and subsequent quota holds from exhausting the pool persist.
 - **Retirement.** On the **5th consecutive failure of the same class**, each within
   6 hours of the last, the route is retired. Quota failures never count
-  toward this, and neither do local request-shape refusals or HTTP 5xx
-  failures that carry a Retry-After hint (those are only cooldowns). Identical
+  toward this, and neither do local request-shape refusals or hinted server errors
+  outside the outage class. Gateway outages count even with a Retry-After hint. Identical
   non-quota failures still count during a quota hold. A retired route gets no
   traffic, including explicitly named requests, until it reopens (below),
   doesn't count as open (so the next pass opens a replacement), and isn't

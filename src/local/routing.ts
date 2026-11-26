@@ -128,7 +128,11 @@ export class StickyRouter {
   }
   needsHealthCheck(id: string) { return this.bars.get(id) === Infinity; }
   healthy(id: string) { if (this.bars.get(id) === Infinity) { this.bars.delete(id); this.barFailures.delete(id); } }
-  verified(id: string) { this.bars.delete(id); this.barFailures.delete(id); this.barAt.delete(id); this.observation.clearRoutingBackoff(id); }
+  needsToolProbe(id: string) { return toolFailureSignature(this.observation.routingBackoff(id)?.signature); }
+  verified(id: string, provedTools = false) {
+    if (this.needsToolProbe(id) && !provedTools) return;
+    this.bars.delete(id); this.barFailures.delete(id); this.barAt.delete(id); this.observation.clearRoutingBackoff(id);
+  }
   cooldown(id: string, clearRecovered = true) {
     if (!this.needsHealthCheck(id) && this.textDuringToolHold(id)) {
       const hold = this.observation.routingBackoff(id);
@@ -292,6 +296,7 @@ export class StickyRouter {
     return new Promise<Completion>((resolve, reject) => {
       const active = new Map<Source, { controller: AbortController; release: () => void }>();
       let winner: Source | undefined;
+      let replayBarrier: SourceError | undefined;
       let done = false;
       const stop = (source: Source) => {
         const attempt = active.get(source);
@@ -328,11 +333,14 @@ export class StickyRouter {
           clearTimeout(timer);
           active.delete(source);
           release();
-          const terminal = !!winner || !active.size || (!canReplay(failure) && error !== backupUnavailable);
+          // An already dispatched sibling can finish. Keep an unsafe error to
+          // prevent a new dispatch if both attempts ultimately fail.
+          if (error !== backupUnavailable && !canReplay(failure)) replayBarrier ??= failure;
+          const terminal = !!winner || !active.size;
           if (terminal) finish();
           try { await fail(source, failure); }
           catch (storageError) { finish(); reject(storageError); return; }
-          if (terminal) reject(failure);
+          if (terminal) reject(replayBarrier ?? failure);
         } finally { release(); }
       };
       signal.addEventListener('abort', abort, { once: true });

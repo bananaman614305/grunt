@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { bundledRegistry } from '../registry.js';
 import { Sources, SourceError } from './source.js';
+import type { ModelRequest } from './source.js';
 import { createSourceMaintenance } from './runtime-maintenance.js';
 import { DailyMaintenance, MAINTENANCE_CHECK_TIMEOUT, MAINTENANCE_GAP, MAINTENANCE_INTERVAL, MAINTENANCE_JITTER } from './maintenance.js';
 import type { MaintenanceResult } from './maintenance.js';
@@ -351,6 +352,31 @@ it('probes a failed live route at its deadline and reschedules a failed probe', 
     expect(second).toBe(first + 600000);
     await vi.advanceTimersByTimeAsync(second - Date.now());
     await until(() => complete.mock.calls.length === 4 && maintenance.snapshot().livekit?.outcome === 'passed');
+    expect(sources.status().sources[0]!.retryAt).toBeUndefined();
+  } finally { await sources.close(); }
+});
+
+it('recovers a tool hold only after the provider returns the requested probe call', async () => {
+  let returnsCall = false;
+  const complete = vi.fn(async (request: ModelRequest) => {
+    const name = (request.tools[0] as { function?: { name: string } } | undefined)?.function?.name;
+    if (name === 'user_tool') throw new SourceError('upstream', 'invalid call', undefined, undefined, { httpStatus: 200, failureReason: 'response_tools' });
+    if (returnsCall && name) return { text: '', calls: [{ id: 'probe', type: 'function' as const, function: { name, arguments: '{}' } }] };
+    return { text: 'hello' };
+  });
+  const sources = new Sources([{ id: 'kilo', supportsFunctionTools: true, available: async () => true, complete }], { registry: () => bundledRegistry });
+  const signal = new AbortController().signal;
+  try {
+    await expect(sources.complete({ model: 'kilo', messages: [], tools: [{ type: 'function', function: { name: 'user_tool', parameters: {} } }], cwd: tmpdir(), stream: false }, signal)).rejects.toThrow();
+    const first = sources.status().sources[0]!.retryAt!;
+    vi.setSystemTime(first + 1);
+    expect(await sources.check('kilo', signal)).toMatchObject({ outcome: 'failed' });
+    expect(complete.mock.lastCall?.[0].tools).toHaveLength(1);
+    const next = sources.status().sources[0]!.retryAt!;
+    expect(next - Date.now()).toBe(60000);
+    vi.setSystemTime(next + 1);
+    returnsCall = true;
+    expect(await sources.check('kilo', signal)).toMatchObject({ outcome: 'passed' });
     expect(sources.status().sources[0]!.retryAt).toBeUndefined();
   } finally { await sources.close(); }
 });

@@ -54,8 +54,7 @@ export function nextRoutingPerformance(previous: RoutingPerformance | undefined,
 export function localRequestRefusal(error: SourceError) {
   return sanitizeSafeDiagnosticMetadata(error.diagnostics).failureReason?.startsWith('request_') === true;
 }
-// A 5xx carrying Retry-After is the provider asking for a pause (overloaded, restarting). It is a cooldown
-// that honors the hint, not evidence the route is broken.
+// A valid server retry hint supplies the delay independently of the failure class.
 export function upstreamRetryHint(error: SourceError) {
   const status = error.diagnostics?.httpStatus, retry = error.retryAfter;
   return error.code === 'upstream' && status !== undefined && Number.isInteger(status) && status >= 500 && status < 600
@@ -96,14 +95,15 @@ export function quotaAfterRecovery(value: RoutingBackoff): RoutingBackoff {
   return { ...value, until: value.quotaUntil ?? value.until, signature: 'quota:::', streak: 1 };
 }
 export function nextRoutingBackoff(previous: RoutingBackoff | undefined, error: SourceError, seconds: number, adaptive: boolean, at: number): RoutingBackoff {
+  const hintOnly = upstreamRetryHint(error) && !slowUpstreamFailure(error);
   if (previous && previous.streak >= RETIRE_AFTER_FAILURES && error.code !== 'quota') {
     // Half-open: only a failure at or after the reopen time is a failed trial. Earlier stragglers change nothing.
     if (at < previous.until) return previous;
-    if (upstreamRetryHint(error)) return { ...previous, until: Math.max(previous.until, at + seconds * 1000) };
+    if (hintOnly) return { ...previous, until: Math.max(previous.until, at + seconds * 1000) };
     const trials = (previous.trials ?? 0) + 1;
     return { ...previous, at: Math.max(previous.at, at), until: at + Math.max(retiredReopenDelay(trials), slowUpstreamFailure(error) ? seconds * 1000 : 0), trials };
   }
-  if (upstreamRetryHint(error)) {
+  if (hintOnly) {
     const until = at + seconds * 1000;
     return previous ? { ...previous, until: Math.max(previous.until, until) } : { code: error.code, signature: 'hint:::', streak: 1, at, until };
   }
@@ -111,7 +111,7 @@ export function nextRoutingBackoff(previous: RoutingBackoff | undefined, error: 
   const repeated = error.code !== 'quota' && previous?.signature === signature && at >= previous.at && at - previous.at <= ROUTING_HISTORY_TTL_MS;
   const streak = repeated ? Math.min(RETIRE_AFTER_FAILURES, previous.streak + 1) : 1;
   // Explicit provider/reset hints bypass adaptive multiplication, including zero.
-  const delay = adaptive ? Math.min(MAX_ADAPTIVE_BACKOFF_SECONDS, seconds * 2 ** (streak - 1)) : seconds;
+  const delay = adaptive && !upstreamRetryHint(error) ? Math.min(MAX_ADAPTIVE_BACKOFF_SECONDS, seconds * 2 ** (streak - 1)) : seconds;
   const retiring = error.code !== 'quota' && streak >= RETIRE_AFTER_FAILURES;
   return mergeRoutingBackoff(previous, { code: error.code, signature, streak, at, until: at + (retiring ? Math.max(RETIRED_REOPEN_MS, signature === 'outage:::' ? delay * 1000 : 0) : delay * 1000) });
 }
