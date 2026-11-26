@@ -39,6 +39,8 @@ it("tracks only the root app, operator tools, proof adapters, static site, regis
   ]);
   for (const image of ["desktop", "registry", "phone", "installation-phone"]) files.add(`docs/dashboard-proof/${image}.png`);
   files.add("scripts/fleet-report.mjs");
+  files.add("scripts/build.mjs");
+  files.add("scripts/smoke-daemon.mjs");
   files.add("scripts/recovery-audit.mjs");
   files.add("docs/fleet-audit-proof/desktop.png");
   files.add("docs/fleet-audit-proof/phone.png");
