@@ -7,7 +7,7 @@ import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { housekeeping, userText } from './harness.js';
-import { RequestError, SourceError, answeredBy, needsFunctionTools, observeRequestInput } from './source.js';
+import { RequestError, SourceError, answeredBy, currentStreamReplyId, needsFunctionTools, observeRequestInput } from './source.js';
 import type { Completion, Message, ModelRequest, Tool, ToolCall, Sources, StreamTextObserver } from './source.js';
 import { currentDiagnosticContext, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticContext } from './diagnostics.js';
@@ -382,7 +382,7 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
         if (request.cwdSource === 'scratch') await mkdir(request.cwd, { recursive: true });
         if (request.stream && local === undefined) {
           const bufferPreamble = needsFunctionTools(request);
-          let preamble = '', preambleAttempt: symbol | undefined;
+          let preamble = '', preambleReply: symbol | undefined;
           const queue: string[] = [];
           let wake: (() => void) | undefined;
           let startedSource: string | undefined;
@@ -393,11 +393,12 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
           let resolveReady!: () => void;
           const ready = new Promise<void>(resolve => { resolveReady = resolve; });
           const notify = () => { wake?.(); wake = undefined; };
-          const onText: StreamTextObserver = (sourceId, delta, attemptId) => {
+          const onText: StreamTextObserver = (sourceId, delta) => {
             if (!delta || signal.aborted) return false;
             if (!streamStarted && bufferPreamble) {
-              preamble = (preambleAttempt === attemptId ? preamble : '') + delta;
-              preambleAttempt = attemptId;
+              const replyId = currentStreamReplyId();
+              preamble = (preambleReply === replyId ? preamble : '') + delta;
+              preambleReply = replyId;
               // Short preambles are included in the validated completion if this attempt wins.
               if (Buffer.byteLength(preamble) <= 256) return false;
               delta = preamble;

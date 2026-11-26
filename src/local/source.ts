@@ -137,16 +137,19 @@ export const answeredBy = new WeakMap<Completion, string>();
 // Per-request and per-attempt incremental text streaming context. Only adapters
 // that have verified the upstream HTTP 200 and model identity call emitStreamText;
 // tool-call arguments stay buffered until guardToolCalls validates them.
-export type StreamTextObserver = (source: string, text: string, attemptId: symbol) => boolean | void;
-interface AttemptStreamContext { source: string; id: symbol; observer: StreamTextObserver; emitted: boolean; active: boolean }
+export type StreamTextObserver = (source: string, text: string) => boolean | void;
+interface AttemptStreamContext { source: string; replyId: symbol; observer: StreamTextObserver; emitted: boolean; active: boolean }
 const streamObserverStorage = new AsyncLocalStorage<StreamTextObserver>();
 const attemptStreamStorage = new AsyncLocalStorage<AttemptStreamContext>();
 export function emitStreamText(text: string): boolean {
   if (!text) return false;
   const attempt = attemptStreamStorage.getStore();
-  if (!attempt?.active || attempt.observer(attempt.source, text, attempt.id) === false) return false;
+  if (!attempt?.active || attempt.observer(attempt.source, text) === false) return false;
   attempt.emitted = true;
   return true;
+}
+export function currentStreamReplyId(): symbol | undefined {
+  return attemptStreamStorage.getStore()?.replyId;
 }
 export function hasEmittedStreamText(): boolean {
   return attemptStreamStorage.getStore()?.emitted === true;
@@ -154,7 +157,7 @@ export function hasEmittedStreamText(): boolean {
 export async function withAttemptStream<T>(source: string, work: () => Promise<T>): Promise<T> {
   const observer = streamObserverStorage.getStore();
   if (!observer) return work();
-  const attempt: AttemptStreamContext = { source, id: Symbol(source), observer, emitted: false, active: true };
+  const attempt: AttemptStreamContext = { source, replyId: Symbol(source), observer, emitted: false, active: true };
   try { return await attemptStreamStorage.run(attempt, work); }
   catch (error) {
     if (attempt.emitted && !(error instanceof Error && error.name === 'AbortError')) {
