@@ -79,6 +79,45 @@ it('counts successes with missing phases as unclassified and keeps cancelled, in
   expect(buildRecoveryAudit(missingId, window)).toMatchObject({ passed: 1, classified: 0 });
 });
 
+it('counts terminal user failures and ranks complete traces by request duration', () => {
+  const oldest = randomUUID(), first = { attemptId: randomUUID(), source: 'kilo' };
+  const last = { attemptId: randomUUID(), source: 'numes' };
+  const crossing = traceEvents(oldest, [
+    ['request.start', -10_000, {}], ['attempt.start', -9_000, first], ['attempt.start', -8_000, last],
+    ['attempt.finish', -7_000, { ...last, outcome: 'failed', errorCode: 'timeout' }],
+    ['attempt.finish', 0, { ...first, outcome: 'failed', errorCode: 'upstream' }],
+    ['request.finish', 100, { outcome: 'failed', failureReason: 'response_empty', errorCode: 'upstream' }]
+  ]);
+  const other = Array.from({ length: 5 }, (_, i) => traceEvents(randomUUID(), [
+    ['request.start', 0, {}], ['attempt.start', 1, first],
+    ['attempt.finish', 2, { ...first, outcome: 'failed', errorCode: 'timeout' }],
+    ['request.finish', 3, { source: first.source, outcome: 'failed', errorCode: 'timeout', durationMs: 500 + i }]
+  ])).flat();
+  const broken = traceEvents(randomUUID(), [
+    ['request.start', 0, {}], ['attempt.start', 1, first],
+    ['request.finish', 20_000, { outcome: 'failed', errorCode: 'upstream' }]
+  ]);
+  const events = [...crossing, ...other, ...broken,
+    event('request.finish', 20_001, { outcome: 'failed', durationMs: 20_001 }),
+    event('request.finish', 20_002, { outcome: 'cancelled' }),
+    event('request.finish', 20_003, { outcome: 'failed', kind: 'maintenance' }),
+    event('request.finish', window.until - since, { outcome: 'failed' })];
+  const result = buildRecoveryAudit(events, window, metrics(window, events));
+  expect(result).toMatchObject({
+    failed: 8, classifiedFailures: 6, terminalFailedMs: 12_610, cancelled: 1, countsMatch: true,
+    failuresByReason: { response_empty: 1, timeout: 5, upstream: 1, unknown: 1 }, failedMs: 0
+  });
+  expect(result.slowestFailures.map(row => row.elapsedMs)).toEqual([10_100, 504, 503, 502, 501]);
+  expect(result.slowestFailures[0]).toMatchObject({
+    requestId: oldest, source: first.source, errorCode: 'upstream', failureReason: 'response_empty',
+    attempts: [
+      { source: first.source, outcome: 'failed', failure: 'upstream' },
+      { source: last.source, outcome: 'failed', failure: 'timeout' }
+    ]
+  });
+  expect(result.slowestFailures[1]).toMatchObject({ source: first.source, errorCode: 'timeout', failureReason: null });
+});
+
 it('compares matched exposure and requires validated access for a recovery delay', () => {
   const baseline = { since, until: since + hour, runtimeVersion: '0.9.8' };
   const current = { since: since + 2 * hour, until: since + 3 * hour, runtimeVersion: '0.9.9' };

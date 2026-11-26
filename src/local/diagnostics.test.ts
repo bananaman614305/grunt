@@ -1,19 +1,22 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdtemp, rm, stat, chmod, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, realpath, rm, stat, chmod, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
+import { createClient } from '@libsql/client';
 import { DiagnosticsStore, diagnosticFetch, recordAttemptFailure, sanitizeDiagnosticEvent, sanitizeSafeDiagnosticMetadata, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticEvent } from './diagnostics.js';
 import { Sources, SourceError, preventReplay } from './source.js';
 import type { ModelRequest, Source, Completion } from './source.js';
 import { createLocalApp } from './api.js';
 import { bundledRegistry } from '../registry.js';
+import { buildRecoveryAudit } from '../recovery-audit.js';
 
 const directories: string[] = [], stores: DiagnosticsStore[] = [];
 const event = (patch: Partial<DiagnosticEvent> = {}): DiagnosticEvent => ({ version: 1, id: randomUUID(), at: Date.now(), type: 'attempt.finish', requestId: randomUUID(), kind: 'user', source: 'kilo', outcome: 'passed', ...patch });
-async function directory() { const path = await mkdtemp(join(tmpdir(), 'grunt-diagnostics-')); directories.push(path); return path; }
+async function directory() { const path = await mkdtemp(join(await realpath(tmpdir()), 'grunt-diagnostics-')); directories.push(path); return path; }
 async function store(path?: string, options: { maxEvents?: number; maxAgeMs?: number; now?: () => number } = {}) { const value = await DiagnosticsStore.open({ directory: path ?? await directory(), ...options }); stores.push(value); return value; }
 const request: ModelRequest = { model: 'grunt', messages: [{ role: 'user', content: 'SECRET_PROMPT_CONTENT' }], cwd: '/private/SECRET_PROJECT', stream: false, tools: [] };
 const source = (id: string, complete: Source['complete'] = async () => ({ text: 'SECRET_ANSWER_CONTENT' })): Source => ({ id, available: vi.fn(async () => true), complete: vi.fn(complete) });
@@ -104,6 +107,164 @@ it('bounds count and age without resetting the durable sequence', async () => {
   const page = await value.list({ limit: 500 }); expect(page.events).toHaveLength(100); expect(page.events[0]!.seq).toBe(6);
   now += 60001; value.record(event({ at: now }));
   const latest = await value.list({ limit: 500 }); expect(latest.events).toHaveLength(1); expect(latest.events[0]!.seq).toBe(106);
+});
+
+it('retains the failed trace and matching finishes through routine skip churn (incident-trace-fifo-eviction)', async () => {
+  const hour = 3_600_000, since = Date.UTC(2026, 10, 24, 5), window = { since, until: since + hour };
+  let now = since;
+  const value = await store(undefined, { maxEvents: 50, maxAgeMs: 2 * hour, now: () => now });
+  const requestId = randomUUID(), at = since + 100;
+  const failed = (patch: Partial<DiagnosticEvent>) => event({ requestId, at, outcome: 'failed', ...patch });
+  const primary = { attemptId: randomUUID(), source: 'kilo' }, backup = { attemptId: randomUUID(), source: 'numes' };
+  const trace = [
+    failed({ type: 'request.start', outcome: 'passed' }),
+    failed({ type: 'route.skip', outcome: 'skipped' }),
+    failed({ type: 'attempt.start', outcome: 'passed', ...primary }),
+    failed({ type: 'attempt.failure', ...primary }),
+    failed({ ...primary, errorCode: 'timeout' }),
+    failed({ type: 'attempt.start', outcome: 'passed', ...backup }),
+    failed({ ...backup, failureReason: 'response_empty' }),
+    failed({ type: 'request.finish', source: backup.source, errorCode: 'upstream', durationMs: 42 })
+  ];
+  const cleanFinishes = [event({ at, type: 'attempt.finish' }), event({ at, type: 'request.finish' }),
+    event({ at, type: 'transport.finish', source: 'beatapi' })];
+  for (const row of [...trace, ...cleanFinishes]) value.record(row);
+  await value.flush();
+  for (let i = 0; i < 60; i++) value.record(event({ at, type: 'route.skip', outcome: 'skipped' }));
+  now = window.until;
+  const events = (await value.list({ limit: 500 })).events;
+  expect(events).toHaveLength(50);
+  expect(events.filter(row => row.type !== 'route.skip').map(row => row.id))
+    .toEqual([...trace.filter(row => row.type !== 'route.skip'), ...cleanFinishes].map(row => row.id));
+  expect((await value.trace(requestId)).events.map(row => row.id)).toEqual(trace.map(row => row.id));
+  expect(buildRecoveryAudit(events, window, await value.metrics(window))).toMatchObject({
+    failed: 1, classifiedFailures: 1, terminalFailedMs: 42, countsMatch: true
+  });
+
+  for (let i = 0; i < 43; i++) value.record(event({ at, type: 'request.finish' }));
+  const pruned = (await value.list({ limit: 500 })).events;
+  expect(pruned).toHaveLength(50);
+  expect(pruned.some(row => row.id === cleanFinishes[0]!.id)).toBe(false);
+  const metrics = await value.metrics(window);
+  expect(metrics.coverage.retainedFrom).toBe(since);
+  expect(buildRecoveryAudit(pruned, window, metrics)).toMatchObject({ failed: 1, countsMatch: false });
+});
+
+it.each(['legacy', 'new'])('protects incomplete, multi-attempt and adapter failure traces in a %s journal', async journal => {
+  const path = await directory(), at = Date.now();
+  const incomplete = randomUUID(), recovered = randomUUID(), failed = randomUUID(), attemptId = randomUUID();
+  const traces = [
+    event({ at, requestId: incomplete, type: 'request.start' }),
+    event({ at, requestId: incomplete, type: 'request.finish', failureReason: 'length' }),
+    event({ at, requestId: recovered, type: 'request.start' }),
+    event({ at, requestId: recovered, type: 'attempt.start', attemptId }),
+    event({ at, requestId: recovered, type: 'attempt.start', attemptId: randomUUID() }),
+    event({ at, requestId: failed, type: 'request.start' }),
+    event({ at, requestId: failed, type: 'attempt.failure' })
+  ];
+  const options = { maxEvents: 10, now: () => at };
+  if (journal === 'legacy') {
+    const db = createClient({ url: pathToFileURL(join(path, 'diagnostics.db')).href });
+    try {
+      await db.execute(`CREATE TABLE diagnostic_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,
+        at INTEGER NOT NULL, request_id TEXT NOT NULL, source TEXT, type TEXT NOT NULL, outcome TEXT, data TEXT NOT NULL)`);
+      await db.batch(traces.map(row => ({
+        sql: 'INSERT INTO diagnostic_events(id,at,request_id,source,type,outcome,data) VALUES(?,?,?,?,?,?,?)',
+        args: [row.id, row.at, row.requestId, row.source ?? null, row.type, row.outcome ?? null, JSON.stringify(row)]
+      })), 'write');
+    } finally { db.close(); }
+    await chmod(join(path, 'diagnostics.db'), 0o600);
+  } else {
+    const first = await store(path, options);
+    for (const row of traces) {
+      first.record(row);
+      await first.flush();
+    }
+    await first.close();
+  }
+  const value = await store(path, options);
+  const finish = event({ at, requestId: recovered, type: 'request.finish' });
+  value.record(finish);
+  await value.flush();
+  for (let i = 0; i < 20; i++) value.record(event({ at, type: 'request.finish' }));
+  const rows = (await value.list()).events;
+  expect(rows).toHaveLength(10);
+  expect(rows.slice(0, 8).map(row => row.id)).toEqual([...traces, finish].map(row => row.id));
+});
+
+it('evicts oldest incident rows when incidents alone fill the cap and expires them by age', async () => {
+  let now = Date.now();
+  const value = await store(undefined, { maxEvents: 2, maxAgeMs: 60_000, now: () => now });
+  const incidents = Array.from({ length: 3 }, () => event({ at: now, type: 'request.finish', outcome: 'failed' }));
+  for (const row of incidents) value.record(row);
+  value.record(event({ at: now, type: 'route.skip', outcome: 'skipped' }));
+  expect((await value.list()).events.map(row => row.id)).toEqual(incidents.slice(1).map(row => row.id));
+  now += 60_001;
+  const fresh = event({ at: now, type: 'route.skip', outcome: 'skipped' });
+  value.record(fresh);
+  expect((await value.list()).events.map(row => row.id)).toEqual([fresh.id]);
+});
+
+it.each([50, 49])('restores the newest failed trace after a separate flush under pressure from %i older incidents', async olderCount => {
+  const at = Date.UTC(2026, 10, 24, 5);
+  const window = { since: at, until: at + 3_600_000 };
+  let now = at;
+  const value = await store(undefined, { maxEvents: 50, now: () => now });
+  const older = Array.from({ length: olderCount }, () => event({ at, type: 'request.finish', outcome: 'failed' }));
+  for (const row of older) value.record(row);
+  await value.flush();
+
+  const requestId = randomUUID(), attemptId = randomUUID();
+  const start = event({ at: at + 1, requestId, type: 'request.start' });
+  const dispatch = event({ at: at + 2, requestId, attemptId, type: 'attempt.start' });
+  const failure = event({ at: at + 3, requestId, attemptId, type: 'attempt.failure', failureReason: 'response_empty' });
+  const attemptFinish = event({ at: at + 4, requestId, attemptId, outcome: 'failed' });
+  const finish = event({ at: at + 5, requestId, type: 'request.finish', outcome: 'failed', durationMs: 4 });
+  value.record(start);
+  value.record(dispatch);
+  await value.flush();
+  expect((await value.trace(requestId)).events.map(row => row.id)).toEqual(olderCount === 50 ? [] : [dispatch.id]);
+  expect((await value.list()).events).toHaveLength(50);
+
+  for (const row of [failure, attemptFinish, finish]) value.record(row);
+  await value.flush();
+  const events = (await value.list()).events;
+  expect(events).toHaveLength(50);
+  expect(events.filter(row => row.requestId === requestId).map(row => row.id))
+    .toEqual([start.id, dispatch.id, failure.id, attemptFinish.id, finish.id]);
+  now = window.until;
+  const metrics = await value.metrics(window);
+  expect(metrics.buckets.filter(bucket => bucket.dimensions.type === 'request.start' || bucket.dimensions.type === 'attempt.start')
+    .map(bucket => bucket.count)).toEqual([1, 1]);
+  expect(buildRecoveryAudit(events, window, metrics)).toMatchObject({
+    classifiedFailures: 1, terminalFailedMs: 4,
+    slowestFailures: [{ requestId, attempts: [{ source: 'kilo', outcome: 'failed' }] }]
+  });
+});
+
+it.each([false, true])('restores a trace under incident pressure only when it needs a second attempt (%s)', async retry => {
+  const value = await store(undefined, { maxEvents: 50 });
+  const older = Array.from({ length: 50 }, () => event({ type: 'request.finish', outcome: 'failed' }));
+  for (const row of older) value.record(row);
+  await value.flush();
+
+  const requestId = randomUUID(), attemptId = randomUUID();
+  const start = event({ requestId, type: 'request.start' });
+  const dispatch = event({ requestId, attemptId, type: 'attempt.start' });
+  const attemptFinish = event({ requestId, attemptId, outcome: retry ? 'cancelled' : 'passed' });
+  for (const row of [start, dispatch, attemptFinish]) value.record(row);
+  await value.flush();
+  expect((await value.list()).events.map(row => row.id)).toEqual(older.map(row => row.id));
+
+  const next = { requestId, attemptId: randomUUID() };
+  const fallback = retry ? [event({ ...next, type: 'attempt.start' }), event(next)] : [];
+  const finish = event({ requestId, type: 'request.finish' });
+  for (const row of [...fallback, finish]) value.record(row);
+  const rows = (await value.list()).events;
+  expect(rows.map(row => row.id)).toEqual((retry
+    ? [...older.slice(6), start, dispatch, attemptFinish, ...fallback, finish]
+    : older).map(row => row.id));
+  if (retry) expect(buildRecoveryAudit(rows, { since: finish.at, until: finish.at + 1 })).toMatchObject({ passed: 1, classified: 1 });
 });
 
 it('keeps missing usage unknown, counts genuine zero usage, and excludes HTTP events from model attempts', async () => {
