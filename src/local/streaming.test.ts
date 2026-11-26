@@ -2,9 +2,10 @@ import { serve } from '@hono/node-server';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, expect, it, onTestFinished, vi } from 'vitest';
 import { createLocalApp } from './api.js';
 import { recordDataSharingConsent } from './data-sharing.js';
+import { DiagnosticsStore } from './diagnostics.js';
 import { FreeApi } from './free-api.js';
 import { Kilo, KILO_ORIGIN, KILO_PARTICLE } from './kilo.js';
 import { Sources, SourceError, emitStreamText } from './source.js';
@@ -143,6 +144,7 @@ it('buffers streamed tool-call arguments until validated by guardToolCalls, and 
   const badTool = new FreeApi('zro', {
     loadGrant: async () => grant,
     fetcher: vi.fn<typeof fetch>(async () => sse([
+      JSON.stringify({ model: ZRO_DEEPSEEK, choices: [{ index: 0, delta: { content: 'é'.repeat(128) }, finish_reason: null }] }),
       JSON.stringify({ model: ZRO_DEEPSEEK, choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_bad', type: 'function', function: { name: 'read_file', arguments: '{"path":' } }] }, finish_reason: null }] }),
       JSON.stringify({ model: ZRO_DEEPSEEK, choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }),
       '[DONE]'
@@ -172,6 +174,7 @@ it('buffers streamed tool-call arguments until validated by guardToolCalls, and 
   expect(response.status).toBe(200);
   expect(response.headers.get('x-grunt-source')).toBe('runcrate');
   const wire = await response.text();
+  expect(wire).not.toContain('é');
   expect(wire).not.toContain('call_bad');
   expect(wire).toContain('Checking file.');
   expect(wire).toContain('"id":"call_ok"');
@@ -230,14 +233,21 @@ it('streams incremental tokens from Kilo while still verifying model identity an
   expect(received).toContain('data: [DONE]');
 });
 
-it('does not replay onto another route after incremental text has already been emitted', async () => {
+it.each([
+  { text: 'Hello', tools: [], cancel: false },
+  { text: 'é'.repeat(128) + '!', tools: [{ type: 'function', function: { name: 'read_file' } }], cancel: false },
+  { text: 'Hello', tools: [], cancel: true }
+])('records stream-midflight-false-pass after settlement or cancellation ($cancel)', async ({ text, tools, cancel }) => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
   const first: Source = {
     id: 'first',
     supportsFunctionTools: true,
     available: async () => true,
     complete: async (): Promise<Completion> => {
-      emitStreamText('partial ');
-      throw new SourceError('upstream', 'connection reset mid-stream');
+      emitStreamText(text);
+      await gate;
+      throw new SourceError('upstream', 'cut stream', undefined, undefined, { failureReason: 'stream_incomplete' });
     }
   };
   const backup: Source = {
@@ -246,15 +256,37 @@ it('does not replay onto another route after incremental text has already been e
     available: async () => true,
     complete: vi.fn(async (): Promise<Completion> => ({ text: 'should not run' }))
   };
-  const local = await startLocal(new Sources([first, backup]));
+  const pool = new Sources([first, backup]);
+  const directory = await mkdtemp(join(tmpdir(), 'grunt-stream-diagnostics-'));
+  dirs.push(directory);
+  const store = await DiagnosticsStore.open({ directory });
+  onTestFinished(() => store.close());
+  pool.setDiagnostics(store);
+  const records = vi.spyOn(store, 'record');
+  const finishes = () => records.mock.calls.map(([event]) => event).filter(event => event.type === 'request.finish');
+  const local = await startLocal(pool);
+  const client = new AbortController();
   const response = await fetch(local.url('chat/completions'), {
+    signal: client.signal,
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: 'grunt', messages: [{ role: 'user', content: 'hi' }], stream: true })
+    body: JSON.stringify({ model: 'grunt', messages: [{ role: 'user', content: 'hi' }], tools, stream: true })
   });
+  const beforeFailure = finishes();
+  if (cancel) {
+    client.abort();
+    try {
+      await vi.waitFor(() => expect(finishes()).toEqual([expect.objectContaining({ outcome: 'cancelled' })]));
+    } finally { release(); }
+    return;
+  }
+  release();
   expect(response.status).toBe(200);
   const wire = await response.text();
-  expect(wire).toContain('partial ');
+  expect(wire).toContain(text);
+  expect(wire).toContain(JSON.stringify({ error: { type: 'server_error', code: 'upstream', message: 'cut stream' } }));
+  expect(beforeFailure).toEqual([]);
+  expect(finishes()).toEqual([expect.objectContaining({ outcome: 'failed', errorCode: 'upstream', responseBytes: Buffer.byteLength(text), httpStatus: 200 })]);
   expect(wire).not.toContain('should not run');
   expect(wire).not.toContain('data: [DONE]');
   expect(backup.complete).not.toHaveBeenCalled();

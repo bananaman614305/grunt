@@ -137,16 +137,15 @@ export const answeredBy = new WeakMap<Completion, string>();
 // Per-request and per-attempt incremental text streaming context. Only adapters
 // that have verified the upstream HTTP 200 and model identity call emitStreamText;
 // tool-call arguments stay buffered until guardToolCalls validates them.
-export type StreamTextObserver = (source: string, text: string) => void;
-interface AttemptStreamContext { source: string; observer: StreamTextObserver; emitted: boolean }
+export type StreamTextObserver = (source: string, text: string, attemptId: symbol) => boolean | void;
+interface AttemptStreamContext { source: string; id: symbol; observer: StreamTextObserver; emitted: boolean; active: boolean }
 const streamObserverStorage = new AsyncLocalStorage<StreamTextObserver>();
 const attemptStreamStorage = new AsyncLocalStorage<AttemptStreamContext>();
 export function emitStreamText(text: string): boolean {
   if (!text) return false;
   const attempt = attemptStreamStorage.getStore();
-  if (!attempt) return false;
+  if (!attempt?.active || attempt.observer(attempt.source, text, attempt.id) === false) return false;
   attempt.emitted = true;
-  attempt.observer(attempt.source, text);
   return true;
 }
 export function hasEmittedStreamText(): boolean {
@@ -155,14 +154,14 @@ export function hasEmittedStreamText(): boolean {
 export async function withAttemptStream<T>(source: string, work: () => Promise<T>): Promise<T> {
   const observer = streamObserverStorage.getStore();
   if (!observer) return work();
-  const attempt: AttemptStreamContext = { source, observer, emitted: false };
+  const attempt: AttemptStreamContext = { source, id: Symbol(source), observer, emitted: false, active: true };
   try { return await attemptStreamStorage.run(attempt, work); }
   catch (error) {
     if (attempt.emitted && !(error instanceof Error && error.name === 'AbortError')) {
       throw preventReplay(error, error instanceof Error ? error.message : 'Stream failed after output started');
     }
     throw error;
-  }
+  } finally { attempt.active = false; }
 }
 export interface QuotaWindow { startedAt: number; resetAt: number }
 // A slow upstream failure (HTTP 502/503/504/524, connection reset, stream cut
@@ -224,7 +223,8 @@ export const toolCapable = (source: Source) => source.supportsFunctionTools === 
 export const bridgedTools = (source: Source) => source.jsonToolBridge === true;
 export const NO_TOOL_SOURCE = 'No tool-capable adapter is available for a request with function tools; finish setup or retry after quota resets';
 // A source that has not produced first output by this time counts as failed.
-export const FIRST_OUTPUT_MS = 60000;
+export const FIRST_OUTPUT_MS = 12000;
+export const DEFAULT_IDLE_MS = 15000;
 export class Sources {
   private router: StickyRouter | undefined;
   // Registry-aware retirement and back-off state for a fixed source chain (no routed pool).
@@ -241,7 +241,7 @@ export class Sources {
   readonly pending = new Set<string>();
   // An exact-ID setup probe may run without admitting that source to the pool.
   readonly verifying = new Set<string>();
-  constructor(public readonly sources: Source[], private routing?: RoutingOptions, private disabledModels: ReadonlySet<string> = new Set(), private firstOutputMs = FIRST_OUTPUT_MS) {
+  constructor(public readonly sources: Source[], private routing?: RoutingOptions, private disabledModels: ReadonlySet<string> = new Set(), private firstOutputMs?: number) {
     if ((!sources.length && !disabledModels.size) || new Set(sources.map(s => s.id)).size !== sources.length) throw new Error('Configure distinct grunt sources');
     this.observation = new SourceStatus(sources.map(source => source.id), routing?.now, {
       open: id => this.dispatchEligible(id), dropped: id => this.dropped?.(id),
@@ -290,6 +290,9 @@ export class Sources {
       throw error;
     }
   };
+  private idleTimeout(source: Source) {
+    return source.idleMs ?? source.firstOutputMs ?? this.firstOutputMs ?? DEFAULT_IDLE_MS;
+  }
   private firstOutput(source: Source, request: ModelRequest, caller: AbortSignal, output?: () => void): Promise<Completion> {
     const watchdog = source.reportsOutput || source.reportsProgress || source.inferenceOnly && request.model !== source.id;
     const promptCancellation = source.inferenceOnly || source.reportsProgress;
@@ -303,7 +306,7 @@ export class Sources {
     const cutoff = new Promise<never>((_, reject) => {
       rejectCutoff = reject;
     });
-    const first = source.firstOutputMs ?? this.firstOutputMs, idle = source.idleMs ?? first;
+    const first = source.firstOutputMs ?? this.firstOutputMs ?? FIRST_OUTPUT_MS, idle = this.idleTimeout(source);
     const arm = () => {
       clearTimeout(timer);
       const limit = outputStarted ? idle : first;
@@ -381,10 +384,10 @@ export class Sources {
   observationConfig() {
     return {
       routing: this.router ? 'weighted_sticky' : 'ordered_chain',
-      defaultFirstOutputMs: this.firstOutputMs,
+      defaultFirstOutputMs: this.firstOutputMs ?? FIRST_OUTPUT_MS,
       configuredSources: this.sources.map(source => ({
-        id: source.id, firstOutputMs: source.reportsOutput || source.reportsProgress || source.inferenceOnly ? source.firstOutputMs ?? this.firstOutputMs : null,
-        idleMs: source.reportsProgress ? source.idleMs ?? source.firstOutputMs ?? this.firstOutputMs : null
+        id: source.id, firstOutputMs: source.reportsOutput || source.reportsProgress || source.inferenceOnly ? source.firstOutputMs ?? this.firstOutputMs ?? FIRST_OUTPUT_MS : null,
+        idleMs: source.reportsProgress ? this.idleTimeout(source) : null
       }))
     };
   }
