@@ -84,6 +84,8 @@ export async function prepareServiceMigration(options: {
   const stat = await lstat(file);
   if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o022) || stat.size > 262144) throw new Error('The existing Grunt service file is unsafe');
   const backup = join(dirname(file), `.${oldName}-${randomUUID()}`);
+  const overrideBackupDirectory = backup + '-override';
+  const overrideBackup = join(overrideBackupDirectory, 'original');
   const previousOverrides = file + '.d', replacementOverrides = replacement + '.d';
   const dropIns = linux && existsSync(previousOverrides);
   const replacementDropIns = linux && existsSync(replacementOverrides);
@@ -99,7 +101,7 @@ export async function prepareServiceMigration(options: {
     ([name]) => name.startsWith('GRUNT_') && options.original[name] === undefined
   ));
   const environment = systemdEnvironment(additions);
-  let translatedDropIn: { path: string; contents: string | Buffer; append: boolean } | undefined;
+  let translatedDropIn: { path: string; contents: Buffer; replace: boolean } | undefined;
   if (linux && environment) {
     const localDirectory = dropIns ? previousOverrides : replacementDropIns ? replacementOverrides : undefined;
     if (localDirectory) {
@@ -115,15 +117,15 @@ export async function prepareServiceMigration(options: {
     // An empty Environment= clears earlier assignments, so write the translated values last.
     if (last) {
       const later = laterDropInName(last);
-      const append = !later && localNames.includes(last);
-      const inherited = !later && !append ? activePaths.find(path => basename(path) === last) : undefined;
-      const settings = (later ? '' : '\n\n') + '[Service]\n' + environment + '\n';
+      const replace = !later && localNames.includes(last);
+      const inherited = !later && !replace ? activePaths.find(path => basename(path) === last) : undefined;
+      const settings = Buffer.from((later ? '' : '\n\n') + '[Service]\n' + environment + '\n');
       // At the end of the filename order, use the last file's own name. A
       // service-specific file with the same name takes precedence over an inherited one.
       translatedDropIn = {
         path: join(replacementOverrides, later ?? last),
-        contents: inherited ? Buffer.concat([await readFile(inherited), Buffer.from(settings)]) : settings,
-        append
+        contents: inherited ? Buffer.concat([await readFile(inherited), settings]) : settings,
+        replace
       };
     }
   }
@@ -131,7 +133,7 @@ export async function prepareServiceMigration(options: {
   const unit = linux && environment && !translatedDropIn ? contents.trimEnd() + '\n\n[Service]\n' + environment + '\n' : contents;
   let installed = false, moved = false, movedDropIns = false, disabling = false, starting = false;
   let addedDropIn = false, createdDropInDirectory = false;
-  let originalDropInSize: number | undefined;
+  let createdOverrideBackup = false, savedOverride = false;
   return {
     async apply() {
       if (linux) { disabling = true; await systemctl('disable', oldName); }
@@ -145,16 +147,24 @@ export async function prepareServiceMigration(options: {
           await mkdir(replacementOverrides, { mode: 0o700 });
           createdDropInDirectory = true;
         }
-        const handle = await open(translatedDropIn.path,
-          translatedDropIn.append ? constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW | constants.O_NONBLOCK : 'wx', 0o600);
-        try {
-          if (translatedDropIn.append) {
-            const info = await handle.stat();
+        let contents = translatedDropIn.contents;
+        if (translatedDropIn.replace) {
+          await mkdir(overrideBackupDirectory, { mode: 0o700 });
+          createdOverrideBackup = true;
+          // Keep the original inode for rollback. Other services may link to it.
+          await rename(translatedDropIn.path, overrideBackup);
+          savedOverride = true;
+          const original = await open(overrideBackup, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+          try {
+            const info = await original.stat();
             if (!info.isFile() || info.uid !== process.getuid?.()) throw new Error('The last Grunt service override is unsafe');
-            originalDropInSize = info.size;
-          } else addedDropIn = true;
-          await handle.writeFile(translatedDropIn.contents);
-        } finally { await handle.close(); }
+            contents = Buffer.concat([await original.readFile(), contents]);
+          } finally { await original.close(); }
+        }
+        const handle = await open(translatedDropIn.path, 'wx', 0o600);
+        addedDropIn = true;
+        try { await handle.writeFile(contents); }
+        finally { await handle.close(); }
       }
       if (linux) { await systemctl('daemon-reload'); await enable(newName, options.enableNew ? 'enabled' : enabled); }
     },
@@ -169,18 +179,19 @@ export async function prepareServiceMigration(options: {
         else await bootoutService(run, domain, 'ai.grunt.service');
       }
       if (linux && installed) await systemctl('disable', newName);
-      if (translatedDropIn && originalDropInSize !== undefined) {
-        const handle = await open(translatedDropIn.path, constants.O_WRONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-        try { await handle.truncate(originalDropInSize); }
-        finally { await handle.close(); }
-      }
       if (addedDropIn && translatedDropIn) await rm(translatedDropIn.path);
+      if (savedOverride && translatedDropIn) await rename(overrideBackup, translatedDropIn.path);
+      if (createdOverrideBackup) await rmdir(overrideBackupDirectory);
       if (createdDropInDirectory) await rmdir(replacementOverrides);
       if (movedDropIns) await rename(replacementOverrides, previousOverrides);
       if (installed) await rm(replacement);
       if (moved) await rename(backup, file);
       if (linux && disabling) { await systemctl('daemon-reload'); await enable(oldName); }
     },
-    async finish() { await rm(backup); }
+    async finish() {
+      await rm(backup);
+      // Activation is complete. Leave any backup that cannot be cleaned up private.
+      if (createdOverrideBackup) await rm(overrideBackupDirectory, { recursive: true }).catch(() => {});
+    }
   };
 }

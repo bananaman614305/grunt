@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { link, mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -215,8 +215,9 @@ it.each([
   { label: 'maximum-length service override', ownerOverride: 'z'.repeat(250) + '.conf' },
   { label: 'maximum-length inherited override', ownerOverride: 'zz-owner.conf', inheritedOverride: 'é'.repeat(125) + '.conf' },
   { label: 'last possible service override', ownerOverride: lastOverrideName },
+  { label: 'last possible hard-linked service override', ownerOverride: lastOverrideName, hardLinked: true },
   { label: 'last possible inherited override', ownerOverride: 'zz-owner.conf', inheritedOverride: lastOverrideName }
-])('keeps the effective state directory and port after a reset in a $label', async ({ ownerOverride, inheritedOverride }) => {
+])('keeps the effective state directory and port after a reset in a $label', async ({ ownerOverride, inheritedOverride, hardLinked }) => {
   const units = join(directory, 'xdg/systemd/user');
   const legacy = join(units, 'milo.service'), current = join(units, 'grunt.service');
   const state = join(directory, 'grunt'), entry = join(state, 'runtime/dist/local/main.js');
@@ -229,6 +230,11 @@ it.each([
   await mkdir(legacy + '.d', { recursive: true });
   await writeFile(legacy, `[Service]\nExecStart="${process.execPath}" "${entry}"\nEnvironment="MILO_PORT=8788"\n`, { mode: 0o600 });
   await writeFile(join(legacy + '.d', ownerOverride), reset, { mode: 0o600 });
+  const otherOverride = join(units, 'other.service.d', 'shared.conf');
+  if (hardLinked) {
+    await mkdir(join(units, 'other.service.d'));
+    await link(join(legacy + '.d', ownerOverride), otherOverride);
+  }
   fixture.execFile.mockImplementation(async (_binary: string, args: string[]) => {
     if (args.includes('Environment')) {
       const effective = await effectiveEnvironment(legacy, inheritedFiles);
@@ -244,6 +250,12 @@ it.each([
   const ownerOverrideContents = await readFile(join(current + '.d', ownerOverride), 'utf8');
   if (ownerOverride === lastOverrideName) expect(ownerOverrideContents.startsWith(reset)).toBe(true);
   else expect(ownerOverrideContents).toBe(reset);
+  if (hardLinked) {
+    expect(await readFile(otherOverride)).toEqual(Buffer.from(reset));
+    const replacement = await stat(join(current + '.d', ownerOverride));
+    expect(replacement.ino).not.toBe((await stat(otherOverride)).ino);
+    expect(replacement.mode & 0o777).toBe(0o600);
+  }
   if (inheritedFiles[0]) expect(await readFile(inheritedFiles[0], 'utf8')).toBe(reset);
   expect(await readFile(join(state, 'installed-port.json'), 'utf8')).toBe('8792');
 });
@@ -256,7 +268,9 @@ it.each(['owner.conf', lastOverrideName])('restores the old runtime and override
   await mkdir(oldUnit + '.d', { recursive: true });
   await writeFile(oldUnit, original, { mode: 0o600 });
   const override = '[Service]\nEnvironment=MILO_PORT=8792\n';
-  await writeFile(join(oldUnit + '.d', ownerOverride), override, { mode: 0o600 });
+  const originalOverride = join(oldUnit + '.d', ownerOverride), otherOverride = join(units, 'linked-override');
+  await writeFile(originalOverride, override, { mode: 0o600 });
+  await link(originalOverride, otherOverride);
   await mkdir(runtime, { mode: 0o700 });
   const oldRuntime = join(runtime, 'previous-runtime');
   await writeFile(oldRuntime, 'old runtime');
@@ -264,14 +278,18 @@ it.each(['owner.conf', lastOverrideName])('restores the old runtime and override
     if (args.includes('Environment')) return { stdout: `MILO_CONFIG_DIR=${state} MILO_PORT=8792 MILO_SOURCES=opencode` };
     if (args.includes('ActiveState')) return { stdout: 'active' };
     if (args.includes('UnitFileState')) return { stdout: 'enabled' };
-    if (args.includes('start') && args.includes('grunt.service')) throw new Error('Synthetic start failure');
+    if (args.includes('start') && args.includes('grunt.service')) {
+      expect(await readFile(otherOverride)).toEqual(Buffer.from(override));
+      throw new Error('Synthetic start failure');
+    }
     if (args.includes('start') && args.includes('milo.service')) expect(await readFile(oldRuntime, 'utf8')).toBe('old runtime');
     return { stdout: '' };
   });
   await expect(installService(['kilo'])).rejects.toThrow('Synthetic start failure');
   expect(await readFile(oldUnit, 'utf8')).toBe(original);
   expect(await readdir(oldUnit + '.d')).toEqual([ownerOverride]);
-  expect(await readFile(join(oldUnit + '.d', ownerOverride), 'utf8')).toBe(override);
+  expect(await readFile(originalOverride, 'utf8')).toBe(override);
+  expect((await stat(originalOverride)).ino).toBe((await stat(otherOverride)).ino);
   await expect(readFile(join(units, 'grunt.service'))).rejects.toMatchObject({ code: 'ENOENT' });
   await expect(readdir(join(units, 'grunt.service.d'))).rejects.toMatchObject({ code: 'ENOENT' });
   expect(fixture.execFile.mock.calls.map(([, args]) => args)).toContainEqual(['--user', 'start', 'milo.service']);
