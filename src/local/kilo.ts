@@ -135,6 +135,8 @@ function conversation(request: ModelRequest) {
 }
 export class Kilo implements Source {
   readonly inferenceOnly = true;
+  readonly reportsOutput = true;
+  readonly reportsProgress = true;
   readonly id: 'kilo' | 'reflection-beam'; readonly supportsFunctionTools = true;
   // The model that answered last is tried first; a quota reply moves on to the next.
   private preferred: string | undefined;
@@ -188,9 +190,9 @@ export class Kilo implements Source {
       const limit = request.maxTokens, { messages, validators } = conversation(request);
       if (!await this.approved()) throw new SourceError('refused', 'Kilo data sharing is not approved; rerun usegrunt setup');
       signal.throwIfAborted();
-      const wantStream = request.stream;
       const wire = (model: string) => {
-        const body = JSON.stringify({ model, messages, ...(request.tools.length ? { tools: request.tools } : {}), stream: wantStream, ...(wantStream ? { stream_options: { include_usage: true } } : {}), max_tokens: limit });
+        const body = JSON.stringify({ model, messages, ...(request.tools.length ? { tools: request.tools } : {}),
+          stream: true, stream_options: { include_usage: true }, max_tokens: limit });
         if (Buffer.byteLength(body) > 2 * 1024 * 1024) throw requestFailure('Kilo prompt exceeds the supported input size', 'request_size');
         return body;
       };

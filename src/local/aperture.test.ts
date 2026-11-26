@@ -42,11 +42,30 @@ it('checks the Free plan and zero-price exact alias before each native JSON requ
   expect(fetcher.mock.calls.map(([url]) => String(url))).toEqual([
     'https://www.aperture-ai.run/auth/me', 'https://www.aperture-ai.run/api/v1/models', 'https://www.aperture-ai.run/api/v1/chat/completions'
   ]);
-  expect(JSON.parse(String(fetcher.mock.calls[2]![1]?.body))).toEqual({ model: APERTURE_MODEL, messages: request().messages, stream: false, max_tokens: 1024 });
+  expect(JSON.parse(String(fetcher.mock.calls[2]![1]?.body))).toEqual({ model: APERTURE_MODEL, messages: request().messages,
+    stream: true, stream_options: { include_usage: true }, max_tokens: 1024 });
   const withoutLimit = request(); delete withoutLimit.maxTokens;
   await adapter.complete({ ...withoutLimit, model: 'grunt' }, AbortSignal.timeout(2000));
   expect(JSON.parse(String(fetcher.mock.calls.at(-1)![1]?.body))).not.toHaveProperty('max_tokens');
   expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith('/auth/me'))).toHaveLength(2);
+});
+it.each([APERTURE_MODEL, 'other-model'])('verifies the SSE model and reports progress on buffered calls (%s)', async model => {
+  await recordDataSharingConsent(directory, [APERTURE_ID]);
+  const frames = [{ model, choices: [{ index: 0, delta: { content: 'Hello' } }] },
+    { choices: [{ index: 0, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 1 } }];
+  const wire = frames.map(frame => `data: ${JSON.stringify(frame)}\n\n`).join('') + 'data: [DONE]\n\n';
+  const adapter = source(transport(undefined, undefined, () => new Response(wire, { headers: { 'content-type': 'text/event-stream' } })));
+  const progress = vi.fn();
+  try {
+    const pending = adapter.complete(request(), AbortSignal.timeout(1000), progress);
+    if (model === APERTURE_MODEL) {
+      await expect(pending).resolves.toEqual({ text: 'Hello', inputTokens: 5, outputTokens: 1 });
+      expect(progress).toHaveBeenCalledOnce();
+    } else {
+      await expect(pending).rejects.toMatchObject({ code: 'upstream' });
+      expect(progress).not.toHaveBeenCalled();
+    }
+  } finally { await adapter.close(); }
 });
 it.each([{ valid: false, plan: 'free' }, { valid: true, plan: 'pro' }, { valid: true }, { plan: 'free' }, null])('blocks unverified or paid account metadata %j', async account => {
   await recordDataSharingConsent(directory, [APERTURE_ID]);

@@ -39,7 +39,8 @@ it('routes Grunt through only the pinned Runcrate model with the requested outpu
   expect(response.status).toBe(200); expect(response.headers.get('x-grunt-source')).toBe('runcrate');
   expect(fetcher).toHaveBeenCalledOnce();
   expect(fetcher.mock.calls[0]![0]).toBe(`${grant.base_url}/v1/chat/completions`);
-  expect(JSON.parse(String(fetcher.mock.calls[0]![1]?.body))).toMatchObject({ model: RUNCRATE_DEEPSEEK, max_tokens: 90000, stream: false });
+  expect(JSON.parse(String(fetcher.mock.calls[0]![1]?.body))).toMatchObject({ model: RUNCRATE_DEEPSEEK, max_tokens: 90000,
+    stream: true, stream_options: { include_usage: true } });
   await sources.close();
 });
 

@@ -273,6 +273,7 @@ function outputBudget(value: number | undefined) {
   return value;
 }
 export class Perch implements Source {
+  readonly inferenceOnly = true;
   readonly id = 'perch'; readonly supportsFunctionTools = true; readonly jsonToolBridge = true;
   private shutdown = new AbortController(); private pending = new Set<Promise<unknown>>(); private busy = false;
   constructor(private options: { directory?: string; timeout?: number; processes?: PerchProcesses } = {}) {}
@@ -353,7 +354,7 @@ export class Perch implements Source {
       if (!caller.aborted && !this.shutdown.signal.aborted && !signal.aborted && error instanceof SourceError && (error.code === 'logged_out' || (inferenceStarted && error.code === 'refused'))) await rm(perchPaths(this.directory).receipt, { force: true }).catch(() => {});
       if (caller.aborted) throw new SourceError('cancelled', 'Perch request cancelled');
       if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'Perch stopped during shutdown');
-      if (signal.aborted) throw replayTimeout('Perch request timed out', !inferenceStarted);
+      if (signal.aborted) throw replayTimeout('Perch request timed out', true);
       if (error instanceof SourceError) throw error;
       throw new SourceError('upstream', 'Perch request failed; rerun usegrunt setup if native access needs repair');
     } finally {
