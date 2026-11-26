@@ -462,15 +462,21 @@ export class Sources {
     const now = () => (this.routing?.now ?? Date.now)();
     const source = this.sources.find(source => source.id === id);
     if (!source) return { outcome: 'deferred', code: 'not_installed' };
+    const recoveryEvidence = (state: PoolSnapshot['sources'][number]): MaintenanceResult | undefined => {
+      const deadline = this.registeredRouter?.nextRecoveryAt(id);
+      const retryAt = deadline ?? state.retryAt;
+      if (retryAt !== undefined && retryAt > now()) return { outcome: 'deferred', code: state.errorCode ?? 'quota', retryAt };
+      if (deadline === undefined && state.state === 'ready' && !state.errorCode && state.lastSuccessAt !== undefined && state.lastSuccessAt > now() - 24 * 60 * 60 * 1000) {
+        return { outcome: 'passed', evidence: 'reply', lastSuccessAt: state.lastSuccessAt };
+      }
+    };
     const eligible = (): MaintenanceResult | undefined => {
       if (this.disabledModels.has(id) || this.router && !this.router.listed(id)) return { outcome: 'deferred', code: 'not_installed' };
       if (this.pending.has(id) || this.verifying.has(id)) return { outcome: 'deferred', code: 'foreground' };
       const snapshot = this.status(), state = snapshot.sources.find(source => source.id === id)!;
       if (state.active || this.checking.has(id)) return { outcome: 'deferred', code: 'busy' };
-      if (state.retryAt !== undefined && state.retryAt > now()) return { outcome: 'deferred', code: state.errorCode ?? 'quota', retryAt: state.retryAt };
-      if (state.state === 'ready' && !state.errorCode && state.lastSuccessAt !== undefined && state.lastSuccessAt > now() - 24 * 60 * 60 * 1000) {
-        return { outcome: 'passed', evidence: 'reply', lastSuccessAt: state.lastSuccessAt };
-      }
+      const evidence = recoveryEvidence(state);
+      if (evidence) return evidence;
       if (snapshot.activeRequests) return { outcome: 'deferred', code: 'busy' };
     };
     const previous = eligible();
@@ -482,11 +488,7 @@ export class Sources {
     const newerEvidence = (): MaintenanceResult | undefined => {
       if (!guard || !this.observation.changed(id, guard)) return;
       const state = this.status().sources.find(source => source.id === id)!;
-      if (state.retryAt !== undefined && state.retryAt > now()) return { outcome: 'deferred', code: state.errorCode ?? 'quota', retryAt: state.retryAt };
-      if (state.state === 'ready' && !state.errorCode && state.lastSuccessAt !== undefined && state.lastSuccessAt > now() - 24 * 60 * 60 * 1000) {
-        return { outcome: 'passed', evidence: 'reply', lastSuccessAt: state.lastSuccessAt };
-      }
-      return { outcome: 'deferred', code: state.errorCode ?? 'busy' };
+      return recoveryEvidence(state) ?? { outcome: 'deferred', code: state.errorCode ?? 'busy' };
     };
     const signal = AbortSignal.any([caller, AbortSignal.timeout(MAINTENANCE_CHECK_TIMEOUT)]);
     try {

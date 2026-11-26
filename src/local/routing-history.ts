@@ -101,7 +101,13 @@ function combineHolds(general?: RoutingBackoff, tool?: Hold): RoutingBackoff | u
   if (!tool) return general;
   return { ...(general ?? { code: 'upstream', signature: TOOL_SIGNATURE, ...tool }), tool };
 }
-export const recoveryDeadline = (value: RoutingBackoff) => Math.max(value.until, value.tool?.until ?? 0);
+// General availability gates every probe. A later tool deadline can be
+// checked separately once a text probe has cleared the general hold.
+export function recoveryDeadline(value: RoutingBackoff, observedQuota = 0) {
+  const general = generalHold(value);
+  const quota = value.code === 'quota' ? value.quotaUntil ?? value.until : 0;
+  return Math.max(general?.until ?? toolHold(value)!.until, quota, observedQuota);
+}
 
 export function mergeRoutingBackoff(previous: RoutingBackoff | undefined, incoming: RoutingBackoff): RoutingBackoff {
   const left = generalHold(previous), right = generalHold(incoming);

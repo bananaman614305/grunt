@@ -124,10 +124,22 @@ export class StickyRouter {
   }
   needsHealthCheck(id: string) { return this.barFailures.has(id); }
   healthy(id: string) { this.barFailures.delete(id); }
-  needsToolProbe(id: string) { return !!toolHold(this.observation.routingBackoff(id)); }
+  nextRecoveryAt(id: string) {
+    const hold = this.observation.routingBackoff(id);
+    return hold && recoveryDeadline(hold, this.observation.quotaRetryAt(id));
+  }
+  private scheduleRecovery(id: string) {
+    const next = this.nextRecoveryAt(id);
+    if (next !== undefined) this.options.scheduleRecovery?.(id, next);
+  }
+  needsToolProbe(id: string) {
+    const tool = toolHold(this.observation.routingBackoff(id));
+    return tool !== undefined && tool.until <= this.now();
+  }
   verified(id: string, provedTools = false) {
     this.barFailures.delete(id);
     this.observation.clearRoutingBackoff(id, provedTools);
+    this.scheduleRecovery(id);
   }
   cooldown(id: string, _clearRecovered = true) {
     const bar = this.barFailures.get(id);
@@ -158,17 +170,15 @@ export class StickyRouter {
     // Our own bug or the request's shape, never provider health: no retirement count, no cooldown.
     if (localRequestRefusal(failure)) return;
     const wasBenched = this.benched(id);
-    let until: number;
     if (failure.code === 'quota') {
       const seconds = failure.retryAfter ?? 3600;
-      until = recoveryDeadline(await this.observation.failureBackoff(id, failure, seconds, false, toolProbe));
+      await this.observation.failureBackoff(id, failure, seconds, false, toolProbe);
     }
     else if (failure.code === 'logged_out' || failure.code === 'not_installed') {
-      until = Infinity;
+      this.barFailures.set(id, failure.code);
       const tool = toolHold(this.observation.routingBackoff(id));
       if (toolProbe && tool && tool.streak >= RETIRE_AFTER_FAILURES && tool.until <= this.now()) {
-        const updated = await this.observation.failureBackoff(id, failure, 0, false, true);
-        this.options.scheduleRecovery?.(id, recoveryDeadline(updated));
+        await this.observation.failureBackoff(id, failure, 0, false, true);
       }
     }
     else {
@@ -181,10 +191,9 @@ export class StickyRouter {
       const seconds = hasUpstreamHint ? Math.min(MAX_UPSTREAM_RETRY_SECONDS, Math.max(1, retry ?? 1))
         : badSample ? BAD_SAMPLE_COOLDOWN_SECONDS : policy ? this.slowUpstreamSeconds(id, policy) : DEFAULT_FAILURE_COOLDOWN_SECONDS;
       // The policy already scales its own delay across consecutive slow failures of any kind.
-      until = recoveryDeadline(await this.observation.failureBackoff(id, failure, seconds, !hasUpstreamHint && !policy, toolProbe));
+      await this.observation.failureBackoff(id, failure, seconds, !hasUpstreamHint && !policy, toolProbe);
     }
-    if (until === Infinity) this.barFailures.set(id, failure.code);
-    if (Number.isFinite(until)) this.options.scheduleRecovery?.(id, until);
+    this.scheduleRecovery(id);
     if (!wasBenched && this.benched(id)) try { this.options.dropped?.(id); } catch { /* Signup triggers cannot change routing. */ }
   }
 

@@ -78,7 +78,7 @@ export class SourceStatus {
   get schedulesRecovery() { return this.notifyRestoredHold !== undefined; }
   onRestoredBackoff(notify: (id: string, at: number) => void) {
     this.notifyRestoredHold = notify;
-    for (const [id, hold] of this.backoffs) notify(id, recoveryDeadline(hold));
+    for (const [id, hold] of this.backoffs) notify(id, recoveryDeadline(hold, this.quotaRetryAt(id)));
   }
   private backoffs = new Map<string, RoutingBackoff>();
   private availabilityObservers = new Set<(id: string, at: number) => void>();
@@ -235,7 +235,8 @@ export class SourceStatus {
         const old = this.backoffs.get(row.source);
         const merged = mergeRoutingBackoff(old, incoming);
         this.setBackoff(row.source, merged);
-        if (!old || recoveryDeadline(old) !== recoveryDeadline(merged)) this.notifyRestoredHold?.(row.source, recoveryDeadline(merged));
+        const quota = this.quotaRetryAt(row.source), next = recoveryDeadline(merged, quota);
+        if (!old || recoveryDeadline(old, quota) !== next) this.notifyRestoredHold?.(row.source, next);
       }
     } catch { /* Durable observations must not make a source available or break requests. */ }
   }
