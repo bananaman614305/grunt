@@ -246,7 +246,9 @@ export class Kilo implements Source {
       const catalog = await this.verify(signal);
       signal.throwIfAborted();
       const models = wantsImage ? catalog.imageModels : catalog.models;
-      if (wantsImage && !models.length) throw new SourceError('refused', 'No Kilo :free model currently supports image input with at least 200K context');
+      if (wantsImage && !models.length) {
+        throw requestFailure('No Kilo :free model currently supports image input with at least 200K context', 'request_body');
+      }
       const grant = this.id === 'reflection-beam' || this.options.anonymous?.() ? undefined : await this.grant();
       const origin = grant ? `${grant.base_url}/api/gateway` : KILO_ORIGIN;
       const agentic = needsFunctionTools(request) ? models.filter(id => !KILO_NOT_FOR_TOOL_WORK.has(id)) : models;

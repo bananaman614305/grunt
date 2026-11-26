@@ -530,7 +530,7 @@ it('routes image requests on kilo only to verified free vision models, forwards 
   // When no free vision model is verified in the catalog, kilo refuses cleanly without posting.
   const noVision = fixture({ catalogRows: [{ ...model(KILO_PARTICLE), architecture: { input_modalities: ['text'] } }, visionModel('vendor/paid-vl:free', { isFree: false })] });
   await expect(noVision.source.complete({ ...request(), messages: [imageMessage()], imageInput: true }, new AbortController().signal))
-    .rejects.toMatchObject({ code: 'refused' });
+    .rejects.toMatchObject({ code: 'refused', diagnostics: { failureReason: 'request_body' } });
   expect(noVision.posts()).toHaveLength(0);
 
   // Reflection Beam remains strictly text-only and refuses before hitting the network.
