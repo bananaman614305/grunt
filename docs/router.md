@@ -207,7 +207,7 @@ enables acquisition.
 
 - **Loop.** `RegistrySync` fetches the registry every `REGISTRY_INTERVAL`
   (6 h, aligned to UTC midnight), keeping the ETag and the newer-publication
-  rule. After each fetch it starts the [route feedback exchange](#4-route-feedback)
+  rule. After each fetch it starts the [usage telemetry send](#4-usage-telemetry)
   without waiting for it, and starts one acquisition pass. So do the earlier
   recovery triggers: quota, logged-out and not-installed failures. So does a
   route leaving the open set (an observed availability loss, bench, quota hold,
@@ -309,31 +309,43 @@ adapters) and the validated API host its shipped or declarative source reads,
 and `auth_shape` `bearer`. Without `store`, only a fallback operator's
 `operate_extract` can capture the key.
 
-## 4. Route feedback
+## 4. Usage telemetry
 
-After every registry sync, each router sends today's running totals and any
-retained totals from yesterday, on by default. Acknowledged yesterday totals
-are then discarded. For each listed route with recorded activity, reports contain
-counts of successful replies (`ok`), upstream/timeout/refused failures (`failed`), quota failures
-(`quota`), logged-out/not-installed failures (`auth`), background signup
-outcomes (`signup_ok`, `signup_failed`), the smoothed success latency rounded to
-100 ms, and whether the route is retired. Each report includes the schema and
-client versions and UTC day. A random install id, kept in `registry-install`
-(mode 0600) in the config directory, lets the registry replace a day's cumulative
-totals instead of adding them. Nothing else is sent: no prompts,
-responses, tool data, keys, grants, emails, provider error text, request ids,
-model names, paths, hosts or IPs. Counters live in memory, so a restart loses
-part of a day.
+Grunt requires anonymous usage telemetry. Every build sends events to US
+PostHog (`https://us.i.posthog.com/batch/`) with a built-in public write-only
+project key, which can send events but not read them. A build-time
+`POSTHOG_PROJECT_KEY` replaces it. Setup prints a line saying telemetry is on.
+The daemon talks to PostHog directly; it sends nothing to a Grunt gateway.
+`GRUNT_POSTHOG_KEY` and `GRUNT_POSTHOG_HOST` exist for Grunt's own offline
+tests: an empty key sends nothing, and the host can point at a local server.
 
-The registry turns the last 14 days into a 0–100 score per route:
-reliability `(S+1)/(S+F+2)` over capped, 3-day-half-life weighted successes and
-failures, times a freshness that halves every 3 days without a success. A route
-with reports but no success in the window scores 0; one with no reports has no
-score (`unknown`). A reported route is `live` if its last success was fewer
-than three UTC days ago, otherwise `dead`, even if its score is still positive.
-`GET /v1/registry/scores` serves the scores, their states and
-sample counts for dashboards. The daemon does not read them; its weighted draw
-is local (§2).
+Every event uses the same `distinct_id`: the SHA-256 hash of
+`grunt-posthog-v1:` and the random install id in `registry-install` (mode 0600)
+in the config directory. The raw id never leaves the machine. Events set
+`$process_person_profile: false` (no person profiles), `$geoip_disable: true`
+(no location lookup) and a deterministic `$insert_id` and `uuid` per install,
+event and UTC day, so a later send of the same day replaces the earlier one.
+
+| Event | When | Properties |
+|---|---|---|
+| `daemon_heartbeat` | After every registry sync | `version`, `os`, `arch`, `open_routes`, `enabled_sources` |
+| `route_daily_summary` | After every registry sync, one per listed route with activity today or unacknowledged activity yesterday | `version`, `route`, `ok`, `failed`, `quota`, `auth`, `latency_ms`, `signup_ok`, `signup_failed`, `retired` |
+| `setup_completed` | Queued by `usegrunt setup` when it finishes; the daemon sends it once setup releases its session, or on the next sync | `version`, `os`, `arch`, `sources_configured` |
+
+Route counts: successful replies (`ok`), upstream/timeout/refused failures
+(`failed`), quota failures (`quota`), logged-out/not-installed failures
+(`auth`), background signup outcomes (`signup_ok`, `signup_failed`), the
+smoothed success latency rounded to 100 ms, and whether the route is retired.
+Only routes the current registry lists are sent. Yesterday's totals are dropped
+after PostHog accepts them. Counters live in memory, so a restart loses part of
+a day. Nothing else is sent: no prompts, responses, tool data, keys, grants,
+emails, provider error text, request ids, model names, paths or hosts.
+
+Sends never block routing, registry sync or daemon startup, and setup makes no
+telemetry request, so it never waits on the network. Each request has a
+10-second timeout and refuses redirects. A scheduled workflow (`.github/workflows/npm-stats.yml`)
+adds the daily `usegrunt` npm download count as `npm_daily_downloads`. The
+routing weight stays local (§2); the daemon reads nothing back.
 
 ## Operator fixes in this change
 

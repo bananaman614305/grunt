@@ -16,8 +16,8 @@ export interface ObservationRuntime {
   port: number;
   readiness?: 'starting' | 'ready' | 'failed';
   config?: {
-    fleetReporting: boolean;
-    adoptionReporting: boolean;
+    // Anonymous PostHog usage telemetry (docs/router.md#4-usage-telemetry).
+    telemetry: boolean;
     backgroundAccountAcquisition: boolean;
     registry: 'bundled_and_public' | 'custom';
     // These settings may contain credentials in the URL or in their value.
