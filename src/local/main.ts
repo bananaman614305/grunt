@@ -155,7 +155,7 @@ export function start(env = process.env) {
   const adoptionConsent = reportFleet && gruntEnv('ADOPTION_REPORTING',env) === '1';
   const diagnosticReady = DiagnosticsStore.open({ directory, adoptionConsent, ...(runtimeVersion ? { runtimeVersion } : {}) }).then(store => { diagnostics = store; sources.setDiagnostics(store); });
   const routingHistory = createRuntimeRoutingHistory(sources, { directory, notify: console.error });
-  // Route health goes to the registry on each sync and its scores weight routing (docs/router.md).
+  // Route health goes to the registry on each sync. Routing weight stays local (docs/router.md).
   const feedback = new RouteFeedback({ directory, urls,
     ...(reportFleet ? { fleet: async (token: string) => {
       await diagnosticReady;
@@ -163,7 +163,6 @@ export function start(env = process.env) {
     } } : {}),
     listed: () => registry.adapters.map(adapter => adapter.id), retired: id => sources.retired(id), ...(runtimeVersion ? { client: runtimeVersion } : {}) });
   sources.setFeedback((id, outcome, latencyMs) => feedback.record(id, outcome, latencyMs));
-  sources.setRegistryScores(id => feedback.score(id));
 
   // The route the background pass is signing up shows as connecting in status.
   let opening: string | undefined;
