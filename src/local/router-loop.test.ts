@@ -421,3 +421,16 @@ it.each(['boot', 'hot-add', 'explicit', 'receipt'] as const)('distinguishes %s e
     } finally { await sources.close(); }
   }
 });
+
+it('preserves the stable share for tool requests when a stable text route is unavailable to them', async () => {
+  const adapters = [['opencode', 0.6], ['kilo', 0.2], ['runcrate', 0.2]] as const;
+  const registry = { ...bundledRegistry, adapters: adapters.map(([id, weight]) => ({
+    ...bundledRegistry.adapters.find(adapter => adapter.id === id)!, weight
+  })) };
+  const pool = adapters.map(([id]) => ({ ...source(id), supportsFunctionTools: id !== 'opencode' }));
+  let draw = 0.79;
+  const sources = new Sources(pool, { registry: () => registry, random: () => draw });
+  await expect(sources.complete(ask('inside stable', true), AbortSignal.timeout(2000))).resolves.toMatchObject({ text: 'kilo done' });
+  draw = 0.81;
+  await expect(sources.complete(ask('outside stable', true), AbortSignal.timeout(2000))).resolves.toMatchObject({ text: 'runcrate done' });
+});

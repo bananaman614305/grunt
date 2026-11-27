@@ -41,7 +41,7 @@ async function fixture(t,{realApi=false}={}){
       await cp(dirname(manifest),join(checkout,'node_modules',dependency),{recursive:true});
     }
     await writeFile(join(checkout,'package.json'),json({type:'module'}));
-    await writeFile(join(checkout,'dist','registry.js'),`export const bundledRegistry=${JSON.stringify(registry)};export const knownAdapters=new Set(['${sourceId}']);export const disabledAdapters=new Set();`);
+    await writeFile(join(checkout,'dist','registry.js'),`export const TIER_TOTALS={stable:0.8,experimental:0.2};export const bundledRegistry=${JSON.stringify(registry)};export const knownAdapters=new Set(['${sourceId}']);export const disabledAdapters=new Set();`);
     await writeFile(join(checkout,'dist','local','main.js'),`
 import {Sources} from './source.js';
 import {writeFileSync,readFileSync,existsSync} from 'node:fs';

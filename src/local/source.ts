@@ -59,6 +59,7 @@ export interface ModelRequest {
   messages: Message[];
   userMessages?: string[];
   tools: Tool[];
+  expectedFunctionCall?: { name?: string };
   cwd: string;
   stream: boolean;
   maxTokens?: number;
@@ -297,7 +298,7 @@ export class Sources {
   // (not a cancellation) is logged and reported to the source.
   private attempt = async (source: Source, request: ModelRequest, signal: AbortSignal): Promise<Completion> => {
     if (this.retired(source.id)) throw new SourceError('not_installed', `${source.id} routing is retired`);
-    const timed: Source = { id: source.id, available: () => source.available(), complete: (r, s, output) => this.firstOutput(source, r, s, output) };
+    const timed: Source = { id: source.id, supportsFunctionTools: toolCapable(source), available: () => source.available(), complete: (r, s, output) => this.firstOutput(source, r, s, output) };
     try {
       const result = await withAttemptStream(source.id, () => this.observation.complete(timed, request, signal));
       signal.throwIfAborted();
@@ -403,6 +404,7 @@ export class Sources {
   // The registry's liveliness scores weight the routers' draw (docs/router.md).
   setRegistryScores(score: (id: string) => number | null | undefined) { for (const router of [this.router, this.chainRouter]) router?.useRegistryScores(score); }
   flushRoutingHistory() { return this.observation.flushRoutingHistory(); }
+  auditAdapters() { return this.registeredRouter?.auditAdapters() ?? []; }
   diagnosticStore() { return this.diagnostics; }
   observationConfig() {
     return {

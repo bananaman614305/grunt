@@ -161,7 +161,7 @@ describe('low open routes', () => {
     if (fixed) sources.setChainRegistry(() => registry);
     const dropped = vi.fn();
     sources.setRouteDropped(dropped);
-    const request = { model: 'grunt', cwd: process.cwd(), messages: [{ role: 'user' as const, content: 'hi' }], tools: [], stream: false };
+    const request = { model: 'grunt', cwd: await directory(), messages: [{ role: 'user' as const, content: 'hi' }], tools: [], stream: false };
     try {
       if (mode === 'maintenance') {
         expect(await sources.check(limited.id, AbortSignal.timeout(1000))).toMatchObject({ outcome: 'failed', code: 'quota' });

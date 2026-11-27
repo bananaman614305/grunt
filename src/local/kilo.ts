@@ -69,6 +69,7 @@ function status(response: Response) {
 export interface KiloCatalog {
   models: string[];
   imageModels: string[];
+  toolChoiceModels: string[];
 }
 /** Nonbillable public metadata only. No account, API key, or paid fallback is used.
  * Returns the verified free models this route may use, in try order, together with
@@ -106,7 +107,11 @@ export async function verifyKiloCatalog(options: { fetcher?: typeof fetch; signa
       : 'No Kilo :free model is currently verified free with at least 200K context');
     models.sort((a, b) => order(a) - order(b));
     const imageModels = options.reflectionBeam ? [] : models.filter(id => id.endsWith(':free') && supportsImage(rowById.get(id)!));
-    return { models, imageModels };
+    const toolChoiceModels = models.filter(id => {
+      const parameters = rowById.get(id)!.supported_parameters;
+      return Array.isArray(parameters) && parameters.includes('tool_choice');
+    });
+    return { models, imageModels, toolChoiceModels };
   } catch (error) {
     if (options.signal?.aborted) throw new SourceError('cancelled', 'Kilo access check cancelled');
     if (signal.aborted) throw new SourceError('timeout', 'Kilo access check timed out');
@@ -236,11 +241,13 @@ export class Kilo implements Source {
       if (!await this.approved()) throw new SourceError('refused', 'Kilo data sharing is not approved; rerun usegrunt setup');
       signal.throwIfAborted();
       const maxBytes = wantsImage ? KILO_IMAGE_MAX_BYTES : KILO_TEXT_MAX_BYTES;
-      const wire = (model: string) => {
+      const wire = (model: string, supportsChoice = false) => {
+        const expected = supportsChoice && request.expectedFunctionCall;
+        const toolChoice = expected ? expected.name ? { type: 'function', function: { name: expected.name } } : 'required' : undefined;
         const body = JSON.stringify({ model, messages, ...(request.tools.length ? { tools: request.tools } : {}),
-          stream: true, stream_options: { include_usage: true }, max_tokens: limit });
+          tool_choice: toolChoice, stream: true, stream_options: { include_usage: true }, max_tokens: limit });
         if (Buffer.byteLength(body) > maxBytes) throw requestFailure('Kilo prompt exceeds the supported input size', 'request_size');
-        return body;
+        return { body, constrained: toolChoice !== undefined };
       };
       wire(''); // Refuse an oversized prompt before any network call.
       const catalog = await this.verify(signal);
@@ -257,7 +264,7 @@ export class Kilo implements Source {
       let quota: SourceError | undefined, last: SourceError | undefined;
       for (const model of order) {
         try {
-          const completion = await this.ask(model, wire(model), origin, grant, request, messages, validators, limit, signal, output);
+          const completion = await this.ask(model, wire(model, catalog.toolChoiceModels.includes(model)), origin, grant, request, messages, validators, limit, signal, output);
           this.preferred = model; return completion;
         } catch (error) {
           if (error instanceof SourceError && (error.diagnostics?.failureReason === 'completion_model' || error.diagnostics?.failureReason === 'completion_billing')) {
@@ -280,10 +287,10 @@ export class Kilo implements Source {
       throw new SourceError('upstream', 'Kilo request failed');
     }
   }
-  private async ask(model: string, body: string, origin: string, grant: { token: string } | undefined, request: ModelRequest, messages: ModelRequest['messages'],
+  private async ask(model: string, { body, constrained }: { body: string; constrained: boolean }, origin: string, grant: { token: string } | undefined, request: ModelRequest, messages: ModelRequest['messages'],
     validators: Map<string, ValidateFunction>, limit: number | undefined, signal: AbortSignal, output?: () => void): Promise<Completion> {
     resetUncommittedStreamReply();
-    observeAttemptDispatch({ model, account: grant ? 'vaulted' : 'anonymous', ...(limit === undefined ? {} : { maxOutputTokens: limit }) });
+    observeAttemptDispatch({ model, constrained, account: grant ? 'vaulted' : 'anonymous', ...(limit === undefined ? {} : { maxOutputTokens: limit }) });
     const response = await abortable(diagnosticFetch(this.options.fetcher ?? fetch, this.id, 'chat.completions')(`${origin}/chat/completions`, { method: 'POST', redirect: 'error', signal,
       headers: { 'Content-Type': 'application/json', ...(grant ? { Authorization: `Bearer ${grant.token}` } : {}) }, body }), signal); status(response);
     const fail = (code: 'upstream' | 'refused', message: string, reason: NonNullable<SafeDiagnosticMetadata['failureReason']>) =>

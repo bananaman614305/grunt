@@ -8,7 +8,7 @@ import { taskTurns } from './harness.js';
 import { Sources, RequestError, SourceError, answeredBy, bridgedTools, canReplay, hasImageInput, needsFunctionTools, toolCapable, withAttemptStream, NO_TOOL_SOURCE } from './source.js';
 import type { Completion, ErrorCode, ModelRequest, SlowUpstreamPolicy, Source } from './source.js';
 import type { Adapter, Registry } from '../registry.js';
-import { knownAdapters } from '../registry.js';
+import { knownAdapters, TIER_TOTALS } from '../registry.js';
 import { SourceStatus } from './source-status.js';
 import { SourceAvailability } from './source-availability.js';
 import { currentDiagnosticContext, observeRequestPhase, withDiagnosticContext } from './diagnostics.js';
@@ -65,7 +65,7 @@ interface Task {
   reassessment?: { from: string; source: string; samples: number; at: number };
   lastPerformanceSwitchAt?: number;
 }
-interface Candidate { source: Source; weight: number }
+interface Candidate { source: Source; adapter: Adapter; weight: number }
 export class StickyRouter {
   private tasks = new Map<string, Task>();
   private barFailures = new Map<string, ErrorCode>();
@@ -197,6 +197,9 @@ export class StickyRouter {
     if (!wasBenched && this.benched(id)) try { this.options.dropped?.(id); } catch { /* Signup triggers cannot change routing. */ }
   }
 
+  auditAdapters() {
+    return this.options.registry().adapters.map(({ id, tier, status, expires }) => ({ id, tier, status, expires }));
+  }
   registered(id: string) {
     if (knownAdapters.has(id) || this.options.localOptIns?.has(id)) return true;
     const adapter = this.options.registry().adapters.find(item => item.id === id);
@@ -465,7 +468,7 @@ export class StickyRouter {
           }
           const available = this.availability.peek(source.id);
           if (source.id === task.source || available === true) {
-            eligible.push({ source, weight: adapter.weight * observation.routingWeight(source.id, false, workload) * registryScoreFactor(this.registryScore?.(source.id)) });
+            eligible.push({ source, adapter, weight: adapter.weight * observation.routingWeight(source.id, false, workload) * registryScoreFactor(this.registryScore?.(source.id)) });
             if (available === true) reportEligible(source.id, this.now());
           }
           else if (available === undefined) unknown.push(source);
@@ -550,6 +553,16 @@ export class StickyRouter {
         // A first request has no bound source; its draw is weighted, not sticky.
         const bound = selected !== undefined && selected.source.id === task.source;
         if (!selected) {
+          if (toolsRequired) {
+            // Redistribute each tier's base share across the eligible tool routes.
+            // Performance and registry scores still scale each route's resulting share.
+            const totals = { stable: 0, experimental: 0 };
+            for (const { adapter } of ready) totals[adapter.tier] += adapter.weight;
+            for (const candidate of ready) {
+              const tier = candidate.adapter.tier;
+              candidate.weight *= TIER_TOTALS[tier] / totals[tier];
+            }
+          }
           let draw = (this.options.random ?? Math.random)() * ready.reduce((total, a) => total + a.weight, 0);
           selected = ready.find(a => (draw -= a.weight) < 0) ?? ready.at(-1)!;
         }

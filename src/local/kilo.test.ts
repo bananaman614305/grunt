@@ -7,6 +7,8 @@ import { Kilo, KILO_BEAM, KILO_CATALOG_CACHE_MS, KILO_IMAGE_MAX_BYTES, KILO_NOT_
 import { recordDataSharingConsent } from './data-sharing.js';
 import { writePrivateProviderGrant } from './provider-grant.js';
 import { beginSetupSession, readSetupSession } from './setup-session.js';
+import { DiagnosticsStore } from './diagnostics.js';
+import { buildRecoveryAudit } from '../recovery-audit.js';
 import { createLocalApp } from './api.js';
 import { Sources, endingOf, guardToolCalls } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
@@ -29,6 +31,35 @@ function fixture(options: { catalog?: unknown; catalogRows?: unknown[]; reflecti
   const source = new Kilo({ directory, fetcher, ...(options.reflectionBeam ? { reflectionBeam: true } : {}), ...(options.timeout ? { timeout: options.timeout } : {}), ...(options.anonymous ? { anonymous: options.anonymous } : {}) }); sources.push(source);
   return { source, fetcher, posts: () => fetcher.mock.calls.filter(([, init]) => init?.method === 'POST') };
 }
+it.each([true, false])('scores only choices conveyed in the Kilo POST (model supports tool choice: %s)', async supported => {
+  const catalog = model();
+  if (supported) catalog.supported_parameters.push('tool_choice');
+  const named = (name: string) => ({ type: 'function', function: { name } });
+  const tools = [tool, { ...tool, function: { ...tool.function, name: 'another' } }];
+  const f = fixture({ catalog, infer: init => {
+    const choice = JSON.parse(String(init?.body)).tool_choice;
+    return Response.json(choice?.function ? result({ choices: [{ message: { content: '', tool_calls: [call] } }] }) : result());
+  } });
+  const pool = new Sources([f.source]), store = await DiagnosticsStore.open({ directory });
+  pool.setDiagnostics(store);
+  const app = createLocalApp(pool);
+  try {
+    for (const choice of ['required', named('nonce'), named('another'), 'auto']) {
+      const response = await app.request('http://localhost:8788/v1/chat/completions', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...request(), tools, tool_choice: choice })
+      });
+      expect(response.status).toBe(200);
+      const wire = JSON.parse(String(f.posts().at(-1)?.[1]?.body));
+      expect(wire.tool_choice).toEqual(supported && choice !== 'auto' ? choice : undefined);
+    }
+    const events = (await store.list()).events;
+    const audit = buildRecoveryAudit(events, { since: 0, until: Date.now() + 1 }, undefined, undefined, [{ id: 'kilo', tier: 'stable' }]);
+    expect(audit.toolTiers.adapters[0]).toMatchObject({ attempts: 4, expectedCalls: supported ? 3 : 0,
+      toolCallPassRate: supported ? 1 / 3 : null, passRate: 1 });
+  } finally { await pool.close(); await store.close(); }
+});
+
 it.each([false, true])('aborts a stalled Kilo stream after the first delta (client stream: %s)', async stream => {
   const f = fixture({ infer: () => new Response(new ReadableStream({
     start(controller) {
@@ -387,8 +418,14 @@ it.each([
   await expect(f.source.complete(request(), new AbortController().signal)).rejects.toThrow(); expect(f.posts()).toHaveLength(1);
 });
 it('does not move on after a request timeout', async () => {
-  const fetcher = vi.fn<typeof fetch>(async url => String(url).endsWith('/models') ? Response.json({ data: rotation() }) : new Promise<Response>(() => {}));
-  const source = new Kilo({ directory, fetcher, timeout: 5 }); sources.push(source);
+  const deadline = new AbortController();
+  vi.spyOn(AbortSignal, 'timeout').mockReturnValueOnce(deadline.signal);
+  const fetcher = vi.fn<typeof fetch>(async url => {
+    if (String(url).endsWith('/models')) return Response.json({ data: rotation() });
+    queueMicrotask(() => deadline.abort());
+    return new Promise<Response>(() => {});
+  });
+  const source = new Kilo({ directory, fetcher }); sources.push(source);
   await expect(source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'timeout' });
   expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
 });
