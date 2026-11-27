@@ -86,6 +86,8 @@ export interface TelemetryOptions {
 }
 export class PostHogTelemetry {
   private days = new Map<string, Map<string, Counts>>();
+  // One exchange at a time, so a send never claims or deletes another send's queued setup event.
+  private exchanging: Promise<void> = Promise.resolve();
   constructor(private options: TelemetryOptions) {}
   get enabled() { return Boolean(postHogKey(this.options.env)); }
   private now() { return (this.options.now ?? Date.now)(); }
@@ -126,7 +128,10 @@ export class PostHogTelemetry {
   }
   // Today's heartbeat and running totals, plus yesterday's final totals, which
   // are dropped once PostHog accepts them. Never throws; routing never waits on it.
-  async exchange() {
+  exchange() {
+    return this.exchanging = this.exchanging.then(() => this.send());
+  }
+  private async send() {
     const today = utcDay(this.now()), yesterday = utcDay(this.now() - DAY_MS);
     for (const day of this.days.keys()) if (day !== today && day !== yesterday) this.days.delete(day);
     if (!this.enabled) return;
@@ -136,7 +141,7 @@ export class PostHogTelemetry {
       const batch = [this.heartbeat(distinctId, today), ...setup ? [setup.event] : [], ...this.summaries(distinctId, yesterday), ...this.summaries(distinctId, today)];
       if (await sendBatch(batch, { ...(this.options.env ? { env: this.options.env } : {}), ...(this.options.fetcher ? { fetcher: this.options.fetcher } : {}) })) {
         this.days.delete(yesterday);
-        // Remove only the queued event that was sent; a newer setup may have replaced it.
+        // Exchanges are serialized, so the claimed file still holds the event just sent.
         if (setup) await rm(setup.path).catch(() => {});
       }
     } catch { /* Telemetry is best effort. */ }

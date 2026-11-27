@@ -187,3 +187,35 @@ it('swallows unreachable hosts and refuses redirects', async () => {
   expect(followed).toBe(false);
   expect(redirect.received[1]!.body.batch.map(event => String(event.properties.$insert_id))).toContain(`route:${DISTINCT}:2026-11-26:kilo`);
 });
+
+it('keeps a newer setup event queued when an overlapping exchange fails after an earlier one succeeds', async () => {
+  const hold = Promise.withResolvers<void>(), first = Promise.withResolvers<void>();
+  const acknowledged = Promise.withResolvers<void>();
+  let calls = 0;
+  const { received, env } = await posthog(async (_request, response) => {
+    const call = ++calls;
+    if (call === 1) { first.resolve(); await hold.promise; response.writeHead(200).end(); }
+    // The second upload fails only after the first one has been acknowledged.
+    else if (call === 2) { await acknowledged.promise; response.writeHead(503).end(); }
+    else response.writeHead(200).end();
+  });
+  const dir = await directory();
+  const sent = telemetry(dir, env);
+  const setups = (index: number) => received[index]!.body.batch.filter(event => event.event === 'setup_completed').map(event => event.properties.sources_configured);
+  await queueSetupCompleted({ directory: dir, sourcesConfigured: 1, env, now: () => now });
+  const earlier = sent.exchange();
+  void earlier.then(acknowledged.resolve);
+  await first.promise;
+  // A newer setup finishes while the first upload is in flight, and a second exchange starts.
+  await queueSetupCompleted({ directory: dir, sourcesConfigured: 2, env, now: () => now });
+  const later = sent.exchange();
+  // Give an unserialized exchange time to claim the newer event before the first upload is acknowledged.
+  for (let wait = 0; wait < 30 && await stat(join(dir, 'telemetry-setup.json')).then(() => true, () => false); wait++) await new Promise(resolve => setTimeout(resolve, 10));
+  hold.resolve();
+  await Promise.all([earlier, later]);
+  expect([setups(0), setups(1)]).toEqual([[1], [2]]);
+  await sent.exchange();
+  expect(setups(2)).toEqual([2]);
+  await sent.exchange();
+  expect(setups(3)).toEqual([]);
+});
