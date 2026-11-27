@@ -451,7 +451,7 @@ it('pulls the registry from the RegistrySync URL and silently falls back to the 
   const fresh = { ...bundledRegistry, published: new Date(Date.parse(bundledRegistry.published) + 1000).toISOString() };
   const fetcher = vi.fn(async () => new Response(JSON.stringify(fresh), { status: 200 }));
   expect(await loadRegistry({ fetcher })).toEqual({ registry: fresh, origin: 'remote' });
-  expect(fetcher).toHaveBeenCalledWith('https://api.grunt.run/v1/registry', expect.anything());
+  expect(fetcher).toHaveBeenCalledWith('https://grunt.run/registry.json', expect.anything());
   expect((await loadRegistry({ fetcher: async () => { throw new Error('offline'); } })).origin).toBe('cache');
   await rm(dir, { recursive: true, force: true });
   expect(await loadRegistry({ fetcher: async () => { throw new Error('offline'); } })).toEqual({ registry: bundledRegistry, origin: 'bundled' });
@@ -584,4 +584,30 @@ it('marks only the fixed Free-Pi setup probes as public context', async () => {
     expect(unavailable).toEqual([]);
     expect(observed).toEqual([true, true]);
   } finally { await live.close(); }
+});
+
+it('discloses required usage telemetry and queues setup_completed without waiting on a stalled endpoint', async () => {
+  const { createServer } = await import('node:http');
+  const { TELEMETRY_NOTICE } = await import('./wizard.js');
+  let requests = 0;
+  // Accepts connections and never answers.
+  const posthog = createServer(() => { requests++; });
+  await new Promise<void>(resolve => posthog.listen(0, '127.0.0.1', resolve));
+  try {
+    vi.stubEnv('GRUNT_POSTHOG_KEY', 'phc_test_only_offline_key');
+    vi.stubEnv('GRUNT_POSTHOG_HOST', `http://127.0.0.1:${(posthog.address() as AddressInfo).port}`);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const started = Date.now();
+    await wizard(undefined, {
+      preflight: vi.fn(async () => {}), connectSquire: vi.fn(async () => {}), setup: vi.fn(async () => ({ key: 'synthetic' })),
+      setupFallbacks: vi.fn(async () => ({ unavailable: [] })), approveDataSharing: approvedBatch, installService: vi.fn(async () => {}),
+      configurePi: vi.fn(async () => {}), checkService: vi.fn(async () => {}), checkFallbackServices: vi.fn(async () => {})
+    });
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect(requests).toBe(0);
+    const lines = log.mock.calls.map(([line]) => String(line));
+    expect(lines).toContain(TELEMETRY_NOTICE);
+    expect(lines.indexOf(TELEMETRY_NOTICE)).toBeLessThan(lines.findIndex(line => line.includes('data sharing')));
+    expect(JSON.parse(await readFile(join(consentDir, 'telemetry-setup.json'), 'utf8'))).toMatchObject({ sources_configured: defaultIds().length });
+  } finally { posthog.closeAllConnections(); await new Promise(resolve => posthog.close(resolve)); }
 });

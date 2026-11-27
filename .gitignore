@@ -13,3 +13,4 @@ proof/manifest.txt
 proof/validation.txt
 .cgstack/
 __pycache__/
+site/registry.json

@@ -7,8 +7,11 @@ import type { Registry } from '../registry.js';
 
 // The slow router loop (docs/router.md): re-read the registry, then open routes.
 export const REGISTRY_INTERVAL = 6 * 60 * 60 * 1000;
-// Existing Fly application is retained as a registry mirror until infrastructure is renamed.
-export const REGISTRY_URLS = ['https://api.grunt.run/v1/registry', 'https://milo-gateway.fly.dev/v1/registry'];
+// Static registry hosted on Cloudflare Pages with a raw GitHub fallback.
+export const REGISTRY_URLS = [
+  'https://grunt.run/registry.json',
+  'https://raw.githubusercontent.com/bananaman614305/grunt/main/registry/adapters.json'
+];
 export class RegistrySync {
   current: Registry = structuredClone(bundledRegistry);
   private etag: string | undefined;

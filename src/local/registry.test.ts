@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { bundledRegistry } from '../registry.js';
 import type { Registry } from '../registry.js';
-import { RegistrySync } from './registry.js';
+import { REGISTRY_URLS, RegistrySync } from './registry.js';
 
 const directories: string[] = [];
 async function directory() {
@@ -80,7 +80,12 @@ it('refuses changed data at an existing publication timestamp without adopting i
 });
 
 it('accepts identical same-time publications regardless of object-key order or ISO formatting', async () => {
-  const equivalent = { adapters: structuredClone(bundledRegistry.adapters), published: new Date(Date.parse(bundledRegistry.published)).toISOString().replace(/Z$/, '0Z'), version: 1 };
+  const equivalent = {
+    ...(bundledRegistry.candidates ? { candidates: structuredClone(bundledRegistry.candidates) } : {}),
+    adapters: structuredClone(bundledRegistry.adapters),
+    published: new Date(Date.parse(bundledRegistry.published)).toISOString().replace(/Z$/, '0Z'),
+    version: 1
+  };
   const fetcher = vi.fn<typeof fetch>()
     .mockResolvedValueOnce(Response.json(equivalent, { headers: { ETag: '"same-data"' } }))
     .mockResolvedValueOnce(new Response(null, { status: 304 }));
@@ -104,4 +109,34 @@ it('accepts a later revocation and persists it through an offline restart', asyn
   await restarted.load(); await restarted.sync();
   expect(restarted.current).toEqual(fresh);
   expect(fetcher.mock.calls[0]![1]?.headers).toEqual({ 'If-None-Match': '"revoked"' });
+});
+
+it('syncs from static Cloudflare Pages URL with raw GitHub fallback, redirect: error, and GRUNT_REGISTRY_URL override', async () => {
+  expect(REGISTRY_URLS).toEqual([
+    'https://grunt.run/registry.json',
+    'https://raw.githubusercontent.com/bananaman614305/grunt/main/registry/adapters.json'
+  ]);
+  const path = await directory(), fresh = published(1000);
+  const fetcher = vi.fn<typeof fetch>()
+    .mockRejectedValueOnce(new TypeError('fetch failed: redirect mode is set to error'))
+    .mockResolvedValueOnce(Response.json(fresh, { headers: { ETag: '"github-raw"' } }))
+    .mockResolvedValueOnce(new Response(null, { status: 304 }));
+  const sync = new RegistrySync({ directory: path, fetcher });
+  await sync.sync();
+  expect(fetcher.mock.calls.map(([url, init]) => [url, init?.redirect])).toEqual([
+    ['https://grunt.run/registry.json', 'error'],
+    ['https://raw.githubusercontent.com/bananaman614305/grunt/main/registry/adapters.json', 'error']
+  ]);
+  expect(sync.current).toEqual(fresh);
+
+  await sync.sync();
+  expect(fetcher.mock.calls[2]![0]).toBe('https://grunt.run/registry.json');
+  expect(fetcher.mock.calls[2]![1]).toMatchObject({ headers: { 'If-None-Match': '"github-raw"' }, redirect: 'error' });
+
+  const customFetcher = vi.fn<typeof fetch>().mockRejectedValue(new Error('custom offline'));
+  const override = new RegistrySync({ directory: await directory(), url: 'https://override.example/registry.json', fetcher: customFetcher });
+  await override.sync();
+  expect(customFetcher).toHaveBeenCalledOnce();
+  expect(customFetcher.mock.calls[0]![0]).toBe('https://override.example/registry.json');
+  expect(customFetcher.mock.calls[0]![1]?.redirect).toBe('error');
 });

@@ -1,3 +1,4 @@
 /Admin /admin/ 302
 /Admin/* /admin/:splat 302
 /admin/adoption /admin/adoption.html 200
+/v1/registry /registry.json 200

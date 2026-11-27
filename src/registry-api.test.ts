@@ -181,7 +181,8 @@ it('serves a document that validates and remains compatible with usegrunt 0.9.7 
   expect((await api.request('PUT', '/v1/registry/entries/newco', { signup: 'https://newco.example/signup', hints: "Press 'Sign up'." }, tokens.owner)).status).toBe(200);
   expect((await api.request('PUT', '/v1/registry/entries/zro', entry('zro'), tokens.owner)).status).toBe(200);
   const served = await api.registry();
-  expect(served.candidates!.map(candidate => candidate.id)).toEqual(['newco']);
+  const baseCandidates = (bundledRegistry.candidates ?? []).map(candidate => candidate.id);
+  expect(served.candidates!.map(candidate => candidate.id)).toEqual([...baseCandidates, 'newco']);
   expect(validateRegistry(served)).toEqual(served);
   expect(validate097(compat097(served))).toEqual(compat097(served));
   expect(Date.parse(served.published)).toBeGreaterThan(Date.parse(BUNDLED_PUBLISHED));
@@ -209,7 +210,9 @@ it('places adapters and candidates, keeps tier totals, and records reversible hi
     api.request('PUT', '/v1/registry/entries/one', { signup: 'https://one.example/', hints: 'One.' }, tokens.owner),
     api.request('PUT', '/v1/registry/entries/two', { signup: 'https://two.example/', hints: 'Two.' }, tokens.bananaman)]);
   expect([a.status, b.status]).toEqual([200, 200]);
-  expect((await api.registry()).candidates!.map(candidate => candidate.id)).toEqual(['newco', 'one', 'two']);
+  expect((await api.registry()).candidates!.map(candidate => candidate.id)).toEqual([
+    ...(bundledRegistry.candidates ?? []).map(candidate => candidate.id), 'newco', 'one', 'two'
+  ]);
   expect((await api.request('DELETE', '/v1/registry/entries/newco', undefined, tokens.owner)).status).toBe(200);
   expect((await api.request('DELETE', '/v1/registry/entries/newco', undefined, tokens.owner)).status).toBe(404);
   const removed = (await api.store.writes()).at(-1)!;

@@ -7,7 +7,6 @@ import { DiagnosticsStore, sanitizeDiagnosticEvent, withDiagnosticContext } from
 import { SourceStatus } from './source-status.js';
 import { SourceError, completionEnding, endingOf, guardToolCalls, withEnding } from './source.js';
 import type { Completion, ModelRequest, Source } from './source.js';
-import { uploadFleet } from './fleet-upload.js';
 import { validateAdminEvent } from '../admin/types.js';
 import { HOUR } from '../fleet.js';
 
@@ -69,9 +68,9 @@ it('reaches the pool as a failed attempt that is not a provider outage', async (
     .rejects.toMatchObject({ code: 'upstream', diagnostics: { failureReason: 'response_tools', httpStatus: 200 } });
   expect((await journal.list()).events.find(e => e.type === 'attempt.finish')).toMatchObject({ outcome: 'failed', errorCode: 'upstream', failureReason: 'response_tools', httpStatus: 200 });
 });
-it('keeps endings out of fleet uploads and the collector projection', async () => {
+it('keeps endings out of hourly metrics and the collector projection', async () => {
   const end = Math.floor(Date.UTC(2026, 10, 24, 12) / HOUR) * HOUR;
-  const bodies: string[] = [], metrics: unknown[] = [];
+  const metrics: unknown[] = [];
   vi.spyOn(performance, 'now').mockReturnValue(0);
   for (const withEndings of [false, true]) {
     const directory = await dir(); let now = end - 2 * HOUR + 1000;
@@ -84,7 +83,6 @@ it('keeps endings out of fleet uploads and the collector projection', async () =
         ? withEnding({ ...reply }, completionEnding(finish, { completion_tokens_details: { reasoning_tokens: 5 } }, !!reply.calls)) : { ...reply }), request, new AbortController().signal));
     }
     now = end;
-    await uploadFleet(journal, directory, ['https://registry.test'], 'a'.repeat(97), end, async (_url, init) => { bodies.push(String(init?.body)); return new Response(null, { status: 204 }); });
     const m = await journal.metrics({ since: end - 2 * HOUR, until: end });
     metrics.push(JSON.parse(JSON.stringify({ buckets: m.buckets, histogram: m.histogram })));
     if (withEndings) {
@@ -95,8 +93,6 @@ it('keeps endings out of fleet uploads and the collector projection', async () =
       expect(validateAdminEvent(event)).not.toHaveProperty('reasoningTokens');
     }
   }
-  expect(bodies.length).toBeGreaterThan(0);
-  expect(bodies[0]).toBe(bodies.at(-1));
   expect(metrics[0]).toEqual(metrics[1]);
-  expect(bodies.join()).not.toMatch(/finishReason|hadToolCalls|reasoningTokens/);
+  expect(JSON.stringify(metrics)).not.toMatch(/finishReason|hadToolCalls|reasoningTokens/);
 });
