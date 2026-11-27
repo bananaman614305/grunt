@@ -13,7 +13,7 @@
   },
   "scripts": {
     "dev": "tsx src/server.ts",
-    "build": "rm -rf dist && tsc && mkdir -p dist/registry dist/admin-public && cp registry/adapters.json dist/registry/adapters.json && cp site/admin/index.html site/admin/admin.css site/admin/admin.js site/admin/adoption.* dist/admin-public/ && cp site/grunt.svg dist/grunt.svg && cp site/favicon.svg dist/favicon.svg",
+    "build": "node scripts/build.mjs",
     "start": "node dist/server.js",
     "test": "vitest run",
     "benchmark:efficiency": "tsx src/local/efficiency-benchmark.ts",
@@ -37,6 +37,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.20.3",
+    "esbuild": "^0.28.2",
     "eslint": "^9.39.5",
     "tsx": "^4.19.2",
     "typescript": "^5.9.3",

@@ -39,7 +39,11 @@ it has no subagents, so it has no parallelism. See the
 [harness reference](docs/reference.md#claude-code) for each file's contents and
 [parallel work](#parallel-work) for how subagents are routed.
 
-Use Node 22 or 24 LTS on Linux with systemd or macOS with launchd. Setup needs npm and tar; browser sign-in also needs a working browser/display path, especially on a headless server. Mistral Vibe needs `uv` or Python 3.12 or later.
+Use an up-to-date Node 22 or 24 LTS on Linux with systemd, macOS with launchd,
+or Windows with Task Scheduler. Setup copies the bundled daemon and starts it
+under your user account. On Windows it also starts at sign-in without elevation.
+Browser sign-in needs a working browser and display. Some optional native
+providers need extra tools. Mistral Vibe needs `uv` or Python 3.12 or later.
 
 Setup plays the miner animation, connects your coding tools,
 shows one live table of tools and sources, and ends with `Ready`. Setup accepts

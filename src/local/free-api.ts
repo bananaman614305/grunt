@@ -1,6 +1,7 @@
+import { hasOwnerMode, openPrivateFile } from './private-file.js';
 import { configRoot } from '../brand.js';
 import { constants } from 'node:fs';
-import { open } from 'node:fs/promises';
+
 import { join } from 'node:path';
 import { completionEnding, emitStreamText, endingOf, withEnding, lengthLimited, truncatedCompletion, SourceError } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
@@ -55,10 +56,10 @@ export async function readFreeApiGrant(
     const vaulted = await readVaultGrant(name, location, env);
     if (vaulted) return validateGrant({ base_url: vaulted.base_url, token: vaulted.token });
   }
-  const file = await open(join(location, `${name}.json`), constants.O_RDONLY | constants.O_NOFOLLOW);
+  const file = await openPrivateFile(join(location, `${name}.json`), constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = await file.stat();
-    if (!stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.uid !== process.getuid?.()) throw new Error('Unsafe free API grant file');
+    if (!stat.isFile() || !hasOwnerMode(stat, 0o600)) throw new Error('Unsafe free API grant file');
     return validateGrant(JSON.parse(await file.readFile('utf8')));
   } finally { await file.close(); }
 }

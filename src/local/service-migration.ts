@@ -34,6 +34,11 @@ export const xml = (value: string) => value.replaceAll('&', '&amp;').replaceAll(
 export const systemdEnvironment = (env: Record<string, string>) =>
   Object.entries(env).map(([key, value]) => `Environment=${systemdQuote(`${key}=${value}`, false)}`).join('\n');
 
+export function replaceServiceEntry(contents: string, linux: boolean, previous: string, entry: string) {
+  if (linux) return contents.replace(/^ExecStart=.*$/m, line => line.replace(systemdQuote(previous), () => systemdQuote(entry)));
+  return contents.replace(`<string>${xml(previous)}</string>`, () => `<string>${xml(entry)}</string>`);
+}
+
 export function launchAgent(name: string, node: string, entry: string, env: Record<string, string>) {
   return `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>ai.${name}.service</string><key>ProgramArguments</key><array><string>${xml(node)}</string><string>${xml(entry)}</string></array><key>EnvironmentVariables</key><dict>${Object.entries(env).map(([key, value]) => `<key>${xml(key)}</key><string>${xml(value)}</string>`).join('')}</dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>Umask</key><integer>63</integer></dict></plist>`;
 }
@@ -72,7 +77,7 @@ function laterDropInName(last: string) {
 }
 
 export async function prepareServiceMigration(options: {
-  platform: 'linux' | 'darwin'; file: string; node: string; entry: string;
+  platform: 'linux' | 'darwin'; file: string; node: string; entry: string; previousEntry?: string;
   effective: Record<string, string>; original: NodeJS.ProcessEnv; enabled?: string; enableNew?: boolean; run: Run;
 }) {
   const { platform, file, node, entry, effective, run, enabled } = options;
@@ -129,7 +134,8 @@ export async function prepareServiceMigration(options: {
       };
     }
   }
-  const contents = linux ? await readFile(file, 'utf8') : launchAgent('grunt', node, entry, env);
+  let contents = linux ? await readFile(file, 'utf8') : launchAgent('grunt', node, entry, env);
+  if (linux && options.previousEntry) contents = replaceServiceEntry(contents, linux, options.previousEntry, entry);
   const unit = linux && environment && !translatedDropIn ? contents.trimEnd() + '\n\n[Service]\n' + environment + '\n' : contents;
   let installed = false, moved = false, movedDropIns = false, disabling = false, starting = false;
   let addedDropIn = false, createdDropInDirectory = false;

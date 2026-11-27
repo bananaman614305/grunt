@@ -1,3 +1,4 @@
+import { hasOwnerMode } from './private-file.js';
 import { spawn } from 'node:child_process';
 import { observeAttemptDispatch, diagnosticFetch } from './diagnostics.js';
 import type { ChildProcess } from 'node:child_process';
@@ -117,7 +118,7 @@ export class OpenCode implements Source {
       if (this.options.configFile) {
         try {
           const stat = await lstat(this.options.configFile);
-          if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600) throw new Error('Invalid private config');
+          if (!stat.isFile() || stat.isSymbolicLink() || !hasOwnerMode(stat, 0o600)) throw new Error('Invalid private config');
           // Signup may create this private grant after the daemon was started.
           // Let the CLI read it; provider values never enter this process.
           env.OPENCODE_CONFIG = this.options.configFile;

@@ -1,6 +1,7 @@
+import { hasOwnerMode, openPrivateFile } from './private-file.js';
 import { randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
-import { link, mkdir, open, readFile, rm, writeFile } from 'node:fs/promises';
+import { link, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ErrorCode } from './source.js';
 
@@ -68,10 +69,10 @@ export class RouteFeedback {
   private async fleetProof() {
     const path = join(this.options.directory, 'fleet-enrollment');
     const readProof = async () => {
-      const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      const file = await openPrivateFile(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       try {
         const info = await file.stat();
-        if (!info.isFile() || info.uid !== process.getuid?.() || (info.mode & 0o777) !== 0o600 || info.size !== 64) throw new Error('Unsafe fleet enrollment state');
+        if (!info.isFile() || !hasOwnerMode(info, 0o600) || info.size !== 64) throw new Error('Unsafe fleet enrollment state');
         return await file.readFile('utf8');
       } finally { await file.close(); }
     };

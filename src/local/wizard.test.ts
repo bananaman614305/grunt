@@ -83,10 +83,10 @@ it('refuses to reinstall an existing broker when its probe fails', async () => {
   await expect(connectSquire({ hasBroker: async () => true, run })).rejects.toThrow('Existing trusty-squire-broker failed its connection probe: socket refused');
   expect(run).not.toHaveBeenCalled();
 });
-it('stops at a missing prerequisite with its fix before Squire or service changes', async () => {
-  const run = vi.fn(async (binary: string) => { if (binary === 'tar') throw new Error('missing'); });
-  await expect(preflight(run)).rejects.toThrow('Install tar');
-  expect(run.mock.calls.map(([binary]) => binary)).toEqual(['npm', 'tar']);
+it('checks the user service manager without looking for npm or tar', async () => {
+  const run = vi.fn(async (_binary: string) => { throw new Error('missing'); });
+  await expect(preflight(run)).rejects.toThrow('Sign in to a user session with a working service manager');
+  expect(run.mock.calls.map(([binary]) => binary)).toEqual([process.platform === 'darwin' ? 'launchctl' : 'systemctl']);
 });
 it('allows service onboarding before a coding harness such as Pi is installed', async () => {
   const run = vi.fn(async (binary: string) => { if (binary === 'pi') throw new Error('missing'); });

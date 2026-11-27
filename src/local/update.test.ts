@@ -10,6 +10,7 @@ import { updateRuntime } from './update.js';
 import { AUTOMATIC_POOL_FILE, automaticPoolSelection } from './automatic-pool.js';
 import type { UpdateRun, UpdateOptions } from './update.js';
 import { beginSetupSession } from './setup-session.js';
+import { writeWindowsLauncher } from './windows-service.js';
 
 const cleanup = vi.hoisted(() => ({ fail: false }));
 vi.mock('node:fs/promises', async original => {
@@ -22,14 +23,17 @@ vi.mock('node:fs/promises', async original => {
 
 const execute = promisify(execFile), directories: string[] = [];
 afterEach(async () => { cleanup.fail = false; vi.restoreAllMocks(); await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
-type Settings = { brand?: 'grunt' | 'milo'; duplicate?: boolean; active?: boolean; platform?: 'linux' | 'darwin'; badReady?: boolean; stopError?: boolean; rollbackStopError?: boolean; portEnv?: string; envFile?: string; unsafeNames?: boolean; unsafeLink?: boolean; wrongExec?: boolean; corrupt?: boolean; abort?: AbortController; cancelNpm?: boolean; abortOnStop?: boolean; failBootstrap?: boolean; configMismatch?: boolean; configMissing?: boolean; legacyStatus?: boolean; automaticPool?: boolean };
+type Settings = { brand?: 'grunt' | 'milo'; duplicate?: boolean; active?: boolean; platform?: 'linux' | 'darwin' | 'win32'; bundled?: boolean; badReady?: boolean; stopError?: boolean; rollbackStopError?: boolean; portEnv?: string; envFile?: string; unsafeNames?: boolean; unsafeLink?: boolean; wrongExec?: boolean; corrupt?: boolean; abort?: AbortController; cancelNpm?: boolean; abortOnStop?: boolean; failBootstrap?: boolean; configMismatch?: boolean; configMissing?: boolean; legacyStatus?: boolean; automaticPool?: boolean };
 async function fixture(settings: Settings = {}) {
   const base = await mkdtemp(join(tmpdir(), 'grunt-update-test-')); directories.push(base);
   const brand = settings.brand ?? 'grunt', prefix = brand.toUpperCase();
   const directory = join(base, brand), runtime = join(directory, 'runtime'), remote = join(base, 'remote'), pkg = join(remote, 'package'), piDirectory = join(base, 'pi');
+  const bundled = settings.bundled || settings.platform === 'win32', entry = join(runtime, bundled ? 'daemon.mjs' : 'dist/local/main.js');
   await mkdir(join(runtime, 'dist/local'), { recursive: true, mode: 0o700 });
-  await writeFile(join(runtime, 'dist/local/main.js'), 'original runtime');
-  await writeFile(join(runtime, 'package.json'), JSON.stringify({ name: 'milo-runtime', version: '0.1.0', type: 'module' }));
+  await writeFile(entry, 'original runtime');
+  if (!bundled) await writeFile(join(runtime, 'package.json'), JSON.stringify({ name: 'milo-runtime', version: '0.1.0', type: 'module' }));
+  const windowsEnv = { GRUNT_CONFIG_DIR: directory, GRUNT_PORT: '18792', GRUNT_DAEMON: '1', GRUNT_SOURCES: 'kilo,perch' };
+  if (settings.platform === 'win32') await writeWindowsLauncher(runtime, windowsEnv);
   const saved = { 'installed-sources.json': '["kilo","perch"]', 'installed-port.json': '8788', 'maintenance.json': '{"keep":"maintenance history"}', 'private-grant.json': 'synthetic private receipt' };
   for (const [name, contents] of Object.entries(saved)) await writeFile(join(directory, name), contents, { mode: 0o600 });
   const unit = join(base, `${brand}.service`), dropIn = join(base, 'custom.conf'), plist = join(base, `ai.${brand}.service.plist`);
@@ -38,6 +42,11 @@ async function fixture(settings: Settings = {}) {
   if (settings.duplicate && settings.platform === 'darwin') await writeFile(join(base, 'ai.milo.service.plist'), 'duplicate', { mode: 0o600 });
   await mkdir(join(pkg, 'dist/local'), { recursive: true });
   await writeFile(join(pkg, 'dist/local/main.js'), 'if(process.argv[1])throw new Error("CLI must not start while staging");export const fixture=true;');
+  if (bundled) {
+    await writeFile(join(pkg, 'dist/local/daemon.mjs'), 'if(process.argv[1])throw new Error("Daemon must not start while staging");export const updated=true;');
+    await mkdir(join(pkg, 'dist/registry'));
+    await writeFile(join(pkg, 'dist/registry/adapters.json'), '{}');
+  }
   await writeFile(join(pkg, 'package.json'), JSON.stringify({ name: 'usegrunt', version: '1.2.3', type: 'module', dependencies: { hono: '^4.13.8', 'ipaddr.js': '^2.5.0' }, scripts: { preinstall: 'do not run this' } }));
   await writeFile(join(pkg, 'README.md'), 'synthetic release');
   const archivePath = join(base, 'release.tgz');
@@ -56,12 +65,20 @@ async function fixture(settings: Settings = {}) {
   };
   const run: UpdateRun = async (binary, args, options) => {
     calls.push({ binary, args }); options?.signal?.throwIfAborted();
+    if (binary === 'powershell.exe') {
+      return JSON.stringify({ state: active ? 4 : 3, node: process.execPath, args: `"${join(runtime, settings.wrongExec ? 'unexpected.mjs' : 'launch.mjs')}"`, limited: true });
+    }
+    if (binary === 'schtasks.exe') {
+      if (args[0] === '/end') { stops++; active = false; }
+      if (args[0] === '/run') { starts++; active = true; }
+      return '';
+    }
     if (binary === 'systemctl') {
       if (args.includes('show')) {
         const name = args[args.indexOf('-p') + 1];
         if (!args.includes(`${brand}.service`) && !settings.duplicate) return name === 'LoadState' ? 'not-found' : '';
         const key = args.includes('grunt.service') ? 'GRUNT' : 'MILO';
-        return ({ FragmentPath: unit, UnitFileState: 'enabled', LoadState: 'loaded', ExecStart: `{ path=${process.execPath} ; argv[]=${process.execPath} ${settings.wrongExec ? '/unrelated/project/main.js' : join(runtime, 'dist/local/main.js')} ; ignore_errors=no ; }`,
+        return ({ FragmentPath: unit, UnitFileState: 'enabled', LoadState: 'loaded', ExecStart: `{ path=${process.execPath} ; argv[]=${process.execPath} ${settings.wrongExec ? '/unrelated/project/main.js' : entry} ; ignore_errors=no ; }`,
           Environment: settings.portEnv ? `${settings.portEnv} ${key}_CONFIG_DIR=${directory}` : Object.entries(installedEnvironment(key)).map(([key, value]) => `${key}=${value}`).join(' '), EnvironmentFiles: settings.envFile ?? '', UnsetEnvironment: '', ActiveState: active ? 'active' : 'inactive' } as Record<string, string>)[name!] ?? '';
       }
       if (args.includes('stop')) {
@@ -97,7 +114,7 @@ async function fixture(settings: Settings = {}) {
       if (args.some(arg => arg.startsWith('EnvironmentVariables.') && !arg.startsWith(`EnvironmentVariables.${prefix}_`)) || args.includes(`EnvironmentVariables.${prefix}_CONFIG_DIR`) && settings.configMissing) throw new Error('Synthetic plist field missing');
       if (args.includes(`EnvironmentVariables.${prefix}_DAEMON`)) return settings.automaticPool ? '1' : '';
       if (args.includes(`EnvironmentVariables.${prefix}_SOURCES`)) return 'kilo,perch';
-      return args.includes('ProgramArguments') ? JSON.stringify([process.execPath, join(runtime, 'dist/local/main.js')]) : args.includes(`EnvironmentVariables.${prefix}_CONFIG_DIR`) ? settings.configMismatch ? '/unrelated/configuration' : directory : '18792';
+      return args.includes('ProgramArguments') ? JSON.stringify([process.execPath, entry]) : args.includes(`EnvironmentVariables.${prefix}_CONFIG_DIR`) ? settings.configMismatch ? '/unrelated/configuration' : directory : '18792';
     }
     if (binary === 'npm') {
       expect(args).toContain('--ignore-scripts'); expect(args).toContain('--registry=https://registry.npmjs.org');
@@ -117,9 +134,9 @@ async function fixture(settings: Settings = {}) {
     if (url === 'https://registry.npmjs.org/usegrunt/latest') return new Response(JSON.stringify(metadata));
     if (url === metadata.dist.tarball) return new Response(settings.corrupt ? Buffer.from('bad archive') : archive);
     expect(url).toBe('http://127.0.0.1:18792/v1/status');
-    const current = JSON.parse(await readFile(join(runtime, 'package.json'), 'utf8'));
-    if (settings.legacyStatus && current.version !== '1.2.3') return new Response('legacy status endpoint unavailable', { status: 404 });
-    if (settings.badReady && current.version === '1.2.3') return new Response('synthetic unavailable', { status: 503 });
+    const updated = bundled ? (await readFile(entry, 'utf8')).includes('updated=true') : JSON.parse(await readFile(join(runtime, 'package.json'), 'utf8')).version === '1.2.3';
+    if (settings.legacyStatus && !updated) return new Response('legacy status endpoint unavailable', { status: 404 });
+    if (settings.badReady && updated) return new Response('synthetic unavailable', { status: 503 });
     return new Response(JSON.stringify({ version: 1, activeRequests: 0, sources: [] }));
   };
   const options: UpdateOptions = { directory, env: { GRUNT_PORT: '8788', PATH: process.env.PATH, PI_CODING_AGENT_DIR: piDirectory }, platform: settings.platform ?? 'linux', run, fetcher, now: () => clock,
@@ -396,4 +413,48 @@ it('does not execute caller Node preloads or tar hooks while staging the officia
     return original(binary, args, options);
   };
   await updateRuntime(f.options); await f.preserved();
+});
+
+it.each(['linux', 'darwin', 'win32'] as const)('updates the standalone daemon on %s without installing dependencies', async platform => {
+  const f = await fixture({ platform, bundled: true });
+  const launcher = join(f.runtime, 'launch.mjs');
+  const before = platform === 'win32' ? await readFile(launcher, 'utf8') : undefined;
+  const result = await updateRuntime(f.options);
+  expect(result).toMatchObject({ version: '1.2.3', active: true, port: 18792 });
+  expect(f.calls.some(call => call.binary === 'npm')).toBe(false);
+  expect(await readFile(join(f.runtime, 'daemon.mjs'), 'utf8')).toContain('updated=true');
+  expect(await readFile(join(f.runtime, 'registry/adapters.json'), 'utf8')).toBe('{}');
+  await expect(readFile(join(f.runtime, 'package.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  if (platform === 'win32') {
+    expect(await readFile(launcher, 'utf8')).toBe(before);
+    expect(f.calls.filter(call => call.binary === 'schtasks.exe').map(call => call.args[0])).toEqual(['/end', '/run']);
+    expect(f.urls.filter(url => url.startsWith('http://'))).toEqual(['http://127.0.0.1:18792/v1/status', 'http://127.0.0.1:18792/v1/status']);
+  }
+  await f.preserved();
+});
+
+it('updates a stopped Windows task without starting it', async () => {
+  const f = await fixture({ platform: 'win32', active: false });
+  expect(await updateRuntime(f.options)).toMatchObject({ active: false, port: 18792 });
+  expect(f.counts()).toEqual({ stops: 0, starts: 0, active: false });
+  expect(f.urls.filter(url => url.startsWith('http://'))).toEqual([]);
+  await f.preserved();
+});
+
+it('refuses to update a Windows task that runs an unrelated launcher', async () => {
+  const f = await fixture({ platform: 'win32', wrongExec: true });
+  await expect(updateRuntime(f.options)).rejects.toThrow('does not use the managed Grunt launcher');
+  expect(f.urls).toEqual([]);
+  expect(f.counts()).toEqual({ stops: 0, starts: 0, active: true });
+  await f.preserved();
+});
+
+it('restores both the Windows runtime and launcher if the new task fails its health check', async () => {
+  const f = await fixture({ platform: 'win32', badReady: true });
+  const launcher = join(f.runtime, 'launch.mjs'), before = await readFile(launcher, 'utf8');
+  await expect(updateRuntime(f.options)).rejects.toThrow('the previous runtime and service were restored');
+  expect(f.calls.filter(call => call.binary === 'schtasks.exe').map(call => call.args[0])).toEqual(['/end', '/run', '/end', '/run']);
+  expect(await readFile(join(f.runtime, 'daemon.mjs'), 'utf8')).toBe('original runtime');
+  expect(await readFile(launcher, 'utf8')).toBe(before);
+  await f.preserved();
 });

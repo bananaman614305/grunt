@@ -161,9 +161,9 @@ release. No other user's installation is enrolled automatically.
 
 ## Use grunt as your harness's model
 
-Run the separate local daemon on your own machine (Linux with systemd or macOS
-with launchd). Use Node 22 or 24 LTS for the setup wizard; npm and tar must be
-available. Squire also needs a usable browser/display path. A headless remote
+Run the separate local daemon on Linux with systemd, macOS with launchd, or
+Windows with Task Scheduler. Use an up-to-date Node 22 or 24 LTS for the setup
+wizard. Squire also needs a usable browser/display path. A headless remote
 server may need display helpers such as Xvfb/noVNC. Missing prerequisites are
 reported for repair. See the [signup verification rules](#free-api-and-account-setup).
 Mistral Vibe separately needs `uv` or Python 3.12+.
@@ -467,12 +467,12 @@ it is per user and uses that user's configured providers, consent and accounts.
 No separate cron job is required. New setup installs it with the daemon.
 Existing users run `npx usegrunt update` to replace their saved background
 runtime. The updater resolves the latest official npm release itself, verifies
-the package integrity, prepares dependencies without install scripts, then
+the package integrity, stages the daemon, then
 replaces the managed runtime and restarts the existing service. It preserves
 service configuration, custom ports and sources, account grants, consent,
 native authentication and `maintenance.json`. It does not invoke the signup
 wizard. If startup verification fails, it restores the previous runtime. A
-stopped Linux service remains stopped. On macOS, the existing launch agent must
+stopped Linux service or Windows task remains stopped. On macOS, the existing launch agent must
 be running before update; an unloaded or waiting job is rejected safely rather
 than changed while it might restart itself. An older local CLI that lacks the command can
 bootstrap with `npx usegrunt@latest update`.
@@ -1026,8 +1026,8 @@ zero-retention coverage have not been independently verified. Setup enables both
 
 NVIDIA remains an optional integration and is not in the bundled default pool while account verification is unvetted. Cloudflare Qwen is excluded from the pool by the owner's choice.
 
-Before making changes, setup checks Node, npm, tar and the user service
-manager. A missing prerequisite prints its install or repair step and stops.
+Before making changes, setup checks Node and the user service manager.
+A missing prerequisite prints its install or repair step and stops.
 Coding harnesses such as Pi are optional; setup can install the service before
 you install a harness.
 
@@ -1061,16 +1061,18 @@ session with an unavailable broker reports the connection error for repair.
 Setup does not pair with Beeline or create agents or Rooms.
 
 Grunt state lives under `GRUNT_CONFIG_DIR`, otherwise `$XDG_CONFIG_HOME/grunt`
-or `~/.config/grunt` for new installs. Upgrades keep existing managed state at
+or `~/.config/grunt` on Linux and macOS, and `%LOCALAPPDATA%\grunt` on Windows.
+Upgrades keep existing managed state at
 its original path. Keep the selected directory across service restarts.
 
 Setup offers the bundled pool and records enabled providers in
-`installed-sources.json`. It keeps a runtime outside the npx cache so cache
-cleanup does not remove the service. On Linux, the `grunt.service` user unit
+`installed-sources.json`. It copies the daemon and registry to a runtime
+outside the npx cache. On Linux, the `grunt.service` user unit
 restarts after a crash. Setup attempts to enable lingering so the service starts
 at boot and survives logout. If that fails, run `loginctl enable-linger` as the
 installing user. On macOS, the `ai.grunt.service` LaunchAgent starts at login
-and restarts after a crash. When setup or update replaces an older service
+and restarts after a crash. On Windows, a limited Scheduled Task starts the
+daemon in the installing user's session at sign-in. When setup or update replaces an older service
 identity, it carries forward the effective port and Linux unit overrides.
 
 In the ready-first flow, providers join the installed runtime as their checks

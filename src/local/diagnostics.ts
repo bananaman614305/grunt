@@ -1,7 +1,8 @@
+import { hasOwnerMode, openPrivateFile } from './private-file.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { chmod, lstat, mkdir, open, realpath } from 'node:fs/promises';
+import { chmod, lstat, mkdir, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Client, InValue, Transaction } from '@libsql/client';
@@ -311,14 +312,16 @@ export class DiagnosticsStore {
     try {
       await mkdir(options.directory, { recursive: true, mode: 0o700 });
       const dir = await lstat(options.directory);
-      if (!dir.isDirectory() || dir.isSymbolicLink() || dir.uid !== process.getuid?.() || (dir.mode & 0o777) !== 0o700 || await realpath(options.directory) !== resolve(options.directory)) throw new Error('private_storage_required');
-      const path = join(resolve(options.directory), 'diagnostics.db');
-      try { const file = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); await file.close(); }
+      if (!dir.isDirectory() || dir.isSymbolicLink() || !hasOwnerMode(dir, 0o700)) throw new Error('private_storage_required');
+      const canonical = await realpath(options.directory), configured = resolve(options.directory);
+      if (process.platform === 'win32' ? canonical.toLowerCase() !== configured.toLowerCase() : canonical !== configured) throw new Error('private_storage_required');
+      const path = join(canonical, 'diagnostics.db');
+      try { const file = await openPrivateFile(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); await file.close(); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
       const info = await lstat(path);
-      if (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid?.() || (info.mode & 0o777) !== 0o600 || info.size > 256 * 1024 * 1024) throw new Error('private_storage_required');
+      if (!info.isFile() || info.isSymbolicLink() || !hasOwnerMode(info, 0o600) || info.size > 256 * 1024 * 1024) throw new Error('private_storage_required');
       for (const suffix of ['-wal', '-shm']) {
-        try { const sidecar = await lstat(path + suffix); if (!sidecar.isFile() || sidecar.isSymbolicLink() || sidecar.uid !== process.getuid?.() || (sidecar.mode & 0o777) !== 0o600) throw new Error('private_storage_required'); }
+        try { const sidecar = await lstat(path + suffix); if (!sidecar.isFile() || sidecar.isSymbolicLink() || !hasOwnerMode(sidecar, 0o600)) throw new Error('private_storage_required'); }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
       }
       // Passive runtime imports and isolated provider probes do not enable

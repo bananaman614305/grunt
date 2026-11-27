@@ -1,3 +1,4 @@
+import { squireClientPath } from './squire-client-path.js';
 import { ZRO_STORE } from './zro.js';
 import { TOKENHARBOR_STORE } from './tokenharbor.js';
 import { POLLINATIONS_STORE } from './pollinations-setup.js';
@@ -9,8 +10,7 @@ import { DARUS_STORE } from './darus-setup.js';
 import { APERTURE_STORE } from './aperture-setup.js';
 import { MILLIONSEEK_STORE } from './millionseek-setup.js';
 import { Readable } from 'node:stream';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { rm } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -446,7 +446,7 @@ export class BrowserSquire implements SetupSquire {
     return this.connection ??= this.connectOnce().catch(error => { this.connection = undefined; throw error; });
   }
   private async connectOnce() {
-    const bin = join(dirname(fileURLToPath(import.meta.resolve('@trusty-squire/mcp'))), 'bin.js');
+    const bin = await squireClientPath(configRoot());
     const env = squireEnvironment();
     // Squire owns its account binding and vault. grunt never reads its files.
     const transport = new StdioClientTransport({ command: process.execPath, args: [bin, 'server'], stderr: 'pipe', env });

@@ -1,5 +1,6 @@
+import { hasOwnerMode, openPrivateFile } from './private-file.js';
 import { constants } from 'node:fs';
-import { mkdir, lstat, readdir, open, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, lstat, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { knownAdapters } from '../registry.js';
@@ -24,7 +25,7 @@ const unavailable = () => new Error('Cannot coordinate provider setup safely; fi
 function alive(pid: number) { try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM'; } }
 async function privateDirectory(path: string) {
   const stat = await lstat(path);
-  return stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === process.getuid?.() && (stat.mode & 0o777) === 0o700;
+  return stat.isDirectory() && !stat.isSymbolicLink() && hasOwnerMode(stat, 0o700);
 }
 async function claims(directory: string) {
   if (!await privateDirectory(directory)) throw unavailable();
@@ -42,9 +43,9 @@ async function claims(directory: string) {
 async function readState(claim: Claim, allowExpired = false): Promise<State | undefined> {
   let file;
   try {
-    file = await open(join(claim.path, 'state.json'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    file = await openPrivateFile(join(claim.path, 'state.json'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const stat = await file.stat();
-    if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.size > 32768) return;
+    if (!stat.isFile() || !hasOwnerMode(stat, 0o600) || stat.size > 32768) return;
     const state = JSON.parse(await file.readFile('utf8')) as Partial<State>;
     if (state.version !== 1 || state.id !== claim.id || state.pid !== claim.pid || typeof state.expires !== 'number'
       || !Number.isFinite(state.expires) || (!allowExpired && state.expires <= Date.now()) || state.expires > Date.now() + ttl + 60000
@@ -72,9 +73,9 @@ const kiloRouteFile = (directory: string) => join(directory, 'kilo-route.json');
 export async function readKiloRoute(directory: string): Promise<'anonymous' | 'account'> {
   let file;
   try {
-    file = await open(kiloRouteFile(directory), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    file = await openPrivateFile(kiloRouteFile(directory), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const stat = await file.stat();
-    if (!stat.isFile() || stat.uid !== process.getuid?.() || stat.size > 1024) return 'account';
+    if (!stat.isFile() || !hasOwnerMode(stat, 0, 0) || stat.size > 1024) return 'account';
     return (JSON.parse(await file.readFile('utf8')) as { route?: unknown }).route === 'anonymous' ? 'anonymous' : 'account';
   } catch { return 'account'; }
   finally { await file?.close(); }
