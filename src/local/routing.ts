@@ -36,12 +36,6 @@ export function recommendedAdapters(registry: Registry, now = Date.now()) {
     .sort((a, b) => rank(a) - rank(b) || b.weight - a.weight);
 }
 
-// Registry feedback scales a route's draw from 0.5x (score 0) to 1.5x (score
-// 100); a route without a score keeps its weight.
-export function registryScoreFactor(score: number | null | undefined) {
-  return typeof score === 'number' && Number.isFinite(score) ? 0.5 + Math.max(0, Math.min(100, score)) / 100 : 1;
-}
-
 // A request with function tools draws from sources that call tools through the provider's own interface before it
 // draws from JSON-bridged ones (Source.jsonToolBridge), whose model is only asked, in prose, to answer with a tool
 // envelope and may decline. Only the draw set narrows: weights, consent, quota and cooldowns are untouched, and a
@@ -72,13 +66,11 @@ export class StickyRouter {
   private observation: SourceStatus;
   private availability: SourceAvailability;
   private shutdown = new AbortController();
-  private registryScore: ((id: string) => number | null | undefined) | undefined;
   constructor(private sources: Source[], private options: RoutingOptions) {
     this.observation = options.observation ?? new SourceStatus(sources.map(source => source.id), options.now);
     this.availability = new SourceAvailability(this.observation);
   }
   private now() { return (this.options.now ?? Date.now)(); }
-  useRegistryScores(score: (id: string) => number | null | undefined) { this.registryScore = score; }
   // Routes allowed their one half-open trial request right now (see claimTrial).
   private trials = new Set<string>();
   // Sources a task has drawn and not yet finished with. A draw claims its source in the same tick, before
@@ -468,7 +460,7 @@ export class StickyRouter {
           }
           const available = this.availability.peek(source.id);
           if (source.id === task.source || available === true) {
-            eligible.push({ source, adapter, weight: adapter.weight * observation.routingWeight(source.id, false, workload) * registryScoreFactor(this.registryScore?.(source.id)) });
+            eligible.push({ source, adapter, weight: adapter.weight * observation.routingWeight(source.id, false, workload) });
             if (available === true) reportEligible(source.id, this.now());
           }
           else if (available === undefined) unknown.push(source);
@@ -555,7 +547,7 @@ export class StickyRouter {
         if (!selected) {
           if (toolsRequired) {
             // Redistribute each tier's base share across the eligible tool routes.
-            // Performance and registry scores still scale each route's resulting share.
+            // Local performance still scales each route's resulting share.
             const totals = { stable: 0, experimental: 0 };
             for (const { adapter } of ready) totals[adapter.tier] += adapter.weight;
             for (const candidate of ready) {

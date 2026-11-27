@@ -401,8 +401,6 @@ export class Sources {
   setRoutingHistory(store: RoutingHistory) { return this.observation.setRoutingHistory(store); }
   setFeedback(feedback: Parameters<SourceStatus['setFeedback']>[0]) { this.observation.setFeedback(feedback); }
   setSetupFailure(id: string, reason: string | undefined) { this.observation.setSetupFailure(id, reason); }
-  // The registry's liveliness scores weight the routers' draw (docs/router.md).
-  setRegistryScores(score: (id: string) => number | null | undefined) { for (const router of [this.router, this.chainRouter]) router?.useRegistryScores(score); }
   flushRoutingHistory() { return this.observation.flushRoutingHistory(); }
   auditAdapters() { return this.registeredRouter?.auditAdapters() ?? []; }
   diagnosticStore() { return this.diagnostics; }

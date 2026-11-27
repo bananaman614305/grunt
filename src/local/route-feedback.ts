@@ -5,8 +5,8 @@ import { link, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ErrorCode } from './source.js';
 
-// Daily per-route counts this router sends to the registry, and the registry's
-// liveliness scores it reads back. Never sent: prompts, responses, keys,
+// Daily per-route counts this router sends to the registry. Nothing is read
+// back: routing weight is local. Never sent: prompts, responses, keys,
 // provider error text, model names, paths or hosts.
 const DAY_MS = 24 * 60 * 60 * 1000;
 export const FEEDBACK_ROUTE_KEYS = ['id', 'ok', 'failed', 'quota', 'auth', 'latency_ms', 'signup_ok', 'signup_failed', 'retired'] as const;
@@ -26,7 +26,6 @@ export interface RouteFeedbackOptions {
 const utcDay = (at: number) => new Date(at).toISOString().slice(0, 10);
 export class RouteFeedback {
   private days = new Map<string, Map<string, Counts>>();
-  private scores = new Map<string, number | null>();
   private install: Promise<string> | undefined;
   constructor(private options: RouteFeedbackOptions) {}
   private now() { return (this.options.now ?? Date.now)(); }
@@ -50,8 +49,6 @@ export class RouteFeedback {
     else counts.failed++;
   }
   signup(id: string, ok: boolean) { if (ok) this.counts(id).signupOk++; else this.counts(id).signupFailed++; }
-  // The registry's 0–100 score for a route; null or undefined when it has none.
-  score(id: string) { return this.scores.get(id); }
   private installId() {
     const path = join(this.options.directory, 'registry-install');
     return this.install ??= readFile(path, 'utf8').then(value => {
@@ -104,7 +101,7 @@ export class RouteFeedback {
       } catch { /* Try the next registry endpoint. */ }
     }
   }
-  // Send today's running totals and yesterday's final ones, then read the scores.
+  // Send today's running totals and yesterday's final ones.
   async exchange() {
     const today = utcDay(this.now()), yesterday = utcDay(this.now() - DAY_MS);
     for (const day of this.days.keys()) if (day !== today && day !== yesterday) this.days.delete(day);
@@ -124,13 +121,5 @@ export class RouteFeedback {
       }
       if (fleetToken) await this.options.fleet?.(fleetToken);
     } catch { /* Feedback is advisory; routing never waits on it. */ }
-    try {
-      const response = await this.request('scores');
-      const scores = (await response?.json() as { scores?: Record<string, { score?: unknown }> } | undefined)?.scores;
-      if (scores && typeof scores === 'object') {
-        this.scores = new Map(Object.entries(scores).map(([id, value]) => [id,
-          typeof value?.score === 'number' && Number.isFinite(value.score) ? Math.max(0, Math.min(100, value.score)) : null]));
-      }
-    } catch { /* Keep the last scores. */ }
   }
 }
