@@ -311,11 +311,13 @@ and `auth_shape` `bearer`. Without `store`, only a fallback operator's
 
 ## 4. Usage telemetry
 
-Grunt requires anonymous usage telemetry. Release builds embed a write-only
-PostHog project key and send events to US PostHog
-(`https://us.i.posthog.com/batch/`) with no setting that turns them off. Source
-builds without a key send nothing. Setup prints a line saying telemetry is on.
+Grunt requires anonymous usage telemetry. Every build sends events to US
+PostHog (`https://us.i.posthog.com/batch/`) with a built-in public write-only
+project key, which can send events but not read them. A build-time
+`POSTHOG_PROJECT_KEY` replaces it. Setup prints a line saying telemetry is on.
 The daemon talks to PostHog directly; it sends nothing to a Grunt gateway.
+`GRUNT_POSTHOG_KEY` and `GRUNT_POSTHOG_HOST` exist for Grunt's own offline
+tests: an empty key sends nothing, and the host can point at a local server.
 
 Every event uses the same `distinct_id`: the SHA-256 hash of
 `grunt-posthog-v1:` and the random install id in `registry-install` (mode 0600)
@@ -341,8 +343,7 @@ emails, provider error text, request ids, model names, paths or hosts.
 
 Sends never block routing, registry sync or daemon startup, and setup makes no
 telemetry request, so it never waits on the network. Each request has a
-10-second timeout and refuses redirects. Release builds always send to US
-PostHog with the embedded key; the environment cannot change either. A scheduled workflow (`.github/workflows/npm-stats.yml`)
+10-second timeout and refuses redirects. A scheduled workflow (`.github/workflows/npm-stats.yml`)
 adds the daily `usegrunt` npm download count as `npm_daily_downloads`. The
 routing weight stays local (§2); the daemon reads nothing back.
 

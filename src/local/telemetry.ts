@@ -5,10 +5,13 @@ import type { ErrorCode } from './source.js';
 import { POSTHOG_KEY } from './telemetry-key.js';
 
 // Anonymous usage telemetry sent to US PostHog (docs/router.md#4-usage-telemetry).
-// Using Grunt requires it whenever the build embeds a project key. Events carry
+// Using Grunt requires it. Events carry
 // only the counts listed below. Never sent: prompts, responses, keys, provider
 // error text, model names, paths or hosts.
 export const POSTHOG_HOST = 'https://us.i.posthog.com';
+// Public write-only project key for the US "grunt" project (440416). It can only
+// send events; it cannot read data.
+export const DEFAULT_POSTHOG_KEY = 'phc_rukwLrDhnHff9WjyCz8X68vRzrHexoUd9aRFRPnAvRgN';
 export const HEARTBEAT_KEYS = ['version', 'os', 'arch', 'open_routes', 'enabled_sources'] as const;
 export const ROUTE_SUMMARY_KEYS = ['version', 'route', 'ok', 'failed', 'quota', 'auth', 'latency_ms', 'signup_ok', 'signup_failed', 'retired'] as const;
 export const SETUP_KEYS = ['version', 'os', 'arch', 'sources_configured'] as const;
@@ -22,15 +25,14 @@ type Properties = Record<string, string | number | boolean>;
 export interface TelemetryEvent { event: string; distinct_id: string; uuid: string; timestamp: string; properties: Properties }
 interface Counts { ok: number; failed: number; quota: number; auth: number; latencyMs?: number; signupOk: number; signupFailed: number }
 
-export const embeddedPostHogKey = () => typeof GRUNT_POSTHOG_KEY === 'string' ? GRUNT_POSTHOG_KEY : POSTHOG_KEY;
-// A release build's embedded key and US PostHog host cannot be changed. Only a
-// keyless build reads a test key and host from the environment.
-export function postHogKey(env: Env = process.env, embedded = embeddedPostHogKey()) {
-  return embedded || env.GRUNT_POSTHOG_KEY || '';
+// A build-time key (POSTHOG_PROJECT_KEY) replaces the built-in one.
+export const bundledPostHogKey = () => typeof GRUNT_POSTHOG_KEY === 'string' ? GRUNT_POSTHOG_KEY : POSTHOG_KEY;
+// GRUNT_POSTHOG_KEY and GRUNT_POSTHOG_HOST exist for Grunt's own offline tests:
+// an empty key sends nothing, and the host can point at a local server.
+export function postHogKey(env: Env = process.env, bundled = bundledPostHogKey()) {
+  return env.GRUNT_POSTHOG_KEY !== undefined ? env.GRUNT_POSTHOG_KEY : (bundled || DEFAULT_POSTHOG_KEY);
 }
-export function postHogHost(env: Env = process.env, embedded = embeddedPostHogKey()) {
-  return embedded ? POSTHOG_HOST : (env.GRUNT_POSTHOG_HOST || POSTHOG_HOST).replace(/\/+$/, '');
-}
+export function postHogHost(env: Env = process.env) { return (env.GRUNT_POSTHOG_HOST || POSTHOG_HOST).replace(/\/+$/, ''); }
 const utcDay = (at: number) => new Date(at).toISOString().slice(0, 10);
 
 // The random install id in the daemon config directory, hashed so PostHog never

@@ -64,7 +64,7 @@ The daemon sends daily counts to US PostHog: a heartbeat with its version,
 OS, architecture and route counts, per-route success and failure totals, and
 one event when setup finishes. Each install is a hashed random id. Prompts,
 responses, keys, provider error text, model names, paths and hosts never leave
-your machine in telemetry. Setup says when telemetry is on; it cannot be turned off.
+your machine in telemetry. Setup says when telemetry is on.
 
 `npx usegrunt add <provider-or-base-URL>` adds a provider. https://grunt.run.
 `grunt-local` is the local-daemon entry point. Older command names remain supported

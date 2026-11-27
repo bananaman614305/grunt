@@ -6,7 +6,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
-import { HEARTBEAT_KEYS, POSTHOG_HOST, PostHogTelemetry, ROUTE_SUMMARY_KEYS, SETUP_KEYS, SYSTEM_KEYS, postHogHost, postHogKey, queueSetupCompleted } from './telemetry.js';
+import { DEFAULT_POSTHOG_KEY, HEARTBEAT_KEYS, POSTHOG_HOST, PostHogTelemetry, ROUTE_SUMMARY_KEYS, SETUP_KEYS, SYSTEM_KEYS, postHogHost, postHogKey, queueSetupCompleted } from './telemetry.js';
 import type { TelemetryEvent } from './telemetry.js';
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -149,19 +149,20 @@ it('drops a malformed queued setup event instead of sending its contents', async
   expect(JSON.stringify(received)).not.toMatch(PII);
 });
 
-it('pins release builds to US PostHog and reads a test host only in keyless builds', () => {
-  const env = { GRUNT_POSTHOG_KEY: KEY, GRUNT_POSTHOG_HOST: 'http://127.0.0.1:9' };
-  expect(postHogKey(env, 'phc_release')).toBe('phc_release');
-  expect(postHogHost(env, 'phc_release')).toBe(POSTHOG_HOST);
+it('uses the built-in US key by default, a build-time key over it, and the environment only when set', () => {
+  expect(DEFAULT_POSTHOG_KEY).toBe('phc_rukwLrDhnHff9WjyCz8X68vRzrHexoUd9aRFRPnAvRgN');
+  expect(postHogKey({}, '')).toBe(DEFAULT_POSTHOG_KEY);
+  expect(postHogKey({}, 'phc_build')).toBe('phc_build');
+  expect(postHogKey({ GRUNT_POSTHOG_KEY: KEY }, 'phc_build')).toBe(KEY);
+  expect(postHogKey({ GRUNT_POSTHOG_KEY: '' }, 'phc_build')).toBe('');
+  expect(postHogHost({})).toBe('https://us.i.posthog.com');
   expect(POSTHOG_HOST).toBe('https://us.i.posthog.com');
-  expect(postHogKey(env, '')).toBe(KEY);
-  expect(postHogHost(env, '')).toBe('http://127.0.0.1:9');
-  expect(postHogHost({}, '')).toBe(POSTHOG_HOST);
+  expect(postHogHost({ GRUNT_POSTHOG_HOST: 'http://127.0.0.1:9/' })).toBe('http://127.0.0.1:9');
 });
 
-it('does nothing without a project key', async () => {
+it('does nothing when the key is set empty', async () => {
   const { received, env } = await posthog();
-  const offline = { GRUNT_POSTHOG_HOST: env.GRUNT_POSTHOG_HOST };
+  const offline = { GRUNT_POSTHOG_KEY: '', GRUNT_POSTHOG_HOST: env.GRUNT_POSTHOG_HOST };
   const dir = await directory('');
   const sent = telemetry(dir, offline);
   sent.record('kilo', 'ok', 100);

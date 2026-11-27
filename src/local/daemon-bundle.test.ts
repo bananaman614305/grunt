@@ -79,7 +79,7 @@ it('standalone daemon starts and runs recovery without node_modules (daemon-json
       GRUNT_PORT: String(port),
       GRUNT_SOURCES: 'zro',
       GRUNT_REGISTRY_URL: 'http://127.0.0.1:0/registry',
-      GRUNT_POSTHOG_HOST: 'http://127.0.0.1:0',
+      GRUNT_POSTHOG_KEY: '', GRUNT_POSTHOG_HOST: 'http://127.0.0.1:0',
       GRUNT_BACKGROUND_ACCOUNT_ACQUISITION: '1',
       GRUNT_SQUIRE_AUTO_UPDATE: '0',
       PATH: '',

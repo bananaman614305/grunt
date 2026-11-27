@@ -29,7 +29,7 @@ try {
       env: {
         ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
         GRUNT_CONFIG_DIR: join(root, 'state'), GRUNT_DAEMON: '1', GRUNT_PORT: String(port), GRUNT_SOURCES: '',
-        GRUNT_REGISTRY_URL: 'http://127.0.0.1:0/registry', GRUNT_BACKGROUND_ACCOUNT_ACQUISITION: '0', GRUNT_POSTHOG_HOST: 'http://127.0.0.1:0',
+        GRUNT_REGISTRY_URL: 'http://127.0.0.1:0/registry', GRUNT_BACKGROUND_ACCOUNT_ACQUISITION: '0', GRUNT_POSTHOG_KEY: '', GRUNT_POSTHOG_HOST: 'http://127.0.0.1:0',
       },
       stdio: ['ignore', 'ignore', 'pipe'],
     });

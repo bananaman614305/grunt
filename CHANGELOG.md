@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-- Send required anonymous usage telemetry (daily heartbeat, per-route totals and setup completion) straight to US PostHog instead of the Fly gateway. Setup states that telemetry is on and required. `GRUNT_FLEET_REPORTING` and `GRUNT_ADOPTION_REPORTING` no longer apply, and `/v1/observe` reports `config.telemetry`. A daily workflow adds `usegrunt` npm downloads to the same PostHog project.
+- Send required anonymous usage telemetry (daily heartbeat, per-route totals and setup completion) straight to US PostHog instead of the Fly gateway. Every build uses a built-in public write-only project key. Setup states that telemetry is on and required. `GRUNT_FLEET_REPORTING` and `GRUNT_ADOPTION_REPORTING` no longer apply, and `/v1/observe` reports `config.telemetry`. A daily workflow adds `usegrunt` npm downloads to the same PostHog project.
 
 ## 0.10.19 — 2026-11-27
 
