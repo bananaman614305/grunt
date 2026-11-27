@@ -24,7 +24,7 @@ async function localApp(routes: Source[]) {
   cleanups.push(async () => { await sources.close(); await store.close(); await rm(directory, { recursive: true, force: true }); });
   const app = createLocalApp(sources, { cwd: directory, observation: () => ({
     version: '1.2.3', startedAt: Date.now() - 1500, port: 8788, config: {
-      fleetReporting: false, adoptionReporting: false, backgroundAccountAcquisition: false, registry: 'custom',
+      telemetry: false, backgroundAccountAcquisition: false, registry: 'custom',
       redactedSettings: ['OPENCODE_URL']
     }
   }) });

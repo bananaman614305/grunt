@@ -44,9 +44,8 @@ import type { Source } from './source.js';
 import { toolCapable } from './source.js';
 import { bundledRegistry } from '../registry.js';
 import type { Adapter, Registry } from '../registry.js';
-import { REGISTRY_URLS, RegistrySync } from './registry.js';
-import { uploadFleet } from './fleet-upload.js';
-import { RouteFeedback } from './route-feedback.js';
+import { RegistrySync } from './registry.js';
+import { PostHogTelemetry } from './telemetry.js';
 import { isDeepStrictEqual } from 'node:util';
 import { createSourceMaintenance } from './runtime-maintenance.js';
 import { MAX_OPEN_ROUTES, SourceRecovery, codingCapableRoute } from './recovery.js';
@@ -150,19 +149,15 @@ export function start(env = process.env) {
   const directory = configDir(env);
   let diagnostics: DiagnosticsStore | undefined;
   const runtimeVersion = installedRuntimeVersion();
-  const urls = env.GRUNT_REGISTRY_URL ? [env.GRUNT_REGISTRY_URL] : REGISTRY_URLS;
-  const reportFleet = gruntEnv('SETUP_NO_DATA_SHARING',env) !== '1' && gruntEnv('FLEET_REPORTING',env) !== '0' && urls.every(url => REGISTRY_URLS.includes(url));
-  const adoptionConsent = reportFleet && gruntEnv('ADOPTION_REPORTING',env) === '1';
-  const diagnosticReady = DiagnosticsStore.open({ directory, adoptionConsent, ...(runtimeVersion ? { runtimeVersion } : {}) }).then(store => { diagnostics = store; sources.setDiagnostics(store); });
+  const diagnosticReady = DiagnosticsStore.open({ directory, ...(runtimeVersion ? { runtimeVersion } : {}) }).then(store => { diagnostics = store; sources.setDiagnostics(store); });
   const routingHistory = createRuntimeRoutingHistory(sources, { directory, notify: console.error });
-  // Route health goes to the registry on each sync. Routing weight stays local (docs/router.md).
-  const feedback = new RouteFeedback({ directory, urls,
-    ...(reportFleet ? { fleet: async (token: string) => {
-      await diagnosticReady;
-      if (diagnostics) await uploadFleet(diagnostics, directory, urls, token, Date.now(), fetch, adoptionConsent);
-    } } : {}),
-    listed: () => registry.adapters.map(adapter => adapter.id), retired: id => sources.retired(id), ...(runtimeVersion ? { client: runtimeVersion } : {}) });
-  sources.setFeedback((id, outcome, latencyMs) => feedback.record(id, outcome, latencyMs));
+  // Anonymous usage counts go to PostHog on each registry sync. Routing weight
+  // stays local (docs/router.md#4-usage-telemetry).
+  const telemetry = new PostHogTelemetry({ directory, env,
+    listed: () => registry.adapters.map(adapter => adapter.id), retired: id => sources.retired(id),
+    stats: () => ({ openRoutes: sources.sources.filter(source => routable(source.id) && sources.openRoute(source.id)).length, enabledSources: sources.sources.length }),
+    ...(runtimeVersion ? { version: runtimeVersion } : {}) });
+  sources.setFeedback((id, outcome, latencyMs) => telemetry.record(id, outcome, latencyMs));
 
   // The route the background pass is signing up shows as connecting in status.
   let opening: string | undefined;
@@ -189,7 +184,8 @@ export function start(env = process.env) {
       sources.verifying.clear();
       for (const id of session?.verifying ?? []) if (sources.pending.has(id)) sources.verifying.add(id);
       reconcile();
-      if (released) triggerRecovery();
+      // Setup just finished: send its queued setup_completed event now.
+      if (released) { triggerRecovery(); void telemetry.exchange(); }
       return session;
     });
     sessionRead = result.catch(() => {});
@@ -233,7 +229,7 @@ export function start(env = process.env) {
       return signupDriver(port, { routed: drivable.some(Boolean), openCode: (await readDataSharingConsent(directory, ['opencode'])).includes('opencode') });
     },
     opening: id => { opening = id; reconcile(); },
-    signedUp: (id, ok) => feedback.signup(id, ok),
+    signedUp: (id, ok) => telemetry.signup(id, ok),
     settled: (id, reason) => sources.setSetupFailure(id, reason),
     notify: console.error });
   // Account acquisition is distinct from registry refresh, dispatch and daily
@@ -257,7 +253,7 @@ export function start(env = process.env) {
       sources.adopt(current);
       void refreshDataSharingConsent(directory, env, registryDataSharingPolicies(current)).catch(() => {});
     },
-    exchange: () => feedback.exchange(),
+    exchange: () => telemetry.exchange(),
     synced: () => { if (acquireAccounts) recovery.synced(); }, notify: console.error
   });
   const maintenance = createSourceMaintenance(sources, { directory, registry: () => registry, refreshSession, notify: console.error });
@@ -278,7 +274,7 @@ export function start(env = process.env) {
   if (env.GRUNT_REGISTRY_URL) redactedSettings.push('REGISTRY_URL');
   const app = createLocalApp(sources, { port, log: cwd => console.error(`grunt working directory: ${cwd}`),
     observation: () => ({ version: runtimeVersion, startedAt, port, readiness, config: {
-      fleetReporting: reportFleet, adoptionReporting: adoptionConsent, backgroundAccountAcquisition: acquireAccounts,
+      telemetry: telemetry.enabled, backgroundAccountAcquisition: acquireAccounts,
       registry: env.GRUNT_REGISTRY_URL ? 'custom' : 'bundled_and_public', redactedSettings
     } }) });
   const server = serve({ fetch: async request => {

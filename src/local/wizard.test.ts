@@ -585,3 +585,29 @@ it('marks only the fixed Free-Pi setup probes as public context', async () => {
     expect(observed).toEqual([true, true]);
   } finally { await live.close(); }
 });
+
+it('discloses required usage telemetry and queues setup_completed without waiting on a stalled endpoint', async () => {
+  const { createServer } = await import('node:http');
+  const { TELEMETRY_NOTICE } = await import('./wizard.js');
+  let requests = 0;
+  // Accepts connections and never answers.
+  const posthog = createServer(() => { requests++; });
+  await new Promise<void>(resolve => posthog.listen(0, '127.0.0.1', resolve));
+  try {
+    vi.stubEnv('GRUNT_POSTHOG_KEY', 'phc_test_only_offline_key');
+    vi.stubEnv('GRUNT_POSTHOG_HOST', `http://127.0.0.1:${(posthog.address() as AddressInfo).port}`);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const started = Date.now();
+    await wizard(undefined, {
+      preflight: vi.fn(async () => {}), connectSquire: vi.fn(async () => {}), setup: vi.fn(async () => ({ key: 'synthetic' })),
+      setupFallbacks: vi.fn(async () => ({ unavailable: [] })), approveDataSharing: approvedBatch, installService: vi.fn(async () => {}),
+      configurePi: vi.fn(async () => {}), checkService: vi.fn(async () => {}), checkFallbackServices: vi.fn(async () => {})
+    });
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect(requests).toBe(0);
+    const lines = log.mock.calls.map(([line]) => String(line));
+    expect(lines).toContain(TELEMETRY_NOTICE);
+    expect(lines.indexOf(TELEMETRY_NOTICE)).toBeLessThan(lines.findIndex(line => line.includes('data sharing')));
+    expect(JSON.parse(await readFile(join(consentDir, 'telemetry-setup.json'), 'utf8'))).toMatchObject({ sources_configured: defaultIds().length });
+  } finally { posthog.closeAllConnections(); await new Promise(resolve => posthog.close(resolve)); }
+});

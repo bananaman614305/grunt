@@ -63,8 +63,8 @@ Parallel work spends free quota faster; the answer is more sources, which the sc
 The daemon serves the model endpoint on localhost and binds loopback only.
 The harness keeps the agent loop, tools and conversation; grunt answers its model calls.
 Adapters act with the person's own filesystem permissions.
-Registry clients never send inference payloads to the gateway. Their
-[route feedback](docs/router.md#4-route-feedback) contains only health metadata.
+Grunt never sends inference payloads to its own services. Its required
+[usage telemetry](docs/router.md#4-usage-telemetry) contains only anonymous counts.
 API-provider keys stay on the person's machine: either in Grunt's private mode-0600 local vault (with adapters calling each provider's pinned HTTPS origin directly, without routing prompts, source code or tool results through a central egress proxy) or through backwards-compatible scoped, revocable Trusty Squire grants. Trusty Squire still automates browser signups and API key capture. Native CLIs keep their credentials in their own private storage; LiveKit signs ten-minute inference-only tokens for grunt to hold in memory.
 No key, token or device secret appears in logs, terminal output or harness config.
 grunt reuses logins the person already holds. Official native CLIs manage their own login files; grunt does not copy their credentials.

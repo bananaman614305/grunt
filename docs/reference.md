@@ -1426,7 +1426,8 @@ row. A revert also replaces intervening edits; inspect the live registry first.
 `GET /v1/registry/instructions` is a Markdown guide for agents, generated on
 each request from the validator's constants and the live registry and scores,
 with a worklist of entries that need attention. `POST /v1/registry/feedback`
-and `GET /v1/registry/scores` carry [route feedback](router.md#4-route-feedback).
+and `GET /v1/registry/scores` are legacy gateway endpoints; daemons now send
+[usage telemetry](router.md#4-usage-telemetry) to PostHog instead.
 Every deployment checks that `GET /v1/registry` returns 200.
 Before the first valid registry is published the endpoint returns HTTP 503. Published data
 survives deploys and has an ETag. Stable weights total (0.8) and experimental
