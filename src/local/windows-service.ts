@@ -86,6 +86,10 @@ export async function startWindowsService(directory: string, run: Run) {
   await run(taskScheduler, ['/run', '/tn', taskName(directory)]);
 }
 
+export async function removeWindowsService(directory: string, run: Run) {
+  if (await query(directory, run)) await run(taskScheduler, ['/delete', '/tn', taskName(directory), '/f']);
+}
+
 export async function registerWindowsService(directory: string, run: Run) {
   const sid = (await run('whoami.exe', ['/user', '/fo', 'csv', '/nh'])).match(/"\s*,\s*"(S-1-(?:\d+-)*\d+)"\s*$/)?.[1];
   if (!sid) throw new Error('Could not determine the Windows user for the Grunt task');

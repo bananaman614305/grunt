@@ -22,7 +22,7 @@ vi.mock('node:os', async original => {
 vi.mock('./squire-client-path.js', () => ({ saveSquireClientPath: vi.fn(async () => {}) }));
 
 import { installService, installBackgroundService, preflight } from './wizard.js';
-import { automaticPoolSelection } from './automatic-pool.js';
+import { AUTOMATIC_POOL_FILE, automaticPoolSelection } from './automatic-pool.js';
 import { installedPort } from './dashboard.js';
 import { serviceEnvironment } from './service-environment.js';
 
@@ -345,12 +345,7 @@ it('preflights Windows through Task Scheduler without npm or tar', async () => {
   expect(run.mock.calls).toEqual([['schtasks.exe', ['/query']]]);
 });
 
-it('registers a limited Windows logon task and restarts it with the saved environment on rerun', async () => {
-  Object.defineProperty(process, 'platform', { ...platform, value: 'win32' });
-  const config = join(directory, 'Grunt & local state');
-  vi.stubEnv('GRUNT_CONFIG_DIR', config);
-  await mkdir(config, { mode: 0o700 });
-  await writeFile(join(config, 'opencode-free.json'), '{}', { mode: 0o600 });
+function mockWindowsTask(config: string, callbacks: { onEnd?: () => Promise<void>; onRun?: () => Promise<void> } = {}) {
   let definition = '', state = 0;
   fixture.execFile.mockImplementation(async (binary: string, args: string[]) => {
     if (binary === 'whoami.exe') return { stdout: '"LOCAL\\jellybean","S-1-5-21-123-456-789-1000"\r\n' };
@@ -362,13 +357,25 @@ it('registers a limited Windows logon task and restarts it with the saved enviro
       definition = await readFile(args[args.indexOf('/xml') + 1]!, 'utf16le');
       state = 3;
     }
-    if (args[0] === '/end') state = 3;
-    if (args[0] === '/run') state = 4;
+    if (args[0] === '/end') { state = 3; await callbacks.onEnd?.(); }
+    if (args[0] === '/run') { await callbacks.onRun?.(); state = 4; }
+    if (args[0] === '/delete') state = 0;
     return { stdout: '' };
   });
+  return { definition: () => definition, state: () => state };
+}
+
+it('registers a limited Windows logon task and restarts it with the saved environment on rerun', async () => {
+  Object.defineProperty(process, 'platform', { ...platform, value: 'win32' });
+  const config = join(directory, 'Grunt & local state');
+  vi.stubEnv('GRUNT_CONFIG_DIR', config);
+  await mkdir(config, { mode: 0o700 });
+  await writeFile(join(config, 'opencode-free.json'), '{}', { mode: 0o600 });
+  const task = mockWindowsTask(config);
   await installService(['kilo']);
   const path = join(config, 'runtime/launch.mjs');
   const launcher = await readFile(path, 'utf8');
+  const definition = task.definition();
   expect(definition).toContain('<LogonTrigger><UserId>S-1-5-21-123-456-789-1000</UserId>');
   expect(definition).toContain('<LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel>');
   expect(definition).toContain('<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>');
@@ -386,4 +393,59 @@ it('registers a limited Windows logon task and restarts it with the saved enviro
   await chmod(join(config, 'installed-port.json'), 0o644);
   expect(await installedPort({ GRUNT_CONFIG_DIR: config })).toBe(18792);
   await expect(stat(join(config, 'runtime/package.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+it.each(['failed start', 'failed readiness', 'cancellation after stop'])('restores the running Windows daemon after %s', async failure => {
+  Object.defineProperty(process, 'platform', { ...platform, value: 'win32' });
+  const config = join(directory, 'grunt'), runtime = join(config, 'runtime');
+  const daemon = join(runtime, 'daemon.mjs'), registry = join(runtime, 'registry/adapters.json');
+  const launcher = join(runtime, 'launch.mjs'), pool = join(config, AUTOMATIC_POOL_FILE);
+  const signal = fixture.controller!.signal;
+  let replacing = false, attempts = 0, stops = 0;
+  const task = mockWindowsTask(config, {
+    onEnd: async () => {
+      if (stops++ !== 0) return;
+      expect(await readFile(daemon, 'utf8')).toBe('previous daemon');
+      expect(await readFile(registry, 'utf8')).toBe('previous registry');
+      if (failure === 'cancellation after stop') fixture.controller!.abort(new Error('Setup cancelled after stopping'));
+    },
+    onRun: async () => {
+      if (!replacing) return;
+      if (++attempts === 1 && failure !== 'cancellation after stop') {
+        expect(await readFile(daemon, 'utf8')).toBe('daemon.mjs');
+        expect(await readFile(registry, 'utf8')).toBe('adapters.json');
+        if (failure === 'failed start') throw new Error('Replacement task failed to run');
+      } else {
+        expect(await readFile(daemon, 'utf8')).toBe('previous daemon');
+        expect(await readFile(registry, 'utf8')).toBe('previous registry');
+      }
+    },
+  });
+  await installService(['kilo']);
+  await writeFile(daemon, 'previous daemon');
+  await writeFile(registry, 'previous registry');
+  const previousLauncher = await readFile(launcher, 'utf8');
+  const previousPool = await readFile(pool, 'utf8');
+  const previousSources = await readFile(join(config, 'installed-sources.json'), 'utf8');
+  fixture.execFile.mockClear();
+  replacing = true;
+  if (failure === 'failed readiness') {
+    let now = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    vi.stubGlobal('fetch', vi.fn(async () => { now += 90000; return new Response('not ready', { status: 503 }); }));
+  }
+  const expected = {
+    'failed start': 'Replacement task failed to run',
+    'failed readiness': 'grunt service did not start',
+    'cancellation after stop': 'Setup cancelled after stopping',
+  };
+  await expect(installService(['kilo', 'opencode'], { signal })).rejects.toThrow(expected[failure]);
+  const commands = fixture.execFile.mock.calls.filter(([binary]) => binary === 'schtasks.exe').map(([, args]) => args[0]);
+  expect(commands).toEqual(failure === 'failed start' ? ['/end', '/run', '/run']
+    : failure === 'failed readiness' ? ['/end', '/run', '/end', '/run'] : ['/end', '/run']);
+  expect(task.state()).toBe(4);
+  expect(await readFile(launcher, 'utf8')).toBe(previousLauncher);
+  expect(await readFile(pool, 'utf8')).toBe(previousPool);
+  expect(await readFile(join(config, 'installed-sources.json'), 'utf8')).toBe(previousSources);
+  expect((await readdir(config)).some(name => name.startsWith('.install-'))).toBe(false);
 });

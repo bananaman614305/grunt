@@ -15,7 +15,7 @@ import { BrowserSquire, PROVIDERS, setup, squireEnvironment } from './setup.js';
 import { copyDaemon, daemonFile, legacyDaemonFile } from './daemon-files.js';
 import { RegistrySync } from './registry.js';
 import { bundledRegistry, disabledAdapters, knownAdapters } from '../registry.js';
-import { writeAutomaticPool } from './automatic-pool.js';
+import { AUTOMATIC_POOL_FILE, writeAutomaticPool } from './automatic-pool.js';
 import { banner } from './banner.js';
 import { approveDataSharing, DATA_SHARING_MANUAL_APPROVAL, DATA_SHARING_OPT_OUT, requiresManualDataSharing } from './data-sharing.js';
 import { configurePi, connectHarness, detectHarnesses, HARNESSES, launchLines, listFreeModels, nextDriver, onPath, probeFreeModel, signupHarness, runHarness } from './harnesses.js';
@@ -29,7 +29,7 @@ import { setupFailureReason, signupOperatorUnavailable } from './setup-failure.j
 import { fetchStatus } from './dashboard.js';
 import { select, isCancel } from '@clack/prompts';
 import { serviceEnvironment } from './service-environment.js';
-import { registerWindowsService, startWindowsService, stopWindowsService, taskScheduler, windowsService, writeWindowsLauncher } from './windows-service.js';
+import { registerWindowsService, removeWindowsService, startWindowsService, stopWindowsService, taskScheduler, windowsService, writeWindowsLauncher } from './windows-service.js';
 import { saveSquireClientPath } from './squire-client-path.js';
 
 export const configDir = (env = process.env) => configRoot(env);
@@ -146,10 +146,14 @@ export async function installedSources(directory = installedConfigRoot()) {
 class ServiceRecoveryError extends Error {}
 
 export async function installService(adapters?: string[], options: { signal?: AbortSignal } = {}) {
+  const windows = process.platform === 'win32';
+  const cancellation = windows ? new AbortController() : undefined;
+  const cancel = () => cancellation?.abort(new Error('Grunt setup cancelled'));
+  const signal = cancellation && options.signal ? AbortSignal.any([cancellation.signal, options.signal]) : cancellation?.signal ?? options.signal;
   const stage = async <T>(operation: () => Promise<T>) => {
-    options.signal?.throwIfAborted();
+    signal?.throwIfAborted();
     const result = await operation();
-    options.signal?.throwIfAborted();
+    signal?.throwIfAborted();
     return result;
   };
   options.signal?.throwIfAborted();
@@ -171,45 +175,92 @@ export async function installService(adapters?: string[], options: { signal?: Ab
 
   await stage(() => mkdir(directory, { recursive: true, mode: 0o700 }));
   await stage(() => saveSquireClientPath(directory));
-  let effectivePort: string;
-  if (process.platform === 'win32') {
-    await stage(() => mkdir(runtime, { mode: 0o700, recursive: true }));
-    if (!(await stage(() => lstat(runtime))).isDirectory()) throw new Error('Grunt setup requires a private runtime directory');
-    await stage(() => copyDaemon(dist, runtime, options.signal));
-    effectivePort = await installBackgroundService(entry, env, { ...options, selectedSources: selected });
-  } else {
-    effectivePort = await installUnixRuntime();
-  }
-  async function installUnixRuntime() {
-    const temporary = await mkdtemp(join(directory, '.install-'));
-    const next = join(temporary, 'runtime'), previous = join(temporary, 'previous');
-    let saved = false, replaced = false, activated = false;
-    const restoreRuntime = async () => {
-      if (!saved) return;
-      if (replaced) { await rename(runtime, next); replaced = false; }
-      await rename(previous, runtime);
-      saved = false;
-    };
+  const temporary = await mkdtemp(join(directory, '.install-'));
+  const next = join(temporary, 'runtime'), previous = join(temporary, 'previous');
+  let saved = false, replaced = false, keepBackup = false, effectivePort: string;
+  const restoreRuntime = async () => {
+    if (!saved && !windows) return;
+    if (replaced) { await rename(runtime, next); replaced = false; }
+    if (saved) { await rename(previous, runtime); saved = false; }
+  };
+  const inspectRuntime = async () => {
     try {
-      await stage(() => mkdir(next, { mode: 0o700 }));
-      await stage(() => copyDaemon(dist, next, options.signal));
-      try {
-        const info = await stage(() => lstat(runtime));
-        if (!info.isDirectory() || !hasOwnerMode(info, 0o700)) throw new Error('Grunt setup requires a private runtime directory');
-        await rename(runtime, previous);
-        saved = true;
-      } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-      await rename(next, runtime);
-      replaced = true;
-      const effective = await installBackgroundService(entry, env, { ...options, selectedSources: selected, restoreRuntime });
-      activated = true;
-      return effective;
+      const info = await lstat(runtime);
+      if (!info.isDirectory() || !hasOwnerMode(info, 0o700)) throw new Error('Grunt setup requires a private runtime directory');
+      return true;
     } catch (error) {
-      if (!(error instanceof ServiceRecoveryError)) await restoreRuntime();
-      throw error;
-    } finally {
-      if (activated || !saved) await rm(temporary, { recursive: true, force: true });
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      return false;
     }
+  };
+  const swapRuntime = async () => {
+    if (await inspectRuntime()) { await rename(runtime, previous); saved = true; }
+    await rename(next, runtime);
+    replaced = true;
+  };
+  async function activateWindowsRuntime() {
+    // Let a scheduler command settle before checking cancellation. Recovery
+    // uses the same bounded commands even after the setup signal is aborted.
+    const run = async (binary: string, args: string[]) => (await promisify(execFile)(binary, args, { timeout: 10000 })).stdout;
+    await stage(inspectRuntime);
+    const existing = await stage(() => windowsService(directory, run));
+    if (existing?.state === 1) throw new Error('Enable the installed Grunt task in Task Scheduler, then rerun setup');
+    const effective = existing?.environment ?? env;
+    const port = effective.GRUNT_PORT;
+    if (!port || !/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new Error('Could not determine the installed Grunt port safely');
+    await stage(() => writeWindowsLauncher(next, effective));
+    const sources = effective.GRUNT_SOURCES;
+    const pool = join(directory, AUTOMATIC_POOL_FILE), previousPool = join(temporary, 'previous-pool');
+    if (sources) await stage(() => writeAutomaticPool(temporary, [...new Set(sources.split(','))], selected));
+    let stopping = false, registering = false, starting = false, savedPool = false, replacedPool = false;
+    try {
+      if (existing) await stage(async () => { stopping = true; await stopWindowsService(directory, run); });
+      await stage(swapRuntime);
+      if (sources) await stage(async () => {
+        try { await rename(pool, previousPool); savedPool = true; }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+        await rename(join(temporary, AUTOMATIC_POOL_FILE), pool);
+        replacedPool = true;
+      });
+      if (!existing) await stage(async () => { registering = true; await registerWindowsService(directory, run); });
+      await stage(async () => { starting = true; await startWindowsService(directory, run); });
+      await stage(() => checkService(Number(port), 90000, signal));
+      if ((await stage(() => windowsService(directory, run)))?.state !== 4) throw new Error('The Grunt Windows task did not stay running');
+      return port;
+    } catch (error) {
+      try {
+        if (starting) await stopWindowsService(directory, run);
+        if (registering) await removeWindowsService(directory, run);
+        await restoreRuntime();
+        if (replacedPool) await rm(pool, { force: true });
+        if (savedPool) await rename(previousPool, pool);
+        if (stopping && (existing?.state === 4 || existing?.state === 2)) {
+          const restored = await windowsService(directory, run);
+          if (!restored || restored.state === 1) throw new Error('The previous Grunt Windows task is unavailable');
+          if (restored.state === 3) await startWindowsService(directory, run);
+        }
+      } catch (cause) {
+        throw new ServiceRecoveryError('Grunt setup could not restore the previous Windows service. Inspect Task Scheduler and the installation directory before retrying.', { cause });
+      }
+      throw error;
+    }
+  }
+  if (windows) { process.on('SIGINT', cancel); process.on('SIGTERM', cancel); }
+  try {
+    await stage(() => mkdir(next, { mode: 0o700 }));
+    await stage(() => copyDaemon(dist, next, signal));
+    if (windows) effectivePort = await activateWindowsRuntime();
+    else {
+      await stage(swapRuntime);
+      effectivePort = await installBackgroundService(entry, env, { ...options, selectedSources: selected, restoreRuntime });
+    }
+  } catch (error) {
+    keepBackup = error instanceof ServiceRecoveryError;
+    if (!keepBackup) await restoreRuntime();
+    throw error;
+  } finally {
+    if (windows) { process.off('SIGINT', cancel); process.off('SIGTERM', cancel); }
+    if (!keepBackup) await rm(temporary, { recursive: true, force: true });
   }
   await stage(() => writeFile(join(directory, 'installed-sources.json'), JSON.stringify(selected), { mode: 0o600 }));
   const portStage = join(directory, `.installed-port-${randomUUID()}`);
@@ -230,26 +281,6 @@ export async function installBackgroundService(entry: string, env: Record<string
   };
   const run = (binary: string, args: string[]) => stage(() => command(binary, args, false, options.signal));
   options.signal?.throwIfAborted();
-  if (process.platform === 'win32') {
-    const directory = env.GRUNT_CONFIG_DIR;
-    if (!directory || entry !== join(directory, 'runtime', daemonFile)) throw new Error('Windows Task Scheduler requires the managed Grunt daemon');
-    const scheduledCommand = (binary: string, args: string[]) => stage(() => promisify(execFile)(binary, args, { timeout: 10000, ...(options.signal ? { signal: options.signal } : {}) })).then(result => result.stdout);
-    const existing = await windowsService(directory, scheduledCommand);
-    const effective = existing?.environment ?? env;
-    const port = effective.GRUNT_PORT;
-    if (!port || !/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new Error('Could not determine the installed Grunt port safely');
-    const sources = effective.GRUNT_SOURCES;
-    if (options.selectedSources && sources) await stage(() => writeAutomaticPool(directory, [...new Set(sources.split(','))], options.selectedSources));
-    if (existing) {
-      if (existing.state === 1) throw new Error('Enable the installed Grunt task in Task Scheduler, then rerun setup');
-      await stopWindowsService(directory, scheduledCommand);
-    } else {
-      await stage(() => writeWindowsLauncher(dirname(entry), env));
-      await registerWindowsService(directory, scheduledCommand);
-    }
-    await startWindowsService(directory, scheduledCommand);
-    return port;
-  }
   const linux = process.platform === 'linux';
   const domain = `gui/${process.getuid!()}`;
   const existing: { identity: string; file: string; contents: string }[] = [];
