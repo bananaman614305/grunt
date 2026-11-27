@@ -195,16 +195,16 @@ it('serves only packaged public assets and rewrites only the public API meta for
   const assets = vi.fn(async (name: string) => name === 'index.html'
     ? '<!doctype html><meta name="grunt-admin-api" content="https://api.grunt.run/admin"><script src="admin.js"></script>'
     : name === 'grunt.svg' ? '<svg></svg>' : 'public-asset');
-  const preview = adminRoutes(f.store, { now: () => f.clock.at, env: { ...env, GRUNT_ADMIN_UI_ORIGIN: 'https://grunt-gateway.fly.dev', GRUNT_ADMIN_PUBLIC_URL: 'https://grunt-gateway.fly.dev' }, assets });
-  const html = await preview.request('https://grunt-gateway.fly.dev/admin/');
-  expect(html.status).toBe(200); expect(await html.text()).toContain('content="https://grunt-gateway.fly.dev/admin"');
+  const preview = adminRoutes(f.store, { now: () => f.clock.at, env: { ...env, GRUNT_ADMIN_UI_ORIGIN: 'https://milo-gateway.fly.dev', GRUNT_ADMIN_PUBLIC_URL: 'https://milo-gateway.fly.dev' }, assets });
+  const html = await preview.request('https://milo-gateway.fly.dev/admin/');
+  expect(html.status).toBe(200); expect(await html.text()).toContain('content="https://milo-gateway.fly.dev/admin"');
   expect(html.headers.get('Content-Security-Policy')).toContain("script-src 'self'");
   expect(html.headers.get('Content-Security-Policy')).not.toContain('unsafe-inline');
-  expect((await preview.request('https://grunt-gateway.fly.dev/admin/admin.js')).headers.get('Content-Type')).toContain('text/javascript');
-  expect((await preview.request('https://grunt-gateway.fly.dev/grunt.svg')).status).toBe(200);
-  expect((await preview.request('https://grunt-gateway.fly.dev/admin/private.env')).status).toBe(404);
+  expect((await preview.request('https://milo-gateway.fly.dev/admin/admin.js')).headers.get('Content-Type')).toContain('text/javascript');
+  expect((await preview.request('https://milo-gateway.fly.dev/grunt.svg')).status).toBe(200);
+  expect((await preview.request('https://milo-gateway.fly.dev/admin/private.env')).status).toBe(404);
   expect(assets.mock.calls.map(([name]) => name)).toEqual(['index.html', 'admin.js', 'grunt.svg']);
-  expect((await preview.request('https://grunt-gateway.fly.dev/admin/api/overview')).status).toBe(401);
+  expect((await preview.request('https://milo-gateway.fly.dev/admin/api/overview')).status).toBe(401);
 });
 it('canonically redirects the original Admin path without accepting a redirect destination', async () => {
   const f = await fixture();
@@ -230,8 +230,8 @@ it('requires the configured UI Origin for cross-origin cookie reads but permits 
   const f = await fixture(), login = await f.login();
   expect((await f.app.request(base + '/admin/api/overview', { headers: { Cookie: login.cookie } })).status).toBe(403);
   expect((await f.request('/api/overview', { headers: { Cookie: login.cookie, Origin: origin } })).status).toBe(200);
-  const preview = adminRoutes(f.store, { now: () => f.clock.at, env: { ...env, GRUNT_ADMIN_UI_ORIGIN: 'https://grunt-gateway.fly.dev', GRUNT_ADMIN_PUBLIC_URL: 'https://grunt-gateway.fly.dev' } });
-  expect((await preview.request('https://grunt-gateway.fly.dev/admin/api/overview', { headers: { Cookie: login.cookie } })).status).toBe(200);
+  const preview = adminRoutes(f.store, { now: () => f.clock.at, env: { ...env, GRUNT_ADMIN_UI_ORIGIN: 'https://milo-gateway.fly.dev', GRUNT_ADMIN_PUBLIC_URL: 'https://milo-gateway.fly.dev' } });
+  expect((await preview.request('https://milo-gateway.fly.dev/admin/api/overview', { headers: { Cookie: login.cookie } })).status).toBe(200);
   expect((await f.app.request(base + '/admin/api/overview', { headers: { Authorization: `Bearer ${env.GRUNT_ADMIN_READ_TOKEN}` } })).status).toBe(200);
 });
 

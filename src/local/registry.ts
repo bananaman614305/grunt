@@ -7,8 +7,8 @@ import type { Registry } from '../registry.js';
 
 // The slow router loop (docs/router.md): re-read the registry, then open routes.
 export const REGISTRY_INTERVAL = 6 * 60 * 60 * 1000;
-// The Fly application hostname is a registry mirror if the custom domain fails.
-export const REGISTRY_URLS = ['https://api.grunt.run/v1/registry', 'https://grunt-gateway.fly.dev/v1/registry'];
+// Existing Fly application is retained as a registry mirror until infrastructure is renamed.
+export const REGISTRY_URLS = ['https://api.grunt.run/v1/registry', 'https://milo-gateway.fly.dev/v1/registry'];
 export class RegistrySync {
   current: Registry = structuredClone(bundledRegistry);
   private etag: string | undefined;

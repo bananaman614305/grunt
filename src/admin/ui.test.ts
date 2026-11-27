@@ -49,8 +49,8 @@ it('keeps a source disabled after an earlier reply', () => {
 it('accepts only the configured Grunt API or a same-origin private preview', () => {
   expect(helpers('ui.resolveApiBase("https://api.grunt.run/admin", "https://grunt.run")'))
     .toBe('https://api.grunt.run/admin');
-  expect(helpers('ui.resolveApiBase("https://grunt-gateway.fly.dev/admin", "https://grunt-gateway.fly.dev")'))
-    .toBe('https://grunt-gateway.fly.dev/admin');
+  expect(helpers('ui.resolveApiBase("https://milo-gateway.fly.dev/admin", "https://milo-gateway.fly.dev")'))
+    .toBe('https://milo-gateway.fly.dev/admin');
   expect(helpers('ui.resolveApiBase("http://127.0.0.1:8892/admin", "http://127.0.0.1:8892")'))
     .toBe('http://127.0.0.1:8892/admin');
   for (const base of ['https://attacker.example/admin', 'https://api.grunt.run.evil.example/admin',

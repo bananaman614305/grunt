@@ -132,7 +132,7 @@ it('reaches the published Fly registry if the custom domain fails', async () => 
   const fetcher = vi.fn<typeof fetch>().mockRejectedValueOnce(new Error('DNS unavailable')).mockResolvedValueOnce(Response.json(bundledRegistry));
   const sync = new RegistrySync({ directory: await directory(), fetcher });
   await sync.sync();
-  expect(fetcher.mock.calls.map(([url]) => url)).toEqual(['https://api.grunt.run/v1/registry', 'https://grunt-gateway.fly.dev/v1/registry']);
+  expect(fetcher.mock.calls.map(([url]) => url)).toEqual(['https://api.grunt.run/v1/registry', 'https://milo-gateway.fly.dev/v1/registry']);
   expect(sync.current).toEqual(bundledRegistry);
 });
 it('never sends an explicit registry override to another host', async () => {
