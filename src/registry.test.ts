@@ -146,8 +146,9 @@ it('incorporates live Fly registry updates and advances published past legacy da
   expect((bundledRegistry.candidates ?? []).map(candidate => candidate.id)).toEqual([
     'inferbase', 'exaone', 'kyrune', 'inferall', 'anyapi', 'orcarouter', 'tokenrouter', 'alysis-code'
   ]);
-  expect(bundledRegistry.adapters.find(adapter => adapter.id === 'perch')?.hints).toContain('chat.perchai.app');
-  expect(bundledRegistry.adapters.find(adapter => adapter.id === 'nous')?.hints).toContain('portal.nousresearch.com/login');
+  expect(bundledRegistry.adapters.find(adapter => adapter.id === 'perch')?.hints).toContain("On this walk Privacy showed 'Your plan is protected'");
+  expect(bundledRegistry.adapters.find(adapter => adapter.id === 'nous')?.hints).toContain('The free tier does not give a usable API key.');
+  expect(bundledRegistry.adapters.find(adapter => adapter.id === 'nous')?.hints).toContain('The shipped model id qwen/qwen4-max:free is paid.');
 
   const path = await directory();
   const legacyCached = { ...bundledRegistry, published: '2026-11-26T13:51:42.626Z', adapters: [bundledRegistry.adapters[0]!] };
