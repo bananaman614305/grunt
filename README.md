@@ -122,19 +122,6 @@ and the [read-only passive collector](docs/passive-efficiency.md). The
 [round-three results](docs/efficiency-round3-results.md) report measured savings
 and the limits of the controlled experiments.
 
-The [private owner console](docs/reference.md#private-owner-admin) opens on
-Grunt's current work, legacy subworker activity from older daemons and per-source daily, weekly and lifetime usage.
-Separate views show request and fallback traces, maintenance and scout progress.
-Google login permits explicitly configured, verified owner email addresses.
-The [Fly preview](https://milo-gateway.fly.dev/admin/) is available while custom
-API DNS is pending. See the [deployment runbook](docs/admin-deployment.md).
-
-Regular installations keep diagnostics local. An operator can explicitly enable
-the [outbound owner collector](docs/admin-collector.md) with private configuration
-and `node dist/admin/collector.js`. It uploads allowlisted metadata, never prompts,
-replies, code, credentials or raw provider errors. Normal `npx usegrunt` onboarding
-does not enroll a user's machine in the owner console.
-
 Daily upkeep uses a separate persistent queue. It checks one configured curated
 or explicitly installed opt-in source at a time, then waits 60–90 seconds after
 that check finishes. Sibling runtimes sharing the same private configuration

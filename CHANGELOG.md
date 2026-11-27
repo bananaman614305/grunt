@@ -452,8 +452,8 @@
 
 ### Added
 
-- Inspect retained request, fallback and safe HTTP/CLI transport traces in a private owner console designed for `/admin/`. Google login allows only explicitly configured verified owner emails; missing configuration fails closed. Diagnostic reads and exports do not send model prompts. See the [admin reference](docs/reference.md#private-owner-admin) and [deployment prerequisites](docs/admin-deployment.md); production sign-in verification remains pending.
-- Keep a bounded private local diagnostics journal with correlated request IDs, observed transport outcomes and reported token usage; missing usage remains unknown. An explicitly enabled outbound owner collector projects sanitized observations, maintenance/scout progress and system metadata without enrolling ordinary installations. See the [collector runbook](docs/admin-collector.md).
+- Inspect retained request, fallback and safe HTTP/CLI transport traces in a private owner console designed for `/admin/`. Google login allows only explicitly configured verified owner emails; missing configuration fails closed. Diagnostic reads and exports do not send model prompts; production sign-in verification remains pending.
+- Keep a bounded private local diagnostics journal with correlated request IDs, observed transport outcomes and reported token usage; missing usage remains unknown. An explicitly enabled outbound owner collector projects sanitized observations, maintenance/scout progress and system metadata without enrolling ordinary installations.
 - Allow honestly disclosed ordinary retention, training and review in provider scouting under the operator's standing approval. Unknown zero-retention guarantees no longer block integration; end-user source-specific grouped consent remains required.
 - Make Grunt the current project, repository, configuration and interface name, with explicit compatibility for existing installations. Restore public-only GitHub Actions CI on standard Ubuntu runners. See the [compatibility guide](docs/reference.md#compatibility-with-existing-installations).
 

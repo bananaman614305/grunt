@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { Sources, SourceError } from '../../dist/local/source.js';
@@ -12,7 +13,6 @@ import { OpenCode } from '../../dist/local/opencode.js';
 import { createLocalApp } from '../../dist/local/api.js';
 import { RegistrySync } from '../../dist/local/registry.js';
 import { bundledRegistry } from '../../dist/registry.js';
-import { registryRoutes } from '../../dist/registry-routes.js';
 
 const both = process.argv.includes('--live-both');
 const live = process.argv.includes('--live');
@@ -33,9 +33,18 @@ try {
   await writeFile(join(cwd, 'progress.txt'), 'BASELINE\nUSER EDIT\n');
   const head = git('rev-parse', 'HEAD');
   const publishedPath = join(cwd, 'published.json');
-  const published = { ...bundledRegistry, published: '2026-11-12T00:00:00Z' };
+  const published = { ...bundledRegistry, published: new Date(Date.parse(bundledRegistry.published) + 1000).toISOString() };
   await writeFile(publishedPath, JSON.stringify(published));
-  const gatewayUrl = await listen(registryRoutes(publishedPath));
+  const staticRegistry = new Hono();
+  staticRegistry.get('/v1/registry', async c => {
+    const body = await readFile(publishedPath, 'utf8');
+    const etag = `"${createHash('sha256').update(body).digest('hex').slice(0, 16)}"`;
+    c.header('ETag', etag);
+    if (c.req.header('If-None-Match') === etag) return c.body(null, 304);
+    c.header('Content-Type', 'application/json');
+    return c.body(body);
+  });
+  const gatewayUrl = await listen(staticRegistry);
   const sync = new RegistrySync({ directory: join(cwd, 'cache'), url: `${gatewayUrl}/v1/registry` });
   await sync.load(); await sync.sync(); assert.deepEqual(sync.current, published);
   const etag = (await fetch(`${gatewayUrl}/v1/registry`)).headers.get('etag');
