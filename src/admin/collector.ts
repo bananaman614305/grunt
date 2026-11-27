@@ -66,7 +66,7 @@ function destination(value: string) {
   let url: URL;
   try { url = new URL(value); } catch { throw new CollectorError('invalid_configuration'); }
   // This is an owned Grunt service, not a general URL-fetching facility.
-  if (url.protocol !== 'https:' || !['api.grunt.run', 'milo-gateway.fly.dev'].includes(url.hostname)
+  if (url.protocol !== 'https:' || !['api.grunt.run', 'grunt-gateway.fly.dev', 'milo-gateway.fly.dev'].includes(url.hostname)
     || url.port || url.username || url.password || url.search || url.hash || url.pathname !== '/admin/ingest') throw new CollectorError('invalid_configuration');
   return url.href;
 }
