@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## 0.10.19 — 2026-11-27
+
+- Bundle `jsonc-parser`'s ESM entry into the standalone `dist/local/daemon.mjs` daemon so background source recovery and harness configuration run cleanly with zero `node_modules` and without `Cannot find module './impl/format'` failures.
+
+## 0.10.18 — 2026-11-27
+
+- Unpin `@trusty-squire/mcp` from prerelease `1.2.0-rc1` to `^1.2.0` and refresh compatible `1.x` updates on demand into Grunt's private runtime directory when embedded signup runs, with cooldown caching, strict version verification, and automatic fallback to the installed copy when offline or incompatible.
+- Wire embedded provider signup directly to `@trusty-squire/mcp/signup` using Grunt's isolated browser profile and session store, writing captured API keys directly into Grunt's local vault and keeping browser sessions bound across multi-turn resumes (#256).
+- Bundle the local background daemon into a standalone `daemon.mjs` with zero runtime `node_modules` dependencies and support Windows Task Scheduler logon services (#257).
+- Preserve stable routing share for coding tools and audit live routing tiers and explicitly requested tool calls by provider (#255).
+- Remove retired routing integrations and migrate legacy `milo` background services and drop-ins cleanly to `grunt` while preserving custom ports and overrides (#254).
+- Enable free multimodal vision input through Kilo (#253).
+
 ## 0.10.17 — 2026-11-26
 
 - Automatic inference can race one idle backup when the first provider stays silent for eight seconds. Grunt groups gateway and connection failures into one escalating cooldown, probes providers when cooldowns expire, and checks tool recovery separately so text requests can resume while tool calls are still on hold (#251).

@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -27,7 +27,8 @@ import type {
 import { configRoot } from '../brand.js';
 import { isDeclarativeAdapter, safePublicHttpsOrigin } from '../registry.js';
 import type { Registry } from '../registry.js';
-import { squireClientPath } from './squire-client-path.js';
+import { resolveFallbackSquirePackage, resolveSquirePackage } from './squire-client-path.js';
+import type { SquireResolutionOptions } from './squire-client-path.js';
 import {
   defaultProviderOrigin,
   extractCredentialSecret,
@@ -58,22 +59,55 @@ export const EMBEDDED_DRIVE_GOAL_LIMIT = 4000;
 
 type SignupSdk = typeof SignupSdkModule;
 
-let cachedSignupSdk: Promise<SignupSdk> | undefined;
+const cachedSignupSdks = new Map<string, Promise<SignupSdk>>();
+
+async function importSignupModule(specifier: string): Promise<SignupSdk> {
+  let pending = cachedSignupSdks.get(specifier);
+  if (!pending) {
+    pending = (import(specifier) as Promise<SignupSdk>).catch(error => {
+      if (cachedSignupSdks.get(specifier) === pending) {
+        cachedSignupSdks.delete(specifier);
+      }
+      throw error;
+    });
+    cachedSignupSdks.set(specifier, pending);
+  }
+  return pending;
+}
 
 /**
- * Lazily loads `@trusty-squire/mcp/signup` so the standalone bundled background
- * daemon (`dist/local/daemon.mjs`) starts with zero `node_modules` dependencies
- * and resolves the CLI-owned package path only if embedded signup is invoked.
+ * Lazily loads `@trusty-squire/mcp/signup` on demand so the standalone bundled
+ * background daemon (`dist/local/daemon.mjs`) starts with zero `node_modules`
+ * dependencies, refreshes compatible `1.x` updates into Grunt's private runtime
+ * directory when needed, and falls back safely to the installed copy.
  */
-export function loadEmbeddedSignupSdk(directory = configRoot()): Promise<SignupSdk> {
-  if (typeof GRUNT_DAEMON_BUNDLE === 'undefined') {
-    return cachedSignupSdk ??= import('@trusty-squire/mcp/signup');
+export async function loadEmbeddedSignupSdk(
+  directory = configRoot(),
+  options?: SquireResolutionOptions
+): Promise<SignupSdk> {
+  const bundled = options?.bundled ?? (typeof GRUNT_DAEMON_BUNDLE !== 'undefined');
+  const resolved = await resolveSquirePackage(directory, options);
+  const useBarePackagedImport =
+    resolved.source === 'packaged' && !bundled && options?.packagedDir === undefined;
+  const specifier = useBarePackagedImport
+    ? '@trusty-squire/mcp/signup'
+    : pathToFileURL(resolved.signupEntry).href;
+
+  try {
+    return await importSignupModule(specifier);
+  } catch (error) {
+    if (resolved.source === 'managed') {
+      const fallback = await resolveFallbackSquirePackage(directory, options);
+      if (fallback) {
+        const fallbackSpecifier =
+          fallback.source === 'packaged' && !bundled && options?.packagedDir === undefined
+            ? '@trusty-squire/mcp/signup'
+            : pathToFileURL(fallback.signupEntry).href;
+        return await importSignupModule(fallbackSpecifier);
+      }
+    }
+    throw error;
   }
-  return import('@trusty-squire/mcp/signup').catch(async () => {
-    const binPath = await squireClientPath(directory);
-    const signupEntry = join(dirname(binPath), 'signup.js');
-    return await import(pathToFileURL(signupEntry).href) as SignupSdk;
-  });
 }
 
 const SIGNUP_CONFIG_ERROR_NAMES = new Set([
@@ -158,7 +192,7 @@ export function vaultProviderForService(service: string): VaultProvider | undefi
  * Trusty Squire's personal profile or personal session store.
  */
 export async function gruntSignupPaths(directory = configRoot()): Promise<{ profileDir: string; sessionPath: string }> {
-  const sdk = await loadEmbeddedSignupSdk(directory);
+  const sdk = await loadEmbeddedSignupSdk(directory, { autoUpdate: false });
   return {
     profileDir: sdk.assertIsolatedProfileDir(join(directory, GRUNT_BROWSER_PROFILE_DIR)),
     sessionPath: sdk.assertIsolatedSessionPath(join(directory, GRUNT_SIGNUP_SESSION_FILE))
@@ -182,8 +216,9 @@ export async function ensureEmbeddedSignupSession(
 ): Promise<{ state: 'existing' | 'installed'; session: SignupSession; profileDir: string; sessionPath: string }> {
   options.signal?.throwIfAborted();
   const directory = options.directory ?? configRoot();
-  const sdk = await loadEmbeddedSignupSdk(directory);
-  const { profileDir, sessionPath } = await gruntSignupPaths(directory);
+  const sdk = await loadEmbeddedSignupSdk(directory, options.signal ? { signal: options.signal } : undefined);
+  const profileDir = sdk.assertIsolatedProfileDir(join(directory, GRUNT_BROWSER_PROFILE_DIR));
+  const sessionPath = sdk.assertIsolatedSessionPath(join(directory, GRUNT_SIGNUP_SESSION_FILE));
   await mkdir(directory, { recursive: true, mode: 0o700 });
   options.signal?.throwIfAborted();
 
@@ -437,8 +472,9 @@ export async function openEmbeddedSignupSession(
 ): Promise<ManagedEmbeddedSignupSession> {
   options.signal?.throwIfAborted();
   const directory = options.directory ?? configRoot();
-  const sdk = await loadEmbeddedSignupSdk(directory);
-  const { profileDir, sessionPath } = await gruntSignupPaths(directory);
+  const sdk = await loadEmbeddedSignupSdk(directory, options.signal ? { signal: options.signal } : undefined);
+  const profileDir = sdk.assertIsolatedProfileDir(join(directory, GRUNT_BROWSER_PROFILE_DIR));
+  const sessionPath = sdk.assertIsolatedSessionPath(join(directory, GRUNT_SIGNUP_SESSION_FILE));
   const releaseLease = await acquireProfileLease(profileDir, options.signal);
   const capturedSecrets = new Set<string>();
 
@@ -579,8 +615,9 @@ export async function runEmbeddedSignup(
   if (runtime.runSignup) {
     options.signal?.throwIfAborted();
     const directory = options.directory ?? configRoot();
-    const sdk = await loadEmbeddedSignupSdk(directory);
-    const { profileDir, sessionPath } = await gruntSignupPaths(directory);
+    const sdk = await loadEmbeddedSignupSdk(directory, options.signal ? { signal: options.signal } : undefined);
+    const profileDir = sdk.assertIsolatedProfileDir(join(directory, GRUNT_BROWSER_PROFILE_DIR));
+    const sessionPath = sdk.assertIsolatedSessionPath(join(directory, GRUNT_SIGNUP_SESSION_FILE));
     const releaseLease = await acquireProfileLease(profileDir, options.signal);
     const capturedSecrets = new Set<string>();
     try {
