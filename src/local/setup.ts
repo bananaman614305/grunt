@@ -427,6 +427,7 @@ export class BrowserSquire implements SetupSquire {
     handle: ManagedEmbeddedSignupSession;
   }>();
   private callProviders = new WeakMap<ObjectValue, string>();
+  private callSlotReleases = new WeakMap<ObjectValue, () => (() => void) | undefined>();
   private sessions = new Map<string, string>();
   private services = new Map<string, AbortController>();
   private callSignals = new WeakMap<ObjectValue, AbortSignal>();
@@ -464,6 +465,10 @@ export class BrowserSquire implements SetupSquire {
       field_names: ['api_key'],
       auth_strategy: 'api_key'
     };
+  }
+  private hasOpenEmbeddedSession(sessionId: string): boolean {
+    const tracked = this.embeddedSessions.get(sessionId);
+    return tracked !== undefined && !tracked.handle.closed;
   }
   private createEmbeddedClient(): InProcessSignupClient {
     return {
@@ -546,6 +551,13 @@ export class BrowserSquire implements SetupSquire {
           if (tracked) {
             handle = tracked.handle;
           } else {
+            let releaseSlot: (() => void) | undefined;
+            const releaseSessionSlot = () => {
+              this.embeddedSessions.delete(sessionId);
+              const release = releaseSlot;
+              releaseSlot = undefined;
+              release?.();
+            };
             const sessionSignal = provider !== 'unknown' ? this.serviceSignal(provider) : this.signal;
             handle = await openEmbeddedSignupSession(
               {
@@ -562,10 +574,18 @@ export class BrowserSquire implements SetupSquire {
                 },
                 onCaptured: () => {
                   this.metadata = undefined;
-                }
+                },
+                onClose: releaseSessionSlot
               },
               this.options.embeddedRuntime
             );
+            if (handle.closed) {
+              throw new Error('Provider signup cancelled');
+            }
+            // Keep the browser slot bound to this live embedded session for as
+            // long as it holds the Chrome profile lease so paused signups never
+            // deadlock behind queued signups waiting on that same lease.
+            releaseSlot = this.callSlotReleases.get(args)?.();
             this.embeddedSessions.set(sessionId, { provider, url, goal, handle });
           }
           try {
@@ -736,10 +756,21 @@ export class BrowserSquire implements SetupSquire {
     const provider = this.callProviders.get(args)
       ?? (typeof args.service === 'string' ? args.service : [...this.sessions].find(([, id]) => id === args.session_id)?.[0]);
     const queueSignal = this.queueSignals.get(args) ?? (provider ? this.serviceSignal(provider) : this.signal);
-    const release = name === 'operate_drive' || name === 'operate_start' ? await this.browserSlot(queueSignal, provider) : undefined;
+    const sessionId = typeof args.session_id === 'string' && args.session_id.trim() ? args.session_id.trim() : undefined;
+    const resumingOpenSession = name === 'operate_drive' && sessionId !== undefined && this.hasOpenEmbeddedSession(sessionId);
+    let release = (name === 'operate_drive' || name === 'operate_start') && !resumingOpenSession
+      ? await this.browserSlot(queueSignal, provider)
+      : undefined;
+    if (release) {
+      this.callSlotReleases.set(args, () => {
+        const owned = release;
+        release = undefined;
+        return owned;
+      });
+    }
     try {
       // A slot can be granted just before cancellation. Recheck before dispatch.
-      if (release) queueSignal.throwIfAborted();
+      if (release || resumingOpenSession) queueSignal.throwIfAborted();
       const result = await this.client.callTool({ name, arguments: args }, undefined, { timeout: name === 'operate_finish' ? 10000 : 60000, ...(name === 'operate_finish' ? {} : { signal: this.callSignals.get(args) ?? queueSignal }) }).catch(error => {
         if (connectionCheck || isSignupConfigError(error)) throw error;
         throw new Error(`Squire ${name} is unavailable; resume setup after reconnecting Squire`);
@@ -754,7 +785,10 @@ export class BrowserSquire implements SetupSquire {
         if (part.type === 'text' && part.text) { try { return object(JSON.parse(part.text)); } catch { /* Do not echo upstream output. */ } }
       }
       throw new Error(`Squire ${name} returned an unsupported result`);
-    } finally { release?.(); }
+    } finally {
+      this.callSlotReleases.delete(args);
+      release?.();
+    }
   }
   credentials = {
     list: async (): Promise<Credential[]> => {

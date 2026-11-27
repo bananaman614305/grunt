@@ -945,3 +945,227 @@ it('tears down an open embedded session and releases the profile lease on cancel
     await squire.close();
   }
 });
+
+it('lets a paused profile-lease holder resume its open dialog when queued signups fill all browser slots', async () => {
+  const secrets = {
+    zro: 'sk-zro-parallel-resume-secret-111111',
+    groq: 'gsk_parallel_queued_secret_222222',
+    cerebras: 'csk-parallel-queued-secret-333333',
+    nvidia: 'nvapi-parallel-queued-secret-444444'
+  } as const;
+  const urls: Record<keyof typeof secrets, string> = {
+    zro: 'https://zro.moonmath.ai/overview',
+    groq: 'https://console.groq.com/keys',
+    cerebras: 'https://cloud.cerebras.ai/platform/api-keys',
+    nvidia: 'https://build.nvidia.com/settings/api-keys'
+  };
+
+  let zroTurn1Entered!: () => void;
+  const zroPaused = new Promise<void>(resolve => { zroTurn1Entered = resolve; });
+  let releaseZroTurn1!: () => void;
+  const zroTurn1Gate = new Promise<void>(resolve => { releaseZroTurn1 = resolve; });
+
+  let dialogSeq = 0;
+  let openDialog: { id: string; sessionId: string; submittedKeyName?: string } | undefined;
+  let zroTurns = 0;
+  let activeBrowsers = 0;
+  let peakConcurrentBrowsers = 0;
+  const startedProviders: string[] = [];
+  const queueEvents: { provider: string; state: 'waiting' | 'started' }[] = [];
+
+  const ensureSession = vi.fn(async () => ({
+    status: 'already_connected' as const,
+    session: embeddedSession,
+    providers: ['google' as const],
+    browserLocation: { kind: 'none' as const }
+  }));
+
+  const providerForUrl = (href: string): keyof typeof secrets => {
+    if (href.includes('zro.moonmath.ai')) return 'zro';
+    if (href.includes('groq.com')) return 'groq';
+    if (href.includes('cerebras.ai')) return 'cerebras';
+    return 'nvidia';
+  };
+
+  const { signupRuntime, state } = createRealSessionRuntime({
+    onStartHarness: (opts, sessionId) => {
+      activeBrowsers += 1;
+      peakConcurrentBrowsers = Math.max(peakConcurrentBrowsers, activeBrowsers);
+      const provider = providerForUrl(opts.serviceUrl);
+      startedProviders.push(provider);
+      if (provider === 'zro') {
+        openDialog = { id: `key-dialog-${++dialogSeq}`, sessionId };
+      }
+    },
+    onBrowserClose: () => {
+      activeBrowsers = Math.max(0, activeBrowsers - 1);
+      openDialog = undefined;
+    },
+    onFinish: () => {
+      openDialog = undefined;
+    },
+    onDrive: async (args, context, deps, runtimeState) => {
+      if (args.session_id === 'prov-session-1') {
+        // Zro turn 2 must resume the exact same live browser, provision session, and open dialog.
+        zroTurns += 1;
+        expect(zroTurns).toBe(2);
+        expect(runtimeState.browserStarts).toBe(1);
+        expect(runtimeState.browserCloses).toBe(0);
+        expect(runtimeState.harnessStarts).toBe(1);
+        expect(runtimeState.finishCalls).toBe(0);
+        expect(args.url).toBeUndefined();
+        expect(openDialog).toEqual({ id: 'key-dialog-1', sessionId: 'prov-session-1' });
+        expect(args.answer).toBe('key_name');
+        expect(args.facts?.Alias).toBe(args.facts?.key_name);
+
+        openDialog!.submittedKeyName = args.facts!.Alias;
+        await context.persistCredentials!({
+          url: 'https://zro.moonmath.ai/api-keys',
+          credentials: { api_key: secrets.zro },
+          sources: []
+        } as Parameters<NonNullable<typeof context.persistCredentials>>[0]);
+
+        return {
+          status: 'complete',
+          session_id: args.session_id,
+          done: `Created key ${openDialog!.submittedKeyName} in ${openDialog!.id}`,
+          remaining: '',
+          steps: 2,
+          seconds: 0.4,
+          jev_calls: 1,
+          trajectory: [],
+          observation: {
+            session_id: args.session_id,
+            url: 'https://zro.moonmath.ai/api-keys',
+            safe_table: []
+          }
+        };
+      }
+
+      const provider = providerForUrl(args.url!);
+      const obs = await deps.startSession({ serviceUrl: args.url! });
+      if (provider === 'zro') {
+        zroTurns += 1;
+        zroTurn1Entered();
+        await zroTurn1Gate;
+        return {
+          status: 'needs_value',
+          session_id: obs.session_id,
+          field: 'Alias',
+          question: 'Enter a name for the new API key',
+          options: { key_name: 'key_name' },
+          done: 'Opened Create API Key dialog',
+          remaining: 'Fill Alias field and submit dialog',
+          reason: 'Missing value for Alias field',
+          steps: 3,
+          seconds: 1.0,
+          jev_calls: 2,
+          trajectory: [],
+          observation: {
+            session_id: obs.session_id,
+            url: 'https://zro.moonmath.ai/api-keys',
+            safe_table: [['e1', 't', 'Alias|in=Create API Key dialog']]
+          }
+        };
+      }
+
+      await context.persistCredentials!({
+        url: args.url!,
+        credentials: { api_key: secrets[provider] },
+        sources: []
+      } as Parameters<NonNullable<typeof context.persistCredentials>>[0]);
+      return {
+        status: 'complete',
+        session_id: obs.session_id,
+        done: `Captured ${provider} key`,
+        remaining: '',
+        steps: 2,
+        seconds: 0.3,
+        jev_calls: 1,
+        trajectory: [],
+        observation: {
+          session_id: obs.session_id,
+          url: args.url!,
+          safe_table: []
+        }
+      };
+    }
+  });
+
+  vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (url, init) => {
+    expect(String(url)).toBe('https://zro.moonmath.ai/v1/chat/completions');
+    expect(new Headers(init?.headers).get('Authorization')).toBe(`Bearer ${secrets.zro}`);
+    return Response.json({
+      id: 'chatcmpl-zro-parallel-resume',
+      model: ZRO_DEEPSEEK,
+      choices: [{ message: { role: 'assistant', content: 'ready' }, finish_reason: 'stop' }],
+      usage: { prompt_tokens: 4, completion_tokens: 1 }
+    });
+  }));
+
+  const squire = new BrowserSquire({ directory, embeddedRuntime: { ensureSession, signupRuntime } });
+  squire.onBrowserQueue((provider, queueState) => {
+    queueEvents.push({ provider, state: queueState });
+  });
+
+  try {
+    await squire.connect();
+
+    const zroRun = setup(() => {}, ['zro'], { squire, directory });
+    await zroPaused;
+
+    // Launch 3 additional concurrent signups so all BROWSER_CONCURRENCY (3) slots
+    // are occupied and the queue has waiting work while Zro holds the profile lease.
+    const queuedRuns = [
+      squire.signup('groq', urls.groq, 'Capture Groq API key'),
+      squire.signup('cerebras', urls.cerebras, 'Capture Cerebras API key'),
+      squire.signup('nvidia', urls.nvidia, 'Capture NVIDIA API key')
+    ];
+
+    await vi.waitFor(() => {
+      expect(queueEvents.some(event => event.provider === 'nvidia' && event.state === 'waiting')).toBe(true);
+    });
+
+    // Release Zro turn 1 to pause on needs_value; Zro must resume its original
+    // dialog instead of deadlocking behind the queued signups.
+    releaseZroTurn1();
+
+    await Promise.all([zroRun, ...queuedRuns]);
+  } finally {
+    await squire.close();
+  }
+
+  expect(zroTurns).toBe(2);
+  expect(peakConcurrentBrowsers).toBe(1);
+  expect(startedProviders).toEqual(['zro', 'groq', 'cerebras', 'nvidia']);
+  expect(queueEvents).toContainEqual({ provider: 'nvidia', state: 'waiting' });
+  expect(queueEvents).toContainEqual({ provider: 'nvidia', state: 'started' });
+  expect(state.browserStarts).toBe(4);
+  expect(state.harnessStarts).toBe(4);
+  expect(state.finishCalls).toBe(4);
+  expect(state.browserCloses).toBe(4);
+
+  expect(await readVaultEntry('zro', directory)).toMatchObject({
+    api_key: secrets.zro,
+    origin: 'https://zro.moonmath.ai',
+    source: 'squire'
+  });
+  expect(await readVaultEntry('groq', directory)).toMatchObject({
+    api_key: secrets.groq,
+    origin: 'https://api.groq.com',
+    source: 'squire'
+  });
+  expect(await readVaultEntry('cerebras', directory)).toMatchObject({
+    api_key: secrets.cerebras,
+    origin: 'https://api.cerebras.ai',
+    source: 'squire'
+  });
+  expect(await readVaultEntry('nvidia', directory)).toMatchObject({
+    api_key: secrets.nvidia,
+    origin: 'https://integrate.api.nvidia.com',
+    source: 'squire'
+  });
+  const receiptRaw = await readFile(join(directory, 'zro.json'), 'utf8');
+  expect(receiptRaw).not.toContain(secrets.zro);
+  expect(await readZroGrant(directory, {})).toMatchObject({ base_url: 'https://zro.moonmath.ai', token: secrets.zro });
+}, 10000);

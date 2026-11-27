@@ -431,6 +431,7 @@ export async function openEmbeddedSignupSession(
     storeInMemory?: (grant: InMemoryCapturedGrant) => void;
     onCaptured?: (summary: PersistedCaptureSummary) => void;
     onProgress?: (message: string, data?: Record<string, unknown>) => Promise<void> | void;
+    onClose?: () => void;
   },
   runtime: EmbeddedSignupRuntime = {}
 ): Promise<ManagedEmbeddedSignupSession> {
@@ -502,6 +503,11 @@ export async function openEmbeddedSignupSession(
         await signupSession.close();
       } finally {
         releaseLease();
+        try {
+          options.onClose?.();
+        } catch {
+          // Never mask session teardown or lease release on cleanup callbacks.
+        }
       }
     })();
     return closePromise;
