@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## 0.10.19 — 2026-11-27
+
+- Bundle `jsonc-parser`'s ESM entry into the standalone `dist/local/daemon.mjs` daemon so background source recovery and harness configuration run cleanly with zero `node_modules` and without `Cannot find module './impl/format'` failures.
+
 ## 0.10.18 — 2026-11-27
 
 - Unpin `@trusty-squire/mcp` from prerelease `1.2.0-rc1` to `^1.2.0` and refresh compatible `1.x` updates on demand into Grunt's private runtime directory when embedded signup runs, with cooldown caching, strict version verification, and automatic fallback to the installed copy when offline or incompatible.

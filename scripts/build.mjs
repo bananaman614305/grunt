@@ -4,22 +4,35 @@ import { copyFile, mkdir, readFile, readdir, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { basename } from 'node:path';
 
+const { version } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+async function bundleDaemon(outfile) {
+  await build({
+    entryPoints: [fileURLToPath(new URL('../src/local/main.ts', import.meta.url))],
+    outfile,
+    bundle: true,
+    platform: 'node',
+    target: 'node22',
+    format: 'esm',
+    external: ['@trusty-squire/mcp'],
+    alias: {
+      '@libsql/client': fileURLToPath(new URL('../src/local/bundled-sqlite.ts', import.meta.url)),
+      'jsonc-parser': fileURLToPath(import.meta.resolve('jsonc-parser/lib/esm/main.js')),
+    },
+    define: { GRUNT_DAEMON_BUNDLE: 'true', GRUNT_BUNDLED_VERSION: JSON.stringify(version) },
+    banner: { js: "import { createRequire as gruntCreateRequire } from 'node:module'; const require = gruntCreateRequire(import.meta.url);" },
+  });
+}
+
+if (process.argv[2] === '--daemon-only') {
+  const outfile = process.argv[3];
+  if (!outfile) throw new Error('Usage: node scripts/build.mjs --daemon-only <outfile>');
+  await bundleDaemon(outfile);
+  process.exit(0);
+}
+
 await rm('dist', { recursive: true, force: true });
 execFileSync(process.execPath, [fileURLToPath(import.meta.resolve('typescript/bin/tsc'))], { stdio: 'inherit' });
-
-const { version } = JSON.parse(await readFile('package.json', 'utf8'));
-await build({
-  entryPoints: ['src/local/main.ts'],
-  outfile: 'dist/local/daemon.mjs',
-  bundle: true,
-  platform: 'node',
-  target: 'node22',
-  format: 'esm',
-  external: ['@trusty-squire/mcp'],
-  alias: { '@libsql/client': fileURLToPath(new URL('../src/local/bundled-sqlite.ts', import.meta.url)) },
-  define: { GRUNT_DAEMON_BUNDLE: 'true', GRUNT_BUNDLED_VERSION: JSON.stringify(version) },
-  banner: { js: "import { createRequire as gruntCreateRequire } from 'node:module'; const require = gruntCreateRequire(import.meta.url);" },
-});
+await bundleDaemon('dist/local/daemon.mjs');
 
 await mkdir('dist/registry', { recursive: true });
 await mkdir('dist/admin-public', { recursive: true });
