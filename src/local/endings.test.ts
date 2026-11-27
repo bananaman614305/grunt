@@ -7,9 +7,8 @@ import { DiagnosticsStore, sanitizeDiagnosticEvent, withDiagnosticContext } from
 import { SourceStatus } from './source-status.js';
 import { SourceError, completionEnding, endingOf, guardToolCalls, withEnding } from './source.js';
 import type { Completion, ModelRequest, Source } from './source.js';
-import { validateAdminEvent } from '../admin/types.js';
-import { HOUR } from '../fleet.js';
 
+const HOUR = 3_600_000;
 const directories: string[] = [], stores: DiagnosticsStore[] = [];
 afterEach(async () => { await Promise.all(stores.splice(0).map(s => s.close())); await Promise.all(directories.splice(0).map(d => rm(d, { recursive: true, force: true }))); vi.restoreAllMocks(); });
 const dir = async () => { const d = await mkdtemp(join(await realpath(tmpdir()), 'grunt-endings-')); directories.push(d); return d; };
@@ -68,7 +67,7 @@ it('reaches the pool as a failed attempt that is not a provider outage', async (
     .rejects.toMatchObject({ code: 'upstream', diagnostics: { failureReason: 'response_tools', httpStatus: 200 } });
   expect((await journal.list()).events.find(e => e.type === 'attempt.finish')).toMatchObject({ outcome: 'failed', errorCode: 'upstream', failureReason: 'response_tools', httpStatus: 200 });
 });
-it('keeps endings out of hourly metrics and the collector projection', async () => {
+it('keeps endings out of hourly metrics', async () => {
   const end = Math.floor(Date.UTC(2026, 10, 24, 12) / HOUR) * HOUR;
   const metrics: unknown[] = [];
   vi.spyOn(performance, 'now').mockReturnValue(0);
@@ -88,9 +87,6 @@ it('keeps endings out of hourly metrics and the collector projection', async () 
     if (withEndings) {
       const event = (await journal.list()).events.find(e => e.type === 'attempt.finish' && e.finishReason === 'tool_calls')!;
       expect(event).toMatchObject({ hadToolCalls: true, reasoningTokens: 5 });
-      expect(validateAdminEvent(event)).not.toHaveProperty('finishReason');
-      expect(validateAdminEvent(event)).not.toHaveProperty('hadToolCalls');
-      expect(validateAdminEvent(event)).not.toHaveProperty('reasoningTokens');
     }
   }
   expect(metrics[0]).toEqual(metrics[1]);

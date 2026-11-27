@@ -9,155 +9,19 @@ Use `usegrunt` for setup and updates, `grunt` as the local model, and
 `GRUNT_*` for environment settings. Setup and update migrate an earlier managed
 daemon to the Grunt service identity and keep its private configuration directory.
 
-## Run the gateway
+## Continuous integration and static site
 
-Run `pnpm install --frozen-lockfile`, `pnpm build`, then
-`GRUNT_DB=file:./grunt.db pnpm start` with Node 22 or later. The default port
-is 8787. Open `/health` for status or `/v1/registry` for the published registry.
-
-## Deploy
-
-The Docker image contains the compiled app, admin assets, and production dependencies.
 The public repository runs CI on standard GitHub-hosted Ubuntu runners. The
 workflow runs lint, tests, build and the operator's offline verification suites.
 It refuses to run while the repository is private and does not upload artifacts
-or use Actions caches. Production deployment and npm publication remain separate
+or use Actions caches. Static site deployment and npm publication remain separate
 from CI; their workflows are not enabled by turning CI on.
 
-The existing deployment is selected by `fly.toml` in `iad`, using authorized
-app-scoped access. Its existing volume mounts at `/data`; its resource and
-database identifiers are retained to preserve data. Keep a single Fly machine
-for SQLite.
-
-The current gateway registry release uses two persisted Machine file overlays,
-`/app/dist/registry.js` and `/app/dist/registry/adapters.json`, on the existing
-`dc5e3347e62c112f9f757709d3155eabad25d5e7` image. The next full image deployment
-must include the updated registry validator and remove these two overlays from
-the Machine configuration, or they can mask newer files in that image. For
-registry updates, follow the [publication contract](#sources-and-app-sessions).
-
-This replaces the former OpenAI-compatible gateway. The old `/v1/*` routes are
-removed. There is no Jev, billing, roster service, worker tooling or monorepo.
-
-## Private owner admin
-
-The owner console is designed for `https://grunt.run/admin/`; `/Admin` redirects
-to `/admin/`. Its public static shell contains no diagnostic data. Google login
-and the private metadata API run on the existing Fly backend, normally at
-`https://api.grunt.run`. This is an operator feature for explicitly enrolled
-installations, initially Chad, rather than telemetry enabled by ordinary setup.
-
-The [same-origin Fly preview](https://milo-gateway.fly.dev/admin/) supports Google
-owner sign-in and receives updates from Chad while custom API DNS is pending.
-The overview shows current work, project milestones and Grunt's checkpoint plan,
-along with active and unavailable sources and reported usage for today and this
-week. Milestones link to the project's pull requests and show their review or
-merge state. The browser uses local midnight and the start of
-Monday for those periods. Only successful user-facing attempts contribute to
-these totals. The table marks incomplete token reporting and keeps reply counts
-visible regardless of coverage. Detailed diagnostics remain in their own views.
-
-The overview separates observed execution/orchestration, inference, tool/job
-waits, provider waits, idle/paused and blocked/unavailable time over 24 hours and
-seven days. Inference includes useful model processing and generation. CPU or
-process activity does not prove a completed game feature. Legacy work/downtime
-percentages remain, using measured time; monitoring gaps and older unclassified
-intervals are shown rather than invented.
-
-Legacy two-slot worker utilization, still reported by older daemons and the Adventure feed, includes observed source waits and excludes recording
-gaps. Test/build delivery counts come from the execution host's verification receipts and, for older runtimes, managed job exits; distinct revisions
-require successful checks on an unchanged clean Git HEAD. Published-build counts
-come from actual successful GitHub Pages deployment receipts with bounded lookup
-coverage. These counts are observed lower bounds, not proof of correctness,
-playability or a complete release history. The dashboard shows missing/stale
-coverage and timestamps. Sampling and retention details for the activity collector
-are in the private operator repository.
-
-### Authentication and configuration
-
-Google authorization uses an authorization-code exchange with PKCE, state and
-nonce checks, verified Google identity tokens and an exact email allowlist.
-`GRUNT_ADMIN_OWNERS` accepts complete verified email addresses, normalized to
-lowercase; no default owners or email domains are inferred from account handles.
-Missing or malformed authentication configuration returns `503`. The opaque
-owner session lasts twelve hours in a Secure, HttpOnly, host-only, SameSite=Lax
-cookie scoped to `/admin`. Removing an owner also denies that owner's existing
-session.
-
-| Variable | Purpose |
-| --- | --- |
-| `GRUNT_ADMIN_OWNERS` | Required comma-separated, confirmed full owner email addresses. |
-| `GRUNT_ADMIN_GOOGLE_CLIENT_ID` | Dedicated Grunt Google OAuth web client ID. |
-| `GRUNT_ADMIN_GOOGLE_CLIENT_SECRET` | Matching backend-only client secret. |
-| `GRUNT_ADMIN_SESSION_SECRET` | Independent session secret of at least 32 bytes. |
-| `GRUNT_ADMIN_PUBLIC_URL` | Exact HTTPS API origin; defaults to `https://api.grunt.run`. |
-| `GRUNT_ADMIN_UI_ORIGIN` | Exact HTTPS browser UI origin; defaults to `https://grunt.run`. |
-| `GRUNT_ADMIN_READ_TOKEN` | Optional separate bearer token for diagnostic-agent reads. |
-| `GRUNT_ADMIN_INGEST_KEY` | Separate machine credential for collector uploads. |
-| `GRUNT_ADMIN_INSTANCES` | Explicit comma-separated installation IDs accepted by ingestion. |
-
-Keep secret values in protected backend or service configuration, never public
-HTML, command arguments or source control. Browser reads require the exact UI
-origin when UI and API origins differ. For a same-origin Fly preview, explicitly
-set both origins to `https://milo-gateway.fly.dev` and register that origin's
-`/admin/auth/callback` on the dedicated Google client. An unrelated Pages preview
-does not inherit a working cross-site cookie flow. Production uses the exact
-`https://api.grunt.run/admin/auth/callback` registration.
-
-### Owner and collector API
-
-| Method | Route | Access and result |
-| --- | --- | --- |
-| GET | `/admin/auth/google` | Begin Google owner sign-in. |
-| GET | `/admin/auth/callback` | Validate sign-in and create an allowed owner's session. |
-| POST | `/admin/auth/logout` | Owner session, exact Origin, JSON and CSRF token required. |
-| GET | `/admin/api/session` | Browser owner session and logout CSRF token; machine read token cannot use it. |
-| GET | `/admin/api/overview` | Installation freshness, request and usage summaries. |
-| GET | `/admin/api/source-usage` | Successful replies and reported tokens per source. Pass `today` and `week` as the two period starts in Unix milliseconds and `instanceId` to limit the report. |
-| GET | `/admin/api/providers` | Cached source observations and reported usage. |
-| GET | `/admin/api/requests` | Retained logical requests; supports `limit` (1–100), `source`, `outcome`, `before` and `instanceId`. |
-| GET | `/admin/api/requests/:id` | Request, attempts, routing and safe transport events; select `instanceId` if ambiguous. |
-| GET | `/admin/api/runs` | Projected maintenance and scout progress. |
-| GET | `/admin/api/export` | Download the same sanitized diagnostics as JSON. |
-| POST | `/admin/ingest` | Machine ingestion key and approved installation ID; bounded, validated upload and acknowledgement. |
-
-Private diagnostic reads require an owner session or the optional bearer read
-token. That token permits only GET diagnostic API reads, excluding the
-browser-session endpoint; it grants no ingestion, logout or mutation rights.
-The ingestion key grants uploads only, never reads or browser login. Equal read
-and ingestion credentials are rejected. Ingestion requires an explicit allowed
-installation ID; these operator credentials are not a per-customer delegation
-scheme.
-
-The console is read-only apart from session logout. Refresh and export read
-cached observations; neither triggers inference, provider signup, credential
-repair, remote shell commands or arbitrary daemon forwarding. Unknown token
-counts and absent provider balances remain unknown. Usage totals describe only
-reported counts and identify attempts with missing usage; they are not a daily
-allowance estimate or billing guarantee.
-
-### Opt-in outbound collection
-
-After building, an operator can run `node dist/admin/collector.js` with the private
-configuration in the [collector runbook](admin-collector.md). Collection is
-separate from `npx usegrunt` setup and opens no listener. It preserves the daemon's
-existing loopback port, Host and Origin protections. Chad remains on `8792`.
-
-The collector normally sends a batch every 25 seconds plus up to five seconds of
-jitter, with bounded retries and backoff. It reads cached source status,
-persistent diagnostic events, safe maintenance/scout projections and numeric
-system information. It accepts only the exact HTTPS ingestion path on the owned
-API or existing Fly hostname. Private cursor state advances after acknowledgement;
-replayed events are deduplicated. Backend receipt time, rather than a client clock,
-determines whether an installation is stale or offline.
-
-The projection excludes prompts, replies, code, working directories, raw errors,
-provider response bodies, native stdout/stderr, cookies, credentials, account
-metadata, vault references and signed browser links. Model/source labels describe
-observed or configured identifiers, not independent physical-model attestation.
-Scout evidence is restricted to safe status codes and the current candidate
-commit's validated checkpoints; absent or stale proof cannot report a successful
-release. No other user's installation is enrolled automatically.
+`site/` is served directly on Cloudflare Pages (`https://grunt.run`), including
+`site/registry.json` (kept identical to `registry/adapters.json`) and a `200`
+rewrite from `/v1/registry` to `/registry.json`. There is no Grunt gateway
+server, SQLite admin backend, custom web dashboard, Jev, billing, roster
+service, worker tooling or monorepo.
 
 ## Use grunt as your harness's model
 
@@ -182,8 +46,7 @@ node dist/local/main.js setup
 It binds only `127.0.0.1:8788`. `GRUNT_PORT` changes the port. It provides
 `GET /v1/models`, `GET /v1/status`, Chat Completions, Anthropic Messages, and OpenAI Responses,
 including SSE. Choose model `grunt` for automatic source selection, or a source
-id such as `kilo`. This process is separate from the Fly server and Docker
-entry point. Keep this endpoint on your own machine.
+id such as `kilo`. Keep this endpoint on your own machine.
 
 The local chat, messages and responses endpoints accept the request header
 `X-Grunt-Context: public`. It enables eligible Gödel Machines and Free-Pi requests through
@@ -364,10 +227,7 @@ dropped events instead of presenting incomplete history as complete.
 | GET | `/v1/diagnostics/traces/:id` | Retained events correlated to one request ID. |
 
 These endpoints retain the daemon's loopback Host/Origin checks and return
-`Cache-Control: no-store`. A collector can bind an acknowledged cursor to the
-durable stream identity; replacing the database creates a new identity. These
-routes are separate from `/admin/api/*` and do not accept owner or ingestion
-credentials as a way to bypass loopback protections.
+`Cache-Control: no-store`. Replacing the database creates a new stream identity.
 
 `usegrunt efficiency metrics` reads the hourly endpoint. Its histogram percentiles
 are bounds, and its whole-hour buckets are not exact arbitrary-window totals.
@@ -394,8 +254,8 @@ finish_reason mapped to `stop`, `length`, `tool_calls`, `content_filter`,
 `function_call` or `other`; an unrecognised value is recorded as `other`, never as
 the provider's text), `hadToolCalls` (whether the reply carried parsed tool calls)
 and `reasoningTokens` (only when the provider reports it). Adapters that do not
-report an ending record none. These fields stay in the local journal: hourly fleet
-uploads and the owner collector's allowlist do not include them. A reply from
+report an ending record none. These fields stay in the local journal and are
+never sent in telemetry. A reply from
 Kilo, Reflection Beam or any adapter that reports an ending, whose finish_reason
 says `tool_calls` or `function_call` but which holds no parsed call, is an invalid
 sample (`response_tools`): the task continues on another source after a brief
@@ -405,8 +265,7 @@ text-only `stop` reply is unchanged, and reply text is never parsed or altered.
 Openference reply diagnostics distinguish `stream_read` (transport read),
 `stream_format` (invalid SSE framing), `stream_incomplete` (missing completion)
 and `stream_cleanup` (reader cleanup). JSON, model, content and tool validation
-retain their own fixed reasons. The owner trace shows readable labels for these
-codes without retaining stream contents or exception text. A reader-cancellation
+retain their own fixed reasons without retaining stream contents or exception text. A reader-cancellation
 cleanup failure does not discard an otherwise accepted reply or replace its original failure;
 provider cooldowns, cancellation and fallback behavior remain unchanged.
 
@@ -1109,12 +968,11 @@ eleven automatic sources and rejected both retired source IDs. A subsequent
 restart kept all eleven available without changing the saved access receipts or
 opening verification handoffs. The release passed 954 local tests, lint,
 TypeScript checks and a clean build; public GitHub Actions CI repeats the checks.
-Ordinary npm and gateway releases remain manual; the authorized operator scout
+Ordinary npm releases remain manual; the authorized operator scout
 can merge and publish qualified provider additions through its guarded pipeline.
 The scouting guide lives in the private operator repository. Public CI runs
-the validation workflow; deployment/publication workflows remain separately
-controlled. Gateway changes update the two existing file overlays described
-under Deploy, not the image.
+the validation workflow; publication workflows remain separately
+controlled.
 
 Kilo uses the direct [Particle free-model route](#kilo-free-models).
 Particle was post-trained from DeepSeek V4.1 Flash. The standard DeepSeek V4.1
@@ -1363,9 +1221,7 @@ observation semantics; a cached eligibility check is not a generated reply.
 
 Every bundled free route and optional free route has a quota policy in
 `src/local/quota-policy.ts`. Local `/v1/status` publishes it as `quotaPolicy`,
-with scope for any documented numeric limits. The owner dashboard shows the
-policy, its source, the current backoff, and any observed account window or
-Vikey seller limits. Runcrate publishes a Monday refill, Perch a UTC calendar
+with scope for any documented numeric limits. Runcrate publishes a Monday refill, Perch a UTC calendar
 month, LiveKit a calendar month and separate sliding minute limits, and Zro a
 daily refill. Published cadences without an exact matching runtime exhaustion
 signal are descriptive. A generic 429 can also mean congestion or a short
@@ -1394,14 +1250,11 @@ git repository, only task text and output are sent. If the next adapter is
 Gödel Machines, it receives the approved request payload without generated
 handoff context.
 
-The live registry is written through the gateway's registry API. Any GitHub
-account with push access to `bananaman614305/grunt` (`GRUNT_REGISTRY_REPO`) may
-write, using its own GitHub token as `Authorization: Bearer <token>`; a person
-can use `gh auth token`, and a bot a token from its secret store. The server reads
-only `/user` and the repository's `permissions.push` with that token and never
-stores it. `PUT /v1/registry/entries/{id}` adds or replaces one entry and
-`DELETE /v1/registry/entries/{id}` removes one. A shipped adapter id, an entry
-whose `install` is `declarative:openai` (with a strictly validated `declarative`
+The static registry is maintained in `registry/adapters.json` and mirrored
+byte-for-byte in `site/registry.json` so Cloudflare Pages serves it directly at
+`https://grunt.run/registry.json` (with `/v1/registry` rewritten to
+`/registry.json` as HTTP `200`). A shipped adapter id, an entry whose `install`
+is `declarative:openai` (with a strictly validated `declarative`
 OpenAI-compatible config), or an entry whose `install` is `npm:<package>`, goes
 in `adapters`; any other id goes in a top-level `candidates` list of providers
 awaiting an adapter, which every client ignores. Declarative entries carry
@@ -1411,44 +1264,21 @@ models, signup URLs and hints, required `expires` cutoffs, zero-price
 verification settings, and versioned data-sharing disclosures, so running
 daemons hot-add and route new ephemeral free API promos on the next sync
 without a code release (see [router](router.md#3-slow-loop-hot-add-and-scout-mapping)).
-The server validates the whole next document with `validateRegistry`,
-requires `hints` on any written entry with a `signup`, rescales tier weights,
-stamps a strictly newer `published` and swaps `/data/registry.json` atomically, so
-an entry and its hints publish together. Invalid writes return 422 with
-`{"errors": [{"field": "...", "rule": "..."}]}`. A write rebases on the bundled list when the
-published file is missing or invalid. `registry_writes` in the gateway database
-records each write's GitHub login and the whole registry before and after.
-The response includes the history row number as `write`. To revert, send an
-authenticated `PUT /v1/registry/reverts/{write}` with no body. It restores that
-write's `before_json` document through the same commit path, preserving every
-entry and weight exactly while advancing `published`, and records a new history
-row. A revert also replaces intervening edits; inspect the live registry first.
-`GET /v1/registry/instructions` is a Markdown guide for agents, generated on
-each request from the validator's constants and the live registry and scores,
-with a worklist of entries that need attention. `POST /v1/registry/feedback`
-and `GET /v1/registry/scores` are legacy gateway endpoints; daemons now send
-[usage telemetry](router.md#4-usage-telemetry) to PostHog instead.
-Every deployment checks that `GET /v1/registry` returns 200.
-Before the first valid registry is published the endpoint returns HTTP 503. Published data
-survives deploys and has an ETag. Stable weights total (0.8) and experimental
-weights total (0.2) when both tiers are present. Unknown adapter identifiers
-are ignored locally and cannot install new code. `registry/adapters.json` is the
-list bundled with each release.
-
-On startup, a missing registry file is seeded from the bundled registry through
-that same serialized, validated and audited commit path, with a publication
-newer than the bundle. An existing file is preserved, including an invalid file
-that needs repair through a writer's PUT. The former registry publication
-workflow has been removed; ongoing updates use the write API.
+`validateRegistry` checks the entire document. Stable weights total (0.8) and
+experimental weights total (0.2) when both tiers are present. Unknown adapter
+identifiers are ignored locally and cannot install new code.
+`registry/adapters.json` is the list bundled with each release, and daemons send
+[usage telemetry](router.md#4-usage-telemetry) directly to US PostHog.
 
 The daemon synchronizes on startup and on the
 [router loop schedule](router.md#3-slow-loop-hot-add-and-scout-mapping) with
-If-None-Match. It tries `https://api.grunt.run/v1/registry` first and falls back
-to `https://milo-gateway.fly.dev/v1/registry` if that default endpoint is
-unreachable, invalid or older than the retained registry. An explicit
-`GRUNT_REGISTRY_URL` is used on its own. It writes the valid registry and ETag atomically in a private
-`registry.json` in its existing config directory. A gateway or cache failure
-keeps the last good list, falling back to the packaged list on a fresh install.
+If-None-Match. It tries `https://grunt.run/registry.json` first and falls back
+to `https://raw.githubusercontent.com/bananaman614305/grunt/main/registry/adapters.json`
+if that default endpoint is unreachable, invalid or older than the retained
+registry. An explicit `GRUNT_REGISTRY_URL` is used on its own. It writes the
+valid registry and ETag atomically in a private `registry.json` in its existing
+config directory. A fetch or cache failure keeps the last good list, falling back
+to the packaged list on a fresh install.
 The bundled publication is the minimum revision: older cached or remote lists
 cannot hide providers shipped with that package. An existing publication
 timestamp is immutable; changed entries require a strictly newer `published`
@@ -1465,8 +1295,7 @@ from leaving a permanent exclusion; normal cleanup removes only that session's
 lease. This foreground gate is separate from routine background preparation;
 background checks do not themselves block an already-bound healthy route.
 Removing a registry entry disables it without uninstalling its files. `GRUNT_CONFIG_DIR` and
-`GRUNT_PORT` select the current config directory and port. `GRUNT_REGISTRY_URL` overrides the sync,
-feedback and scores endpoint for local development.
+`GRUNT_PORT` select the current config directory and port. `GRUNT_REGISTRY_URL` overrides the registry sync endpoint for local development.
 
 An explicit `GRUNT_SOURCES` list that includes Codex keeps its configured order.
 Codex requires opt-in and is outside the curated registry. When an existing

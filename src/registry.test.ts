@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DECLARATIVE_OPENAI_INSTALL, adapterErrors, bundledRegistry, disabledAdapters, imageAdapters, isDeclarativeAdapter, knownAdapters, validateRegistry } from './registry.js';
@@ -7,7 +7,6 @@ import type { Adapter } from './registry.js';
 import { PROMOTIONAL_PROVIDERS } from './local/promotional-api.js';
 import { recommendedAdapters, scoutRetired } from './local/routing.js';
 import { RegistrySync, REGISTRY_INTERVAL } from './local/registry.js';
-import { registryRoutes } from './registry-routes.js';
 
 const directories: string[] = [];
 async function directory() { const path = await mkdtemp(join(tmpdir(), 'grunt-registry-')); directories.push(path); return path; }
@@ -114,18 +113,13 @@ it('ignores unknown adapter code and starts a route pass after every sync, chang
   expect(sync.enabled.map(adapter => adapter.id)).toEqual(['opencode']);
   await sync.sync(); expect(sync.enabled.map(adapter => adapter.id)).toEqual(['kilo']);
 });
-it('serves persisted registry data with conditional requests', async () => {
-  const path = join(await directory(), 'published.json');
-  const app = registryRoutes(path);
-  expect((await app.request('/v1/registry')).status).toBe(503);
-  await writeFile(path, JSON.stringify(bundledRegistry));
-  const response = await app.request('/v1/registry');
-  expect(response.status).toBe(200); expect(await response.json()).toEqual(bundledRegistry);
-  const etag = response.headers.get('etag')!;
-  expect((await app.request('/v1/registry', { headers: { 'If-None-Match': etag } })).status).toBe(304);
-  await writeFile(path, JSON.stringify({ ...bundledRegistry, published: '2026-11-12T00:00:00Z' }));
-  expect((await app.request('/v1/registry', { headers: { 'If-None-Match': etag } })).status).toBe(200);
-  await writeFile(path, 'bad'); expect((await app.request('/v1/registry')).status).toBe(503);
+it('keeps site/registry.json synced byte-for-byte with registry/adapters.json', async () => {
+  const [adaptersBytes, siteBytes] = await Promise.all([
+    readFile(new URL('../registry/adapters.json', import.meta.url)),
+    readFile(new URL('../site/registry.json', import.meta.url)),
+  ]);
+  expect(Buffer.compare(siteBytes, adaptersBytes)).toBe(0);
+  expect(siteBytes.equals(adaptersBytes)).toBe(true);
 });
 
 it('reaches the raw GitHub fallback if the primary static registry fails', async () => {

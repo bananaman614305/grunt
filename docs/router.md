@@ -225,10 +225,9 @@ enables acquisition.
 - **Hot-add.** In the automatic pool, a newly listed shipped or declarative
   (`install: "declarative:openai"`) adapter becomes a routable source at once,
   with no restart. A manual `GRUNT_SOURCES` list stays fixed.
-- **Scout to registry.** The daemon never reads the scout's sheet. The scout,
-  or a bot following `GET /v1/registry/instructions`, writes three optional
-  fields per adapter through the registry API (`PUT /v1/registry/entries/{id}`;
-  see [reference](reference.md#sources-and-app-sessions)):
+- **Scout to registry.** The daemon never reads the scout's sheet. The scout
+  updates three optional fields per adapter in `registry/adapters.json` (and
+  `site/registry.json`; see [reference](reference.md#sources-and-app-sessions)):
 
 | Scout column | Registry field | Effect in the daemon |
 |---|---|---|
