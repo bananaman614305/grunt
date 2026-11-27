@@ -451,7 +451,7 @@ it('pulls the registry from the RegistrySync URL and silently falls back to the 
   const fresh = { ...bundledRegistry, published: new Date(Date.parse(bundledRegistry.published) + 1000).toISOString() };
   const fetcher = vi.fn(async () => new Response(JSON.stringify(fresh), { status: 200 }));
   expect(await loadRegistry({ fetcher })).toEqual({ registry: fresh, origin: 'remote' });
-  expect(fetcher).toHaveBeenCalledWith('https://api.grunt.run/v1/registry', expect.anything());
+  expect(fetcher).toHaveBeenCalledWith('https://grunt.run/registry.json', expect.anything());
   expect((await loadRegistry({ fetcher: async () => { throw new Error('offline'); } })).origin).toBe('cache');
   await rm(dir, { recursive: true, force: true });
   expect(await loadRegistry({ fetcher: async () => { throw new Error('offline'); } })).toEqual({ registry: bundledRegistry, origin: 'bundled' });

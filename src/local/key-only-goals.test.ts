@@ -15,12 +15,17 @@ async function goals(provider: string, dataSharingApproved?: string[]) {
   return call.mock.calls.filter(([name]) => name === 'operate_drive').map(([, args]) => String(args.goal));
 }
 
+const stripRegistryHints = (provider: string, goal: string) => {
+  const hints = bundledRegistry.adapters.find(a => a.id === provider)?.hints;
+  return hints ? goal.replace(` Provider hints (page, control, value, in order): ${hints}`, '') : goal;
+};
+
 it.each(providers)('asks Squire only for the %s API key, with no plan, tier or model-enable step', async provider => {
   for (const approved of [undefined, [provider]]) {
     const built = await goals(provider, approved);
     expect(built).toHaveLength(2);
     for (const goal of built) {
-      expect(planSteps(goal)).toEqual([]);
+      expect(planSteps(stripRegistryHints(provider, goal))).toEqual([]);
       expect(goal).toMatch(/No paid plan|paid plan, payment, upgrade/);
     }
   }

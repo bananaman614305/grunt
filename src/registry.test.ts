@@ -128,11 +128,35 @@ it('serves persisted registry data with conditional requests', async () => {
   await writeFile(path, 'bad'); expect((await app.request('/v1/registry')).status).toBe(503);
 });
 
-it('reaches the published Fly registry if the custom domain fails', async () => {
+it('reaches the raw GitHub fallback if the primary static registry fails', async () => {
   const fetcher = vi.fn<typeof fetch>().mockRejectedValueOnce(new Error('DNS unavailable')).mockResolvedValueOnce(Response.json(bundledRegistry));
   const sync = new RegistrySync({ directory: await directory(), fetcher });
   await sync.sync();
-  expect(fetcher.mock.calls.map(([url]) => url)).toEqual(['https://api.grunt.run/v1/registry', 'https://milo-gateway.fly.dev/v1/registry']);
+  expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
+    'https://grunt.run/registry.json',
+    'https://raw.githubusercontent.com/bananaman614305/grunt/main/registry/adapters.json'
+  ]);
+  expect(sync.current).toEqual(bundledRegistry);
+});
+
+it('incorporates live Fly registry updates and advances published past legacy daemon caches', async () => {
+  const legacyFloor = Date.parse('2026-11-26T13:51:42.626Z');
+  expect(Date.parse(bundledRegistry.published)).toBeGreaterThan(legacyFloor);
+  expect(validateRegistry(bundledRegistry)).toEqual(bundledRegistry);
+  expect((bundledRegistry.candidates ?? []).map(candidate => candidate.id)).toEqual([
+    'inferbase', 'exaone', 'kyrune', 'inferall', 'anyapi', 'orcarouter', 'tokenrouter', 'alysis-code'
+  ]);
+  expect(bundledRegistry.adapters.find(adapter => adapter.id === 'perch')?.hints).toContain("On this walk Privacy showed 'Your plan is protected'");
+  expect(bundledRegistry.adapters.find(adapter => adapter.id === 'nous')?.hints).toContain('The free tier does not give a usable API key.');
+  expect(bundledRegistry.adapters.find(adapter => adapter.id === 'nous')?.hints).toContain('The shipped model id qwen/qwen4-max:free is paid.');
+
+  const path = await directory();
+  const legacyCached = { ...bundledRegistry, published: '2026-11-26T13:51:42.626Z', adapters: [bundledRegistry.adapters[0]!] };
+  await writeFile(join(path, 'registry.json'), JSON.stringify({ registry: legacyCached, etag: '"legacy-fly"' }), { mode: 0o600 });
+  const sync = new RegistrySync({ directory: path, fetcher: async () => Response.json(bundledRegistry, { headers: { ETag: '"static-pages"' } }) });
+  await sync.load();
+  expect(sync.current.published).toBe(bundledRegistry.published);
+  await sync.sync();
   expect(sync.current).toEqual(bundledRegistry);
 });
 it('never sends an explicit registry override to another host', async () => {

@@ -2,7 +2,7 @@ name: site
 on:
   push:
     branches: [main]
-    paths: ["site/**", ".github/workflows/site.yml"]
+    paths: ["site/**", "registry/adapters.json", ".github/workflows/site.yml"]
   workflow_dispatch:
 permissions:
   contents: read
@@ -18,12 +18,25 @@ jobs:
       PAGES_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT }}
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Validate and stage registry
+        run: |
+          pnpm exec tsx src/registry.ts registry/adapters.json
+          cp registry/adapters.json site/registry.json
+          pnpm exec tsx src/registry.ts site/registry.json
       - name: Check the page is there
         run: |
           test -f site/index.html
           test -f site/grunt.svg
           test -f site/404.html
           test -f site/og.png
+          test -f site/registry.json
+          test -f site/_redirects
+          test -f site/_headers
       - name: Deploy site/ to Cloudflare Pages
         if: env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' && env.PAGES_PROJECT != ''
         run: npx --yes wrangler@4 pages deploy site --project-name "$PAGES_PROJECT" --branch main
