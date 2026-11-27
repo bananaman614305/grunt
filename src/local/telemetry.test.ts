@@ -219,3 +219,20 @@ it('keeps a newer setup event queued when an overlapping exchange fails after an
   await sent.exchange();
   expect(setups(3)).toEqual([]);
 });
+
+it('retries a failed setup event before a newer one and delivers both', async () => {
+  let status = 503;
+  const { received, env } = await posthog((_request, response) => { response.writeHead(status).end(); });
+  const dir = await directory();
+  const sent = telemetry(dir, env);
+  const setups = (index: number) => received[index]!.body.batch.filter(event => event.event === 'setup_completed').map(event => event.properties.sources_configured);
+  await queueSetupCompleted({ directory: dir, sourcesConfigured: 1, env, now: () => now });
+  await sent.exchange();
+  // PostHog rejected the first event; a newer setup finishes before the next exchange.
+  await queueSetupCompleted({ directory: dir, sourcesConfigured: 2, env, now: () => now });
+  status = 200;
+  await sent.exchange();
+  await sent.exchange();
+  await sent.exchange();
+  expect(received.map((_, index) => setups(index))).toEqual([[1], [1], [2], []]);
+});

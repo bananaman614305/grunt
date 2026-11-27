@@ -164,10 +164,15 @@ export async function queueSetupCompleted(options: SetupCompletedOptions) {
 }
 async function queuedSetup(directory: string, distinctId: string) {
   const path = join(directory, SETUP_FILE), sending = `${path}.sending`;
-  // Claim the queued file so a setup that finishes during the send is kept.
-  await rename(path, sending).catch(() => {});
+  // Retry an unacknowledged claimed event first. Otherwise claim the queued
+  // file, so a setup that finishes during the send stays queued.
   let saved: unknown;
-  try { saved = JSON.parse(await readFile(sending, 'utf8')); } catch { return undefined; }
+  try { saved = JSON.parse(await readFile(sending, 'utf8')); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') { await rm(sending, { force: true }); return undefined; }
+    if (!await rename(path, sending).then(() => true, () => false)) return undefined;
+    try { saved = JSON.parse(await readFile(sending, 'utf8')); } catch { await rm(sending, { force: true }); return undefined; }
+  }
   const { day, version, sources_configured: count } = (saved ?? {}) as Record<string, unknown>;
   if (typeof day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(day) || typeof version !== 'string' || !/^[0-9A-Za-z.+-]{1,64}$/.test(version)
     || !Number.isSafeInteger(count) || (count as number) < 0) { await rm(sending, { force: true }); return undefined; }
