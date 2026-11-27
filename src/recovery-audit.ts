@@ -172,8 +172,8 @@ function auditToolTiers(events: Event[], until: number, complete: boolean, regis
     const durations = passed.flatMap(e => e.durationMs ?? []);
     const firstOutput = passed.flatMap(e => e.firstOutputMs ?? []);
     const p90DurationMs = p90(durations), p90FirstOutputMs = p90(firstOutput);
-    const expectedCalls = turns.filter(e => e.toolCallPassed !== undefined).length;
-    const correctCalls = passed.filter(e => e.toolCallPassed);
+    const expectedCalls = turns.filter(e => e.dispatchedToolCallPassed !== undefined).length;
+    const correctCalls = passed.filter(e => e.dispatchedToolCallPassed);
     const toolCallPassRate = expectedCalls ? correctCalls.length / expectedCalls : null;
     const freeToolReplies = correctCalls.filter(e => e.free).length;
     const last = turns.reduce<Event | undefined>((latest, e) => !latest || latest.at < e.at ? e : latest, undefined);

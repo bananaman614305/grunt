@@ -145,7 +145,7 @@ it('compares matched exposure and requires validated access for a recovery delay
 
 it('recommends tiers only from covered coding tool attempts with sufficient evidence', () => {
   const rows = Array.from({ length: 20 }, (_, i) => event('attempt.finish', i, {
-    source: 'live-only', toolCallPassed: true, codingToolTurn: true, outcome: 'passed', hadToolCalls: true, free: true,
+    source: 'live-only', dispatchedToolCallPassed: true, codingToolTurn: true, outcome: 'passed', hadToolCalls: true, free: true,
     durationMs: 1000 + i, firstOutputMs: 100 + i
   }));
   const failed = rows.map((e, i) => ({ ...e, source: 'kilo', ...(i < 4 ? { failureReason: 'length' as const } : {}) }));
@@ -157,7 +157,7 @@ it('recommends tiers only from covered coding tool attempts with sufficient evid
       p90FirstOutputMs: 117, recommendation: 'promotion candidate' }),
     expect.objectContaining({ source: 'kilo', attempts: 20, failureRate: 0.2, recommendation: 'demotion candidate' })
   ]));
-  const mostlyText = rows.map((e, i) => ({ ...e, toolCallPassed: i < 3 }));
+  const mostlyText = rows.map((e, i) => ({ ...e, dispatchedToolCallPassed: i < 3 }));
   expect(summary(mostlyText)).toContainEqual(expect.objectContaining({ source: 'live-only', passRate: 1,
     expectedCalls: 20, toolCallPassRate: 0.15, recommendation: 'hold' }));
   const override = [{ id: 'live-only', tier: 'stable' as const }];

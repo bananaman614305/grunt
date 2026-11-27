@@ -390,7 +390,8 @@ export class SourceStatus {
     const base = { version: 1 as const, requestId: parent.requestId, kind: parent.kind, attemptId, source: source.id };
     this.diagnostics.record({ ...base, id: randomUUID(), at: started, type: 'attempt.start',
       ...(request.maxTokens === undefined ? {} : { maxOutputTokens: request.maxTokens }) });
-    return withDiagnosticContext({ ...parent, attemptId, sink: this.diagnostics! }, async () => {
+    const toolChoiceEvidence: { allConstrained?: boolean } = {};
+    return withDiagnosticContext({ ...parent, attemptId, toolChoiceEvidence, sink: this.diagnostics! }, async () => {
       const codingToolTurn = needsFunctionTools(request) && toolCapable(source) && !request.publicContext;
       let firstProgressAt: number | undefined;
       let lastProgressAt: number | undefined, settled = false;
@@ -406,7 +407,7 @@ export class SourceStatus {
         const result = await this.observedComplete(source, request, signal, guard, output), ending = endingOf(result);
         this.diagnostics!.record({ ...sanitizeSafeDiagnosticMetadata(result.diagnostics), ...base, id: randomUUID(), at: this.now(), type: 'attempt.finish', codingToolTurn,
           ...(firstProgressAt === undefined ? {} : { firstOutputMs: Math.max(0, firstProgressAt - started) }),
-          ...(request.expectedFunctionCall ? { toolCallPassed: !!result.calls?.some(call =>
+          ...(toolChoiceEvidence.allConstrained && request.expectedFunctionCall ? { dispatchedToolCallPassed: !!result.calls?.some(call =>
             request.expectedFunctionCall?.name ? call.function.name === request.expectedFunctionCall.name
               : request.tools.some(tool => tool.type === 'function' && (tool.function as { name?: string })?.name === call.function.name)) } : {}),
           outcome: signal.aborted ? 'cancelled' : 'passed', durationMs: Math.max(0, performance.now() - startedMono),
@@ -430,7 +431,7 @@ export class SourceStatus {
         }
         this.diagnostics!.record({ ...metadata, ...base, id: randomUUID(), at: this.now(), type: 'attempt.finish', codingToolTurn,
           ...(firstProgressAt === undefined ? {} : { firstOutputMs: Math.max(0, firstProgressAt - started) }),
-          ...(request.expectedFunctionCall ? { toolCallPassed: false } : {}),
+          ...(toolChoiceEvidence.allConstrained && request.expectedFunctionCall ? { dispatchedToolCallPassed: false } : {}),
           outcome: signal.aborted ? 'cancelled' : 'failed', errorCode: signal.aborted ? 'cancelled' : failureCode(error),
           ...(lastProgressAt === undefined ? {} : { lastProgressAt }),
           durationMs: Math.max(0, performance.now() - startedMono), ...(typeof value.retryAfter === 'number' ? { retryAfterSeconds: value.retryAfter } : {}) });
