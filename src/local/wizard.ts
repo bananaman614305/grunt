@@ -1,17 +1,16 @@
-import { hasOwnerMode, openPrivateFile } from './private-file.js';
+import { hasOwnerMode } from './private-file.js';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { spawn, execFile } from 'node:child_process';
-import { constants } from 'node:fs';
 import { mkdir, readFile, writeFile, mkdtemp, rm, access, lstat, rename } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { setupFallbacks } from './fallback-setup.js';
 import { parallelMap } from './parallel.js';
 import { withTerminal } from './terminal.js';
-import { BrowserSquire, PROVIDERS, setup, squireEnvironment } from './setup.js';
+import { BrowserSquire, PROVIDERS, setup } from './setup.js';
 import { copyDaemon, daemonFile, legacyDaemonFile } from './daemon-files.js';
 import { RegistrySync } from './registry.js';
 import { bundledRegistry, disabledAdapters, knownAdapters } from '../registry.js';
@@ -20,7 +19,7 @@ import { banner } from './banner.js';
 import { approveDataSharing, DATA_SHARING_MANUAL_APPROVAL, DATA_SHARING_OPT_OUT, requiresManualDataSharing } from './data-sharing.js';
 import { configurePi, connectHarness, detectHarnesses, HARNESSES, launchLines, listFreeModels, nextDriver, onPath, probeFreeModel, signupHarness, runHarness } from './harnesses.js';
 import type { Harness } from './harnesses.js';
-import type { SignupAgent } from './signup-mcp.js';
+import type { EmbeddedSignupRuntime, SignupAgent, SignupCeremonyOpenInfo } from './signup-mcp.js';
 import { beginSetupSession } from './setup-session.js';
 import { configRoot, gruntEnv } from '../brand.js';
 import { bootoutService, installedConfigRoot, launchAgent, legacyService, migrateServiceEnvironment, prepareServiceMigration, replaceServiceEntry, systemdEnvironment, systemdQuote, xml } from './service-migration.js';
@@ -43,78 +42,34 @@ export async function command(binary: string, args: string[], interactive = fals
   });
   await (interactive ? withTerminal(run) : run());
 }
-export async function squireBrokerExists() {
-  const service = process.platform === 'darwin'
-    ? ['launchctl', ['print', `gui/${process.getuid!()}/ai.trustysquire.trusty-squire-broker`]] as const
-    : ['systemctl', ['--user', 'is-active', 'trusty-squire-broker']] as const;
-  if (process.platform !== 'win32') {
-    try { await promisify(execFile)(service[0], [...service[1]], { timeout: 10000 }); return true; }
-    catch { /* An inactive service can still own the broker installation. */ }
+function logEmbeddedSignInOpen(info: SignupCeremonyOpenInfo) {
+  if (info.browserLocation.kind === 'virtual') {
+    console.log(`… sign in with Google in Grunt's isolated browser: ${info.browserLocation.url}`);
+  } else if (info.browserLocation.kind === 'host_screen') {
+    console.log("… sign in with Google in the opened Grunt browser window to continue setup");
   }
-  if (process.platform === 'linux') {
-    try {
-      const { stdout } = await promisify(execFile)('systemctl', ['--user', 'list-unit-files', 'trusty-squire-broker*.service', '--no-legend', '--no-pager'], { timeout: 10000 });
-      if (/^trusty-squire-broker\S*\.service\s/m.test(stdout)) return true;
-    } catch { /* Socket discovery remains available without a service manager. */ }
-  }
-  const home = homedir();
-  const serviceFile = process.platform === 'darwin'
-    ? join(home, 'Library', 'LaunchAgents', 'ai.trustysquire.trusty-squire-broker.plist')
-    : join(process.env.XDG_CONFIG_HOME || join(home, '.config'), 'systemd', 'user', 'trusty-squire-broker.service');
-  try { await access(serviceFile); return true; } catch { /* Check socket discovery too. */ }
-  const discovery = join(dirname(fileURLToPath(import.meta.resolve('@trusty-squire/mcp'))), 'bot/broker/discovery.js');
-  const program = `const {brokerSocketPath} = await import(${JSON.stringify(pathToFileURL(discovery).href)}); const {existsSync} = await import('node:fs'); process.stdout.write(existsSync(brokerSocketPath()) ? 'present' : 'missing');`;
-  const result = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', program], { env: squireEnvironment(), timeout: 10000 });
-  return result.stdout === 'present';
 }
-async function squireBootstrapEnvironment(signal?: AbortSignal): Promise<NodeJS.ProcessEnv> {
-  signal?.throwIfAborted();
-  const directory = configDir();
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  signal?.throwIfAborted();
-  const parent = await lstat(directory);
-  if (!parent.isDirectory() || parent.isSymbolicLink() || !hasOwnerMode(parent, 0o700)) {
-    throw new Error('Squire setup requires a private grunt configuration directory');
-  }
-  const path = join(directory, 'squire-opencode.json');
-  const file = await openPrivateFile(path, constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
-  try {
-    const stat = await file.stat();
-    if (!stat.isFile() || !hasOwnerMode(stat, 0o600) || stat.size > 262144) {
-      throw new Error('Squire setup requires a private grunt-owned client configuration file');
-    }
-    signal?.throwIfAborted();
-    if (!stat.size) await file.writeFile('{}\n');
-  } finally { await file.close(); }
-  signal?.throwIfAborted();
-  // The supported Squire override applies only to this installer child. It
-  // must never rewrite the user's OpenCode config or a provider grant config.
-  return { ...process.env, OPENCODE_CONFIG: path };
-}
-export async function connectSquire(options: { hasBroker?: () => Promise<boolean>; run?: typeof command; installer?: string; squire?: BrowserSquire; signal?: AbortSignal } = {}) {
-  const probe = async () => {
-    options.signal?.throwIfAborted();
-    const squire = options.squire ?? new BrowserSquire(options.signal ? { signal: options.signal } : {});
-    try { await squire.connect(); options.signal?.throwIfAborted(); }
-    finally { if (!options.squire) await squire.close(); }
-  };
-  try { await probe(); return 'existing' as const; }
-  catch (error) {
-    options.signal?.throwIfAborted();
-    const exists = await (options.hasBroker || squireBrokerExists)();
-    options.signal?.throwIfAborted();
-    if (exists) {
-      throw new Error(`Existing trusty-squire-broker failed its connection probe: ${error instanceof Error ? error.message : String(error)}. Repair the broker, then rerun usegrunt setup.`, { cause: error });
-    }
-  }
-  if (gruntEnv('SETUP_NO_HUMAN') === '1') throw new Error('Squire login needs human verification; stopped before onboarding');
-  // Only a machine without a broker may enter the installer.
-  const bin = options.installer || join(dirname(fileURLToPath(import.meta.resolve('@trusty-squire/mcp'))), 'bin.js');
-  const env = await squireBootstrapEnvironment(options.signal);
+export async function connectSquire(options: {
+  squire?: BrowserSquire;
+  signal?: AbortSignal;
+  directory?: string;
+  onSignInOpen?: (info: SignupCeremonyOpenInfo) => Promise<void> | void;
+  embeddedRuntime?: EmbeddedSignupRuntime;
+} = {}) {
   options.signal?.throwIfAborted();
-  await (options.run || command)(process.execPath, [bin, 'connect', '--target=opencode', '--json'], false, options.signal, env);
-  await probe();
-  return 'installed' as const;
+  const squire = options.squire ?? new BrowserSquire({
+    directory: options.directory ?? configDir(),
+    ...(options.signal ? { signal: options.signal } : {}),
+    onSignInOpen: options.onSignInOpen ?? logEmbeddedSignInOpen,
+    ...(options.embeddedRuntime ? { embeddedRuntime: options.embeddedRuntime } : {})
+  });
+  try {
+    await squire.connect();
+    options.signal?.throwIfAborted();
+    return squire.connectState;
+  } finally {
+    if (!options.squire) await squire.close();
+  }
 }
 export async function preflight(run = command) {
   const [major = 0, minor = 0] = process.versions.node.split('.').map(Number);
@@ -596,7 +551,7 @@ export async function prepareHarnesses(port: number, options: HarnessOptions = {
 export async function connectHarnesses(port: number, options: HarnessOptions = {}) {
   return (await prepareHarnesses(port, options))();
 }
-const wizardActions = { smokeTest, resumeBackground, probeOperator: probeSetupOperator, chooseHarness: chooseSetupHarness, connectHarness, signupHarness, listFreeModels, installedSources, createSquire: () => new BrowserSquire(), banner, preflight, connectSquire, setup, setupFallbacks, installService, configurePi, checkService, checkFallbackServices, loadRegistry, checkServiceSources, connectHarnesses, prepareHarnesses, approveDataSharing };
+const wizardActions = { smokeTest, resumeBackground, probeOperator: probeSetupOperator, chooseHarness: chooseSetupHarness, connectHarness, signupHarness, listFreeModels, installedSources, createSquire: () => new BrowserSquire({ directory: configDir(), onSignInOpen: logEmbeddedSignInOpen }), banner, preflight, connectSquire, setup, setupFallbacks, installService, configurePi, checkService, checkFallbackServices, loadRegistry, checkServiceSources, connectHarnesses, prepareHarnesses, approveDataSharing };
 type Optional = 'probeOperator' | 'chooseHarness' | 'connectHarness' | 'signupHarness' | 'listFreeModels' | 'installedSources' | 'createSquire' | 'banner' | 'loadRegistry' | 'checkServiceSources' | 'connectHarnesses' | 'prepareHarnesses' | 'configurePi' | 'approveDataSharing';
 export async function wizard(add?: string, actions: Omit<typeof wizardActions, Optional> & Partial<Pick<typeof wizardActions, Optional>> = wizardActions) {
   if (add === '') throw new Error('Specify a provider name');

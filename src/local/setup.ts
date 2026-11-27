@@ -1,4 +1,3 @@
-import { squireClientPath } from './squire-client-path.js';
 import { ZRO_STORE } from './zro.js';
 import { TOKENHARBOR_STORE } from './tokenharbor.js';
 import { POLLINATIONS_STORE } from './pollinations-setup.js';
@@ -9,13 +8,13 @@ import { PROMOTIONAL_STORES } from './promotional-setup.js';
 import { DARUS_STORE } from './darus-setup.js';
 import { APERTURE_STORE } from './aperture-setup.js';
 import { MILLIONSEEK_STORE } from './millionseek-setup.js';
-import { Readable } from 'node:stream';
+import { MILLIONSEEK_SERVICE } from './millionseek.js';
+import { IFM_STORE } from './ifm-setup.js';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { rm } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
+import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { bundledRegistry, disabledAdapters, isDeclarativeAdapter, knownAdapters, localOptInAdapterIds } from '../registry.js';
 import type { Registry } from '../registry.js';
 import { BROWSER_CONCURRENCY } from './parallel.js';
@@ -45,7 +44,7 @@ import { setupNumes } from './numes-setup.js';
 import { configRoot, gruntEnv } from '../brand.js';
 import { verifyKiloAccess } from './kilo.js';
 import { DATA_SHARING_POLICIES, dataSharingPolicies, readDataSharingConsent, registryDataSharingPolicies, requiresExplicitDataSharing } from './data-sharing.js';
-import { resolveSquireGrant, writePrivateProviderGrant } from './provider-grant.js';
+import { isLocalVaultReference, localVaultReference, parseLocalVaultReference, resolveSquireGrant, writePrivateProviderGrant } from './provider-grant.js';
 import type { SquireGrantSource } from './provider-grant.js';
 import {
   credentialFingerprint,
@@ -53,13 +52,31 @@ import {
   deleteVaultEntry,
   extractCredentialSecret,
   isVaultProvider,
+  listVaultEntries,
+  providerAllowedRequestOrigins,
   readVaultGrant,
+  redactVaultSecrets,
   validateDirectOrigin,
   writeVaultEntry
 } from './vault.js';
 import type { VaultProvider } from './vault.js';
-import { signupAgentTools, signupAgentResult, guardedSignupChoice, writeId } from './signup-mcp.js';
-import type { SignupAgent } from './signup-mcp.js';
+import {
+  ensureEmbeddedSignupSession,
+  guardedSignupChoice,
+  isSignupConfigError,
+  openEmbeddedSignupSession,
+  signupAgentResult,
+  signupAgentTools,
+  writeId
+} from './signup-mcp.js';
+import type {
+  EmbeddedSignupRuntime,
+  InMemoryCapturedGrant,
+  ManagedEmbeddedSignupSession,
+  SignupAgent,
+  SignupCeremonyOpenInfo,
+  SignupSession
+} from './signup-mcp.js';
 import { setupFailureReason, signupOperatorUnavailable } from './setup-failure.js';
 import { SourceError } from './source.js';
 import type { Source } from './source.js';
@@ -191,11 +208,13 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
     try {
       if (await router.hasKey?.(provider)) { options.signal?.throwIfAborted(); options.notify(`${provider}: connected`); continue; }
     } catch (error) { rememberFailure(error); }
+    let triedLocalVault = false;
     if (isVaultProvider(provider)) {
       let vaulted: Awaited<ReturnType<typeof readVaultGrant>>;
       try { vaulted = await readVaultGrant(provider, options.directory ?? configRoot()); }
       catch (error) { rememberFailure(error); }
       if (vaulted) {
+        triedLocalVault = true;
         try {
           if (router.addVerifiedGrant) await router.addVerifiedGrant(provider, { base_url: vaulted.base_url, token: vaulted.token });
           else await router.addGrant(provider, { base_url: vaulted.base_url, token: vaulted.token });
@@ -259,7 +278,7 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
       if (inconclusive) throw inconclusive.error;
       return false;
     };
-    const saved = await matching();
+    const saved = (await matching()).filter(c => !(triedLocalVault && isLocalVaultReference(c.reference)));
     if (await connect(saved)) continue;
     if (saved.length) options.notify(`${provider}: no saved key works; opening the provider site to capture working access`);
     const result = await squire.runs.start({ service: provider, plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none', idempotency_key: `grunt-free-${provider}` });
@@ -302,11 +321,43 @@ function keyNameField(label: string, url: unknown) {
   return field === 'name' && typeof url === 'string' && URL.canParse(url) && /key|token/i.test(new URL(url).pathname);
 }
 export function squireStore(service: string, registry?: Registry) {
-  const builtin = [ZRO_STORE, TOKENHARBOR_STORE, POLLINATIONS_STORE, BEATAPI_STORE, KENARI_STORE, GOEDEL_STORE, ...Object.values(PROMOTIONAL_STORES), DARUS_STORE, APERTURE_STORE, MILLIONSEEK_STORE].find(store => store.service === service);
+  const builtin = [ZRO_STORE, TOKENHARBOR_STORE, POLLINATIONS_STORE, BEATAPI_STORE, KENARI_STORE, GOEDEL_STORE, ...Object.values(PROMOTIONAL_STORES), DARUS_STORE, APERTURE_STORE, MILLIONSEEK_STORE, IFM_STORE].find(store => store.service === service);
   if (builtin) return builtin;
   const entry = registry?.adapters.find(adapter => adapter.id === service);
   return isDeclarativeAdapter(entry) ? declarativeSquireStore(entry) : undefined;
 }
+
+const GRUNT_FREE_LABELED_PROVIDERS = new Set<VaultProvider>([
+  'kenari', 'numes', 'goedel', 'crowllm', 'fikra', 'openference', 'darus', 'aperture-ai', 'millionseek', 'ifm'
+]);
+
+interface InProcessSignupClient {
+  callTool(
+    request: { name: string; arguments?: ObjectValue },
+    _schema?: unknown,
+    options?: { timeout?: number; signal?: AbortSignal }
+  ): Promise<{ content: { type: string; text?: string }[]; structuredContent?: ObjectValue; isError?: boolean }>;
+  listTools(): Promise<{ tools: Tool[] }>;
+  close(): Promise<void>;
+}
+
+const EMBEDDED_SIGNUP_TOOLS: Tool[] = [
+  {
+    name: 'operate_drive',
+    description: 'Run embedded signup drive in-process using Grunt browser profile and local vault capture.',
+    inputSchema: { type: 'object', properties: { answer: { type: 'string' }, facts: { type: 'object' } } }
+  },
+  {
+    name: 'operate_click',
+    description: 'Click a safe control ref on the live embedded signup page.',
+    inputSchema: { type: 'object', properties: { ref: { type: 'string' } }, required: ['ref'] }
+  },
+  {
+    name: 'operate_observe',
+    description: 'Observe the live embedded signup page without tearing down the browser session.',
+    inputSchema: { type: 'object', properties: {} }
+  }
+];
 
 // operate_drive rejects a longer goal.
 const DRIVE_GOAL_LIMIT = 4000;
@@ -337,7 +388,21 @@ export function squireEnvironment() {
   };
 }
 export class BrowserSquire implements SetupSquire {
-  constructor(private options: { background?: boolean | undefined; signal?: AbortSignal; dataSharingApproved?: readonly string[]; agent?: SignupAgent; registry?: () => Registry; signedUp?: (id: string, ok: boolean) => void } = {}) {}
+  constructor(private options: {
+    directory?: string;
+    background?: boolean | undefined;
+    signal?: AbortSignal;
+    dataSharingApproved?: readonly string[];
+    agent?: SignupAgent;
+    registry?: () => Registry;
+    signedUp?: (id: string, ok: boolean) => void;
+    embeddedRuntime?: EmbeddedSignupRuntime;
+    onSignInOpen?: (info: SignupCeremonyOpenInfo) => Promise<void> | void;
+  } = {}) {
+    this.client = this.createEmbeddedClient();
+  }
+  private get directory() { return this.options.directory ?? configRoot(); }
+  get connectState(): 'existing' | 'installed' { return this.connectionState; }
   // Hints follow the synced registry, as provider routes do.
   useRegistry(registry: () => Registry) { this.options.registry = registry; }
   useSignupAgent(agent: SignupAgent | undefined) { if (agent) this.options.agent = agent; else delete this.options.agent; }
@@ -351,7 +416,18 @@ export class BrowserSquire implements SetupSquire {
   /** Squire's own stop detail for the last dropped signup, for GRUNT_SETUP_DEBUG. */
   signupFailureDetail(provider: string) { return this.failureDetails.get(provider); }
   approveDataSharing(providers: readonly string[]) { this.options.dataSharingApproved = [...new Set(providers)]; }
-  private client = new Client({ name: 'grunt setup', version: '0.1.0' });
+  private client: InProcessSignupClient;
+  private signupSession: SignupSession | undefined;
+  private connectionState: 'existing' | 'installed' = 'existing';
+  private capturedInMemory = new Map<string, InMemoryCapturedGrant>();
+  private embeddedSessions = new Map<string, {
+    provider: string;
+    url: string;
+    goal: string;
+    handle: ManagedEmbeddedSignupSession;
+  }>();
+  private callProviders = new WeakMap<ObjectValue, string>();
+  private callSlotReleases = new WeakMap<ObjectValue, () => (() => void) | undefined>();
   private sessions = new Map<string, string>();
   private services = new Map<string, AbortController>();
   private callSignals = new WeakMap<ObjectValue, AbortSignal>();
@@ -374,6 +450,208 @@ export class BrowserSquire implements SetupSquire {
   private connection: Promise<void> | undefined;
   private metadata: Promise<Credential[]> | undefined;
   private grants = new Map<string, Promise<{ base_url: string; token: string }>>();
+  private localVaultSummary(provider: VaultProvider, origin: string) {
+    const service = provider === 'millionseek' ? MILLIONSEEK_SERVICE : provider;
+    const registry = this.options.registry?.();
+    const store = squireStore(service, registry) ?? squireStore(provider, registry);
+    const label = store?.label ?? (GRUNT_FREE_LABELED_PROVIDERS.has(provider) ? 'Grunt Free' : 'grunt');
+    const primaryHost = new URL(origin).hostname;
+    const extraHosts = providerAllowedRequestOrigins(provider).map(item => new URL(item).hostname);
+    return {
+      service,
+      label,
+      reference: localVaultReference(provider),
+      allowed_hosts: [...new Set([primaryHost, ...extraHosts])],
+      field_names: ['api_key'],
+      auth_strategy: 'api_key'
+    };
+  }
+  private hasOpenEmbeddedSession(sessionId: string): boolean {
+    const tracked = this.embeddedSessions.get(sessionId);
+    return tracked !== undefined && !tracked.handle.closed;
+  }
+  private createEmbeddedClient(): InProcessSignupClient {
+    return {
+      listTools: async () => ({ tools: EMBEDDED_SIGNUP_TOOLS }),
+      close: async () => {
+        const active = [...this.embeddedSessions.values()];
+        this.embeddedSessions.clear();
+        this.capturedInMemory.clear();
+        await Promise.allSettled(active.map(entry => entry.handle.close()));
+      },
+      callTool: async ({ name, arguments: rawArgs }, _schema, options) => {
+        const args = rawArgs ?? {};
+        options?.signal?.throwIfAborted();
+        if (name === 'list_credentials') {
+          const entries = await listVaultEntries(this.directory).catch(() => []);
+          const summaries = entries.map(entry => this.localVaultSummary(entry.provider, entry.origin));
+          for (const extra of this.capturedInMemory.values()) {
+            summaries.push({
+              service: extra.provider,
+              label: extra.label,
+              reference: localVaultReference(extra.provider),
+              allowed_hosts: [...extra.allowed_hosts],
+              field_names: ['api_key'],
+              auth_strategy: 'api_key'
+            });
+          }
+          const filter = typeof args.service === 'string'
+            ? [args.service.trim().toLowerCase()]
+            : Array.isArray(args.service)
+              ? args.service.filter((item): item is string => typeof item === 'string').map(item => item.trim().toLowerCase())
+              : undefined;
+          const credentials = filter
+            ? summaries.filter(item => filter.includes(item.service.toLowerCase()))
+            : summaries;
+          return { content: [], structuredContent: { credentials } };
+        }
+        if (name === 'grant_app_access') {
+          const reference = typeof args.reference === 'string' ? args.reference : '';
+          const providerId = parseLocalVaultReference(reference);
+          if (!providerId) {
+            throw new Error('No local Grunt vault credential matches the requested reference');
+          }
+          if (isVaultProvider(providerId)) {
+            const vaulted = await readVaultGrant(providerId, this.directory);
+            if (!vaulted) throw new Error(`No stored local Grunt vault key for ${providerId}`);
+            return { content: [], structuredContent: { base_url: vaulted.base_url, token: vaulted.token } };
+          }
+          const inMemory = this.capturedInMemory.get(providerId);
+          if (!inMemory) throw new Error(`No captured credential available for ${providerId}`);
+          return { content: [], structuredContent: { base_url: inMemory.base_url, token: inMemory.token } };
+        }
+        if (name === 'operate_drive') {
+          const existingId = typeof args.session_id === 'string' && args.session_id.trim() ? args.session_id.trim() : undefined;
+          const tracked = existingId ? this.embeddedSessions.get(existingId) : undefined;
+          if (existingId && (!tracked || tracked.handle.closed)) {
+            if (tracked) this.embeddedSessions.delete(existingId);
+            throw new Error(`Embedded signup session ${existingId} is closed or unavailable`);
+          }
+          const storeObj = object(args.store);
+          const provider = this.callProviders.get(args)
+            ?? (typeof args.service === 'string' ? args.service : undefined)
+            ?? (typeof storeObj.service === 'string' ? storeObj.service : undefined)
+            ?? tracked?.provider
+            ?? 'unknown';
+          const url = (typeof args.url === 'string' && args.url)
+            || tracked?.url
+            || PROVIDERS[provider]
+            || registryEntry(this.options.registry?.() ?? bundledRegistry, provider, undefined)?.signup;
+          if (!url) throw new Error(`No signup URL configured for ${provider}`);
+          const goal = typeof args.goal === 'string' && args.goal.trim()
+            ? args.goal
+            : tracked?.goal ?? `Sign up for ${provider} free access and capture an API key.`;
+          const rawFacts = object(args.facts);
+          const facts = Object.fromEntries(
+            Object.entries(rawFacts).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+          );
+          const answer = typeof args.answer === 'string' && args.answer.trim() ? args.answer.trim() : undefined;
+          const sessionId = existingId ?? `embedded:${provider}:${randomUUID()}`;
+          let handle: ManagedEmbeddedSignupSession;
+          if (tracked) {
+            handle = tracked.handle;
+          } else {
+            let releaseSlot: (() => void) | undefined;
+            const releaseSessionSlot = () => {
+              this.embeddedSessions.delete(sessionId);
+              const release = releaseSlot;
+              releaseSlot = undefined;
+              release?.();
+            };
+            const sessionSignal = provider !== 'unknown' ? this.serviceSignal(provider) : this.signal;
+            handle = await openEmbeddedSignupSession(
+              {
+                provider,
+                url,
+                ...(Object.keys(facts).length ? { facts } : {}),
+                directory: this.directory,
+                ...(this.signupSession ? { session: this.signupSession } : {}),
+                registry: this.options.registry?.() ?? bundledRegistry,
+                signal: sessionSignal,
+                storeInMemory: grant => {
+                  this.capturedInMemory.set(grant.provider, grant);
+                  this.metadata = undefined;
+                },
+                onCaptured: () => {
+                  this.metadata = undefined;
+                },
+                onClose: releaseSessionSlot
+              },
+              this.options.embeddedRuntime
+            );
+            if (handle.closed) {
+              throw new Error('Provider signup cancelled');
+            }
+            // Keep the browser slot bound to this live embedded session for as
+            // long as it holds the Chrome profile lease so paused signups never
+            // deadlock behind queued signups waiting on that same lease.
+            releaseSlot = this.callSlotReleases.get(args)?.();
+            this.embeddedSessions.set(sessionId, { provider, url, goal, handle });
+          }
+          try {
+            const { driveResult } = await handle.drive({
+              ...(!tracked ? { url } : {}),
+              goal,
+              ...(Object.keys(facts).length ? { facts } : {}),
+              ...(answer !== undefined ? { answer } : {}),
+              ...(typeof args.max_steps === 'number' ? { maxSteps: args.max_steps } : {}),
+              ...(typeof args.max_seconds === 'number' ? { maxSeconds: args.max_seconds } : {}),
+              ...(options?.signal ? { signal: options.signal } : {})
+            });
+            if (handle.closed) {
+              this.embeddedSessions.delete(sessionId);
+              await handle.close();
+            }
+            return { content: [], structuredContent: { ...driveResult, session_id: sessionId } };
+          } catch (error) {
+            if (!tracked || handle.closed) {
+              this.embeddedSessions.delete(sessionId);
+              await handle.close().catch(() => undefined);
+            }
+            throw error;
+          }
+        }
+        if (name === 'operate_click') {
+          const sessionId = typeof args.session_id === 'string' ? args.session_id : '';
+          const ref = typeof args.ref === 'string' ? args.ref.trim() : '';
+          const tracked = this.embeddedSessions.get(sessionId);
+          if (!tracked || tracked.handle.closed) {
+            throw new Error(`Embedded signup session ${sessionId || '(missing)'} is closed or unavailable`);
+          }
+          if (!ref) throw new Error('operate_click requires a non-empty ref');
+          const observation = await tracked.handle.click(ref);
+          return { content: [], structuredContent: { session_id: sessionId, observation } };
+        }
+        if (name === 'operate_observe') {
+          const sessionId = typeof args.session_id === 'string' ? args.session_id : '';
+          const tracked = this.embeddedSessions.get(sessionId);
+          if (!tracked || tracked.handle.closed) {
+            throw new Error(`Embedded signup session ${sessionId || '(missing)'} is closed or unavailable`);
+          }
+          const observation = await tracked.handle.observe(args.format === 'full' ? 'full' : 'compact');
+          return { content: [], structuredContent: { session_id: sessionId, observation } };
+        }
+        if (name === 'operate_finish') {
+          if (typeof args.session_id === 'string') {
+            const tracked = this.embeddedSessions.get(args.session_id);
+            this.embeddedSessions.delete(args.session_id);
+            if (tracked) await tracked.handle.close();
+          }
+          return { content: [], structuredContent: { ok: true } };
+        }
+        if (name === 'fetch_credential' || name === 'use_credential') {
+          return {
+            content: [],
+            structuredContent: {
+              status: 'refused',
+              reason: 'Embedded signup stores captured keys directly in Grunt local vault; Squire cloud vault export is not used.'
+            }
+          };
+        }
+        throw new Error(`Unsupported embedded signup operation: ${name}`);
+      }
+    };
+  }
   private serviceSignal(provider: string) {
     let controller = this.services.get(provider);
     if (!controller) { controller = new AbortController(); this.services.set(provider, controller); }
@@ -391,16 +669,21 @@ export class BrowserSquire implements SetupSquire {
   }
   private async serviceCall(provider: string, name: string, args: ObjectValue) {
     this.serviceSignal(provider).throwIfAborted();
-    // Cancelling MCP before a first response discards its new session ID.
+    // Cancelling an operation before a first response discards its new session ID.
     // Let that one bounded create/drive finish, then close any late session.
     // Known-session calls can be aborted immediately and cleaned up by ID.
     const initial = name === 'operate_drive' && !args.session_id;
     this.callSignals.set(args, initial ? this.initialDriveSignal : this.serviceSignal(provider));
-    // Waiting work must remain cancellable even when its eventual first RPC
+    // Waiting work must remain cancellable even when its eventual first call
     // needs to retain a late response containing the owned browser session ID.
     this.queueSignals.set(args, this.serviceSignal(provider));
+    this.callProviders.set(args, provider);
     try { return await this.call(name, args); }
-    finally { this.callSignals.delete(args); this.queueSignals.delete(args); }
+    finally {
+      this.callSignals.delete(args);
+      this.queueSignals.delete(args);
+      this.callProviders.delete(args);
+    }
   }
   private async browserSlot(signal: AbortSignal, provider?: string): Promise<() => void> {
     signal.throwIfAborted();
@@ -446,50 +729,50 @@ export class BrowserSquire implements SetupSquire {
     return this.connection ??= this.connectOnce().catch(error => { this.connection = undefined; throw error; });
   }
   private async connectOnce() {
-    const bin = await squireClientPath(configRoot());
-    const env = squireEnvironment();
-    // Squire owns its account binding and vault. grunt never reads its files.
-    const transport = new StdioClientTransport({ command: process.execPath, args: [bin, 'server'], stderr: 'pipe', env });
-    let lastLine = '', partialLine = '';
-    const stderr = transport.stderr instanceof Readable ? transport.stderr : null;
-    stderr?.setEncoding('utf8');
-    const capture = (chunk: string) => {
-      const lines = (partialLine + chunk).split(/\r\n|[\r\n]/);
-      partialLine = lines.pop()!.slice(0, 8192);
-      for (const line of lines) if (line.trim()) lastLine = line.slice(0, 8192);
-    };
-    stderr?.on('data', capture);
     try {
-      await this.client.connect(transport);
-      const result = await this.call('list_credentials', { fields: 'summary' }, true);
-      if (!Array.isArray(result.credentials)) throw new Error('Squire did not return vault metadata');
-      this.metadata = Promise.resolve(result.credentials as Credential[]);
+      const connected = await ensureEmbeddedSignupSession(
+        {
+          directory: this.directory,
+          signal: this.signal,
+          noHuman: gruntEnv('SETUP_NO_HUMAN') === '1',
+          ...(this.options.background !== undefined ? { background: this.options.background } : {}),
+          ...(this.options.onSignInOpen ? { onSignInOpen: this.options.onSignInOpen } : {})
+        },
+        this.options.embeddedRuntime
+      );
+      this.signupSession = connected.session;
+      this.connectionState = connected.state;
+      this.metadata = undefined;
     } catch (error) {
-      await this.client.close().catch(() => {});
-      const stderrReason = partialLine.trim() || lastLine;
-      const mcpReason = error instanceof Error ? error.message : '';
-      // Prefer a broker error over a startup banner; use stderr for a bare exit.
-      const closed = error instanceof McpError && error.code === ErrorCode.ConnectionClosed
-        && mcpReason === `MCP error ${ErrorCode.ConnectionClosed}: Connection closed`;
-      const reason = connectionReason(closed ? stderrReason || mcpReason : mcpReason || stderrReason);
-      const instruction = 'Connect Trusty Squire separately, then rerun usegrunt setup';
+      if (isSignupConfigError(error) || this.signal.aborted) throw error;
+      const raw = error instanceof Error ? error.message : String(error);
+      if (/needs human verification/i.test(raw)) throw error;
+      const reason = connectionReason(redactVaultSecrets(raw));
+      const instruction = 'Could not connect Grunt embedded signup session; rerun usegrunt setup';
       throw new Error((reason ? `${instruction}: ${reason}` : instruction).slice(0, 300));
-    } finally {
-      stderr?.off('data', capture);
-      // Keep consuming stderr without retaining diagnostics after connecting.
-      stderr?.resume();
     }
   }
   async call(name: string, args: ObjectValue, connectionCheck = false): Promise<ObjectValue> {
-    const provider = typeof args.service === 'string' ? args.service
-      : [...this.sessions].find(([, id]) => id === args.session_id)?.[0];
+    const provider = this.callProviders.get(args)
+      ?? (typeof args.service === 'string' ? args.service : [...this.sessions].find(([, id]) => id === args.session_id)?.[0]);
     const queueSignal = this.queueSignals.get(args) ?? (provider ? this.serviceSignal(provider) : this.signal);
-    const release = name === 'operate_drive' || name === 'operate_start' ? await this.browserSlot(queueSignal, provider) : undefined;
+    const sessionId = typeof args.session_id === 'string' && args.session_id.trim() ? args.session_id.trim() : undefined;
+    const resumingOpenSession = name === 'operate_drive' && sessionId !== undefined && this.hasOpenEmbeddedSession(sessionId);
+    let release = (name === 'operate_drive' || name === 'operate_start') && !resumingOpenSession
+      ? await this.browserSlot(queueSignal, provider)
+      : undefined;
+    if (release) {
+      this.callSlotReleases.set(args, () => {
+        const owned = release;
+        release = undefined;
+        return owned;
+      });
+    }
     try {
       // A slot can be granted just before cancellation. Recheck before dispatch.
-      if (release) queueSignal.throwIfAborted();
+      if (release || resumingOpenSession) queueSignal.throwIfAborted();
       const result = await this.client.callTool({ name, arguments: args }, undefined, { timeout: name === 'operate_finish' ? 10000 : 60000, ...(name === 'operate_finish' ? {} : { signal: this.callSignals.get(args) ?? queueSignal }) }).catch(error => {
-        if (connectionCheck) throw error;
+        if (connectionCheck || isSignupConfigError(error)) throw error;
         throw new Error(`Squire ${name} is unavailable; resume setup after reconnecting Squire`);
       });
       if (result.isError) {
@@ -502,7 +785,10 @@ export class BrowserSquire implements SetupSquire {
         if (part.type === 'text' && part.text) { try { return object(JSON.parse(part.text)); } catch { /* Do not echo upstream output. */ } }
       }
       throw new Error(`Squire ${name} returned an unsupported result`);
-    } finally { release?.(); }
+    } finally {
+      this.callSlotReleases.delete(args);
+      release?.();
+    }
   }
   credentials = {
     list: async (): Promise<Credential[]> => {
@@ -767,6 +1053,17 @@ export class BrowserSquire implements SetupSquire {
       // Recovery requires an observed key-name field, even when a fact is offered.
       const keyName = this.signupFacts.get(provider)?.key_name;
       const observed = object(result.observation);
+      const pageUrl = observed.url ?? result.url;
+      if (keyName && result.status === 'needs_value' && typeof result.field === 'string' && keyNameField(result.field, pageUrl)) {
+        const fieldName = result.field.trim();
+        if (!usedTerms.has(`field:${fieldName}`)) {
+          usedTerms.add(`field:${fieldName}`);
+          facts[fieldName] = keyName;
+          this.signupFacts.set(provider, { ...this.signupFacts.get(provider), [fieldName]: keyName });
+          answer = Object.hasOwn(object(result.options), 'key_name') ? 'key_name' : keyName;
+          continue;
+        }
+      }
       const fieldLabel = (row: unknown[]) => String(row[2]).split('|')[0]!.replace(/^@/, '').trim();
       const nameRow = keyName && result.status === 'low_confidence' && Array.isArray(observed.safe_table)
         ? observed.safe_table.find((row): row is unknown[] => Array.isArray(row) && row[1] === 't'
@@ -785,6 +1082,27 @@ export class BrowserSquire implements SetupSquire {
         this.signupFacts.set(provider, { ...this.signupFacts.get(provider), [fieldLabel(nameRow)]: keyName });
         answer = nameTarget[0];
         continue;
+      }
+      if (keyName && result.status === 'low_confidence' && !Array.isArray(observed.safe_table)) {
+        if (typeof result.field === 'string' && keyNameField(result.field, pageUrl)
+          && Object.hasOwn(object(result.options), 'key_name') && !usedTerms.has('fact:key_name')) {
+          const fieldName = result.field.trim();
+          usedTerms.add('fact:key_name');
+          facts[fieldName] = keyName;
+          this.signupFacts.set(provider, { ...this.signupFacts.get(provider), [fieldName]: keyName });
+          answer = 'key_name';
+          continue;
+        }
+        const embeddedNameTarget = Object.entries(object(result.options)).find(([, label]) => typeof label === 'string'
+          && keyNameField(label, pageUrl) && !usedTerms.has(`field:${label.trim()}`));
+        if (embeddedNameTarget) {
+          const fieldName = String(embeddedNameTarget[1]).trim();
+          usedTerms.add(`field:${fieldName}`);
+          facts[fieldName] = keyName;
+          this.signupFacts.set(provider, { ...this.signupFacts.get(provider), [fieldName]: keyName });
+          answer = embeddedNameTarget[0];
+          continue;
+        }
       }
       // Background signups use the router's driver too; it cannot hand off to a person.
       if (this.options.agent && url) {
@@ -1004,7 +1322,7 @@ export async function setup(notify = console.log, providers: string[] = [], opti
     ...await readDataSharingConsent(location, allPolicies.map(policy => policy.provider), extraPolicies)])];
   const unapproved = dataSharingPolicies(providers, extraPolicies).filter(policy => !approved.includes(policy.provider));
   if (unapproved.length) throw new Error(`${unapproved.map(policy => policy.name).join(', ')} data sharing requires the grouped setup approval`);
-  const owned = options.squire ? undefined : new BrowserSquire({ ...(options.signal ? { signal: options.signal } : {}), background: options.background, dataSharingApproved: approved, ...(options.registry ? { registry: options.registry } : {}) });
+  const owned = options.squire ? undefined : new BrowserSquire({ directory: location, ...(options.signal ? { signal: options.signal } : {}), background: options.background, dataSharingApproved: approved, ...(options.registry ? { registry: options.registry } : {}) });
   if (options.squire instanceof BrowserSquire) {
     options.squire.approveDataSharing(approved);
     if (options.registry) options.squire.useRegistry(options.registry);
@@ -1226,7 +1544,12 @@ export async function setup(notify = console.log, providers: string[] = [], opti
           hasKey: async provider => provider === 'tokenharbor' && await source.available(),
           addGrant: async (provider, grant) => {
             if (provider !== 'tokenharbor') throw new Error('Unexpected Token Harbor credential');
-            await writeTokenHarborGrant(grant, location);
+            const vaulted = await readVaultGrant('tokenharbor', location).catch(() => undefined);
+            if (vaulted && vaulted.base_url === grant.base_url && vaulted.token === grant.token) {
+              await rm(join(location, 'tokenharbor.json'), { force: true });
+            } else {
+              await writeTokenHarborGrant(grant, location);
+            }
             await probeGrant(source, location, options.signal);
           }
         }, { providers: ['tokenharbor'], notify, signal: options.signal, directory: location, ...(options.background !== undefined ? { background: options.background } : {}) });
@@ -1242,7 +1565,12 @@ export async function setup(notify = console.log, providers: string[] = [], opti
           hasKey: async provider => provider === 'nvidia' && await source.available(),
           addGrant: async (provider, grant) => {
             if (provider !== 'nvidia') throw new Error('Unexpected NVIDIA credential');
-            await writeNvidiaGrant(grant, location);
+            const vaulted = await readVaultGrant('nvidia', location).catch(() => undefined);
+            if (vaulted && vaulted.base_url === grant.base_url && vaulted.token === grant.token) {
+              await rm(join(location, 'nvidia.json'), { force: true });
+            } else {
+              await writeNvidiaGrant(grant, location);
+            }
           }
         }, { providers: ['nvidia'], notify, directory: location, ...(options.background !== undefined ? { background: options.background } : {}) });
         if (result.dropped.length) throw new Error('NVIDIA setup incomplete; rerun usegrunt setup');

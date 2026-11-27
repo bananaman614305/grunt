@@ -28,7 +28,7 @@
     "@hono/node-server": "^1.19.17",
     "@libsql/client": "^0.18.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
-    "@trusty-squire/mcp": "1.1.39",
+    "@trusty-squire/mcp": "1.2.0-rc1",
     "ajv": "^8.20.0",
     "chalk": "^6.0.1",
     "hono": "^4.13.8",

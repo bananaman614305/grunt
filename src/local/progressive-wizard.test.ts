@@ -1,4 +1,5 @@
-import { mkdtemp, mkdir, chmod, rm, readFile, writeFile, stat, symlink } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
+import { mkdtemp, mkdir, chmod, rm, readFile, writeFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -235,7 +236,7 @@ it('does not announce readiness after losing its setup ownership during an exact
   expect(fakeSession.close).toHaveBeenCalledOnce();
 });
 
-it('does not run a Squire installer after an aborted connection probe', async () => {
+it('stops embedded signup connection immediately when the setup signal aborts', async () => {
   const { connectSquire } = await import('./wizard.js');
   const { BrowserSquire } = await import('./setup.js');
   const controller = new AbortController();
@@ -244,61 +245,61 @@ it('does not run a Squire installer after an aborted connection probe', async ()
     throw new Error('connection closed');
   });
   vi.spyOn(BrowserSquire.prototype, 'close').mockResolvedValue();
-  const run = vi.fn(async () => {}), hasBroker = vi.fn(async () => false);
-  await expect(connectSquire({ signal: controller.signal, run, hasBroker })).rejects.toThrow('cancel bootstrap');
-  expect(run).not.toHaveBeenCalled();
-  expect(hasBroker).not.toHaveBeenCalled();
+  await expect(connectSquire({ signal: controller.signal })).rejects.toThrow('connection closed');
 });
 
-it('isolates the Squire bootstrap child configuration from concurrent OpenCode setup and inherited provider grants', async () => {
+it('isolates embedded signup paths from concurrent OpenCode setup and inherited provider grants', async () => {
   const { connectSquire } = await import('./wizard.js');
-  const { BrowserSquire } = await import('./setup.js');
   const { configureOpenCode } = await import('./harnesses.js');
   vi.stubEnv('XDG_CONFIG_HOME', join(directory, 'xdg'));
   const provider = join(directory, 'opencode-free.json');
   const providerText = JSON.stringify({ provider: { opencode: { options: { apiKey: 'synthetic-provider-grant' } } } });
   await writeFile(provider, providerText, { mode: 0o600 });
   vi.stubEnv('OPENCODE_CONFIG', provider);
-  vi.spyOn(BrowserSquire.prototype, 'connect').mockRejectedValueOnce(new Error('missing broker')).mockResolvedValue();
-  vi.spyOn(BrowserSquire.prototype, 'close').mockResolvedValue();
   const entered = deferred(), resume = deferred();
-  let selected: string | undefined;
-  const run = vi.fn(async (_binary: string, _args: string[], _interactive?: boolean, _signal?: AbortSignal, env?: NodeJS.ProcessEnv) => {
-    selected = env?.OPENCODE_CONFIG;
-    expect(selected).toBe(join(directory, 'squire-opencode.json'));
-    expect((await stat(selected!)).mode & 0o777).toBe(0o600);
+  let seenProfileDir: string | undefined;
+  let seenSessionPath: string | undefined;
+  const ensureSession = vi.fn(async (options: { profileDir?: string; sessionPath?: string }) => {
+    seenProfileDir = options.profileDir;
+    seenSessionPath = options.sessionPath;
     entered.resolve();
     await resume.promise;
-    // Controlled official-installer analogue: merge only its selected client file.
-    const contents = JSON.parse(await readFile(selected!, 'utf8'));
-    contents.mcp = { squire: { command: ['synthetic-squire'] } };
-    await writeFile(selected!, JSON.stringify(contents), { mode: 0o600 });
+    return {
+      status: 'connected' as const,
+      session: {
+        apiBaseUrl: 'https://trusty-squire-api.fly.dev',
+        accountId: 'acct_isolated',
+        agentSessionToken: 'tok_isolated',
+        machineToken: 'mach_isolated',
+        savedAt: new Date().toISOString()
+      },
+      providers: ['google' as const],
+      browserLocation: { kind: 'host_screen' as const }
+    };
   });
-  const connecting = connectSquire({ hasBroker: async () => false, run, installer: '/synthetic/installer.js' });
+  const connecting = connectSquire({ directory, embeddedRuntime: { ensureSession } });
   await entered.promise;
   try { await configureOpenCode(19878); }
   finally { resume.resolve(); await connecting; }
+  const canonicalDir = realpathSync(directory);
+  expect(seenProfileDir).toBe(join(canonicalDir, 'browser-profile'));
+  expect(seenSessionPath).toBe(join(canonicalDir, 'signup-session.json'));
   expect(process.env.OPENCODE_CONFIG).toBe(provider);
   expect(await readFile(provider, 'utf8')).toBe(providerText);
   const global = JSON.parse(await readFile(join(directory, 'xdg/opencode/opencode.json'), 'utf8'));
   expect(global.provider.grunt).toBeDefined();
   expect(global.mcp).toBeUndefined();
-  expect(JSON.parse(await readFile(selected!, 'utf8')).mcp.squire).toBeDefined();
-  expect(run).toHaveBeenCalledOnce();
+  expect(ensureSession).toHaveBeenCalledOnce();
 });
 
-it('refuses a symlinked private Squire bootstrap client file before launching the installer', async () => {
+it('refuses a symlinked browser profile pointing at Trusty Squire personal profile before starting sign-in', async () => {
+  const { homedir } = await import('node:os');
   const { connectSquire } = await import('./wizard.js');
-  const { BrowserSquire } = await import('./setup.js');
-  vi.spyOn(BrowserSquire.prototype, 'connect').mockRejectedValue(new Error('missing broker'));
-  vi.spyOn(BrowserSquire.prototype, 'close').mockResolvedValue();
-  const protectedFile = join(directory, 'protected-user-config.json');
-  await writeFile(protectedFile, '{"preserved":true}', { mode: 0o600 });
-  await symlink(protectedFile, join(directory, 'squire-opencode.json'));
-  const run = vi.fn(async () => {});
-  await expect(connectSquire({ hasBroker: async () => false, run, installer: '/synthetic/installer.js' })).rejects.toThrow();
-  expect(run).not.toHaveBeenCalled();
-  expect(await readFile(protectedFile, 'utf8')).toBe('{"preserved":true}');
+  const { SignupProfileIsolationError } = await import('@trusty-squire/mcp/signup');
+  await symlink(join(homedir(), '.trusty-squire', 'chrome-profile'), join(directory, 'browser-profile'));
+  const ensureSession = vi.fn();
+  await expect(connectSquire({ directory, embeddedRuntime: { ensureSession } })).rejects.toBeInstanceOf(SignupProfileIsolationError);
+  expect(ensureSession).not.toHaveBeenCalled();
 });
 
 it.each([true, false])('finishes at anonymous Kilo once grunt answers, leaving signups to the background (harness available: %s)', async available => {

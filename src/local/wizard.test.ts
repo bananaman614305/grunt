@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs';
 import { chmod, mkdtemp, readFile, rm, symlink, writeFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -67,21 +68,41 @@ it('configures Pi in a group-writable agent directory and names the cause when i
   finally { await chmod(dir, 0o775); }
 });
 
-it('reuses working Squire without a session check or installer', async () => {
-  vi.spyOn(BrowserSquire.prototype, 'connect').mockResolvedValue();
-  vi.spyOn(BrowserSquire.prototype, 'close').mockResolvedValue();
+it('reuses an already-connected embedded signup session without starting a browser ceremony', async () => {
   vi.stubEnv('GRUNT_SETUP_NO_HUMAN', '1');
-  const run = vi.fn(async () => {}), hasBroker = vi.fn(async () => true);
-  await connectSquire({ hasBroker, run });
-  expect(run).not.toHaveBeenCalled();
-  expect(hasBroker).not.toHaveBeenCalled();
+  const canonicalDir = realpathSync(consentDir);
+  const ensureSession = vi.fn(async options => {
+    expect(options.profileDir).toBe(join(canonicalDir, 'browser-profile'));
+    expect(options.sessionPath).toBe(join(canonicalDir, 'signup-session.json'));
+    return {
+      status: 'already_connected' as const,
+      session: {
+        apiBaseUrl: 'https://trusty-squire-api.fly.dev',
+        accountId: 'acct_existing',
+        agentSessionToken: 'tok_existing',
+        machineToken: 'mach_existing',
+        savedAt: new Date().toISOString()
+      },
+      providers: ['google' as const],
+      browserLocation: { kind: 'none' as const }
+    };
+  });
+  const readSession = vi.fn(async () => ({
+    apiBaseUrl: 'https://trusty-squire-api.fly.dev',
+    accountId: 'acct_existing',
+    agentSessionToken: 'tok_existing',
+    machineToken: 'mach_existing',
+    savedAt: new Date().toISOString()
+  }));
+  const state = await connectSquire({ directory: consentDir, embeddedRuntime: { ensureSession, readSession } });
+  expect(state).toBe('existing');
+  expect(ensureSession).toHaveBeenCalledOnce();
 });
-it('refuses to reinstall an existing broker when its probe fails', async () => {
-  vi.spyOn(BrowserSquire.prototype, 'connect').mockRejectedValue(new Error('socket refused'));
-  vi.spyOn(BrowserSquire.prototype, 'close').mockResolvedValue();
-  const run = vi.fn(async () => {});
-  await expect(connectSquire({ hasBroker: async () => true, run })).rejects.toThrow('Existing trusty-squire-broker failed its connection probe: socket refused');
-  expect(run).not.toHaveBeenCalled();
+it('stops before interactive embedded sign-in when GRUNT_SETUP_NO_HUMAN=1 and no session exists', async () => {
+  vi.stubEnv('GRUNT_SETUP_NO_HUMAN', '1');
+  const ensureSession = vi.fn();
+  await expect(connectSquire({ directory: consentDir, embeddedRuntime: { ensureSession } })).rejects.toThrow('needs human verification');
+  expect(ensureSession).not.toHaveBeenCalled();
 });
 it('checks the user service manager without looking for npm or tar', async () => {
   const run = vi.fn(async (_binary: string) => { throw new Error('missing'); });
@@ -93,12 +114,38 @@ it('allows service onboarding before a coding harness such as Pi is installed', 
   await expect(preflight(run)).resolves.toBeUndefined();
   expect(run.mock.calls.map(([binary]) => binary)).not.toContain('pi');
 });
-it('installs once only when the probe fails and no broker exists', async () => {
-  const connect = vi.spyOn(BrowserSquire.prototype, 'connect').mockRejectedValueOnce(new Error('broker missing')).mockResolvedValue();
-  vi.spyOn(BrowserSquire.prototype, 'close').mockResolvedValue();
-  const run = vi.fn(async () => {});
-  await connectSquire({ hasBroker: async () => false, run, installer: '/fixture/bin.js' });
-  expect(run).toHaveBeenCalledOnce(); expect(connect).toHaveBeenCalledTimes(2);
+it('runs embedded Google sign-in in-process using Grunt isolated paths when not yet connected', async () => {
+  const seenOpen: unknown[] = [];
+  const canonicalDir = realpathSync(consentDir);
+  const ensureSession = vi.fn(async options => {
+    expect(options.profileDir).toBe(join(canonicalDir, 'browser-profile'));
+    expect(options.sessionPath).toBe(join(canonicalDir, 'signup-session.json'));
+    await options.onSignInOpen?.({
+      confirmUrl: 'https://trusty-squire.example/confirm',
+      setupCode: 'ABCD-1234',
+      browserLocation: { kind: 'host_screen' }
+    });
+    return {
+      status: 'connected' as const,
+      session: {
+        apiBaseUrl: 'https://trusty-squire-api.fly.dev',
+        accountId: 'acct_new',
+        agentSessionToken: 'tok_new',
+        machineToken: 'mach_new',
+        savedAt: new Date().toISOString()
+      },
+      providers: ['google' as const],
+      browserLocation: { kind: 'host_screen' as const }
+    };
+  });
+  const state = await connectSquire({
+    directory: consentDir,
+    onSignInOpen: info => { seenOpen.push(info); },
+    embeddedRuntime: { ensureSession }
+  });
+  expect(state).toBe('installed');
+  expect(ensureSession).toHaveBeenCalledOnce();
+  expect(seenOpen).toHaveLength(1);
 });
 
 it.each(['freebuff', 'apinex'])('skips retired %s installation and signup while continuing OpenCode', async retired => {
