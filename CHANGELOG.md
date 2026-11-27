@@ -457,7 +457,7 @@
 - Allow honestly disclosed ordinary retention, training and review in provider scouting under the operator's standing approval. Unknown zero-retention guarantees no longer block integration; end-user source-specific grouped consent remains required.
 - Make Grunt the current project, repository, configuration and interface name, with explicit compatibility for existing installations. Restore public-only GitHub Actions CI on standard Ubuntu runners. See the [compatibility guide](docs/reference.md#compatibility-with-existing-installations).
 
-- Run the operator's twice-daily provider scout with guarded Squire signup, isolated checks and live routing probes, two independent reviews, and resumable PR merge/npm publication. Qualified providers reach new installations only after the published package and its default registry are verified. See the [operator guide](ops/provider-scout/README.md).
+- Run the operator's twice-daily provider scout with guarded Squire signup, isolated checks and live routing probes, two independent reviews, and resumable PR merge/npm publication. Qualified providers reach new installations only after the published package and its default registry are verified.
 - Recover sources automatically: when no source can answer a request, the daemon adds vetted providers in the background (saved Squire access first, then signup) for providers whose data-sharing approval is already recorded. One run at a time; the next request finds the new source.
 
 ### Fixed
