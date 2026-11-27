@@ -26,6 +26,8 @@ import { bootoutService, installedConfigRoot, launchAgent, legacyService, migrat
 import { SetupTable } from './setup-table.js';
 import { setupFailureReason, signupOperatorUnavailable } from './setup-failure.js';
 import { fetchStatus } from './dashboard.js';
+import { postHogKey, sendSetupCompleted } from './telemetry.js';
+import { installedRuntimeVersion } from './runtime-version.js';
 import { select, isCancel } from '@clack/prompts';
 import { serviceEnvironment } from './service-environment.js';
 import { registerWindowsService, removeWindowsService, startWindowsService, stopWindowsService, taskScheduler, windowsService, writeWindowsLauncher } from './windows-service.js';
@@ -553,6 +555,9 @@ export async function connectHarnesses(port: number, options: HarnessOptions = {
 }
 const wizardActions = { smokeTest, resumeBackground, probeOperator: probeSetupOperator, chooseHarness: chooseSetupHarness, connectHarness, signupHarness, listFreeModels, installedSources, createSquire: () => new BrowserSquire({ directory: configDir(), onSignInOpen: logEmbeddedSignInOpen }), banner, preflight, connectSquire, setup, setupFallbacks, installService, configurePi, checkService, checkFallbackServices, loadRegistry, checkServiceSources, connectHarnesses, prepareHarnesses, approveDataSharing };
 type Optional = 'probeOperator' | 'chooseHarness' | 'connectHarness' | 'signupHarness' | 'listFreeModels' | 'installedSources' | 'createSquire' | 'banner' | 'loadRegistry' | 'checkServiceSources' | 'connectHarnesses' | 'prepareHarnesses' | 'configurePi' | 'approveDataSharing';
+const SETUP_TELEMETRY_GRACE_MS = 1000;
+// Shown whenever the build reports usage; docs/router.md#4-usage-telemetry lists every field.
+export const TELEMETRY_NOTICE = '✓ usage telemetry: on, required to use Grunt (anonymous daily counts to PostHog US; no prompts, keys or paths)';
 export async function wizard(add?: string, actions: Omit<typeof wizardActions, Optional> & Partial<Pick<typeof wizardActions, Optional>> = wizardActions) {
   if (add === '') throw new Error('Specify a provider name');
   if (add && disabledAdapters.has(add)) throw new Error(`${add} routing is disabled`);
@@ -570,9 +575,13 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
   const connect = async () => { await connectState(); };
   // The setup table prints only the classified outcome for each provider.
   const notify = (_line: string) => {};
+  // setup_completed holds the CLI at most one second after setup ends, then is cancelled.
+  const telemetry = new AbortController();
+  let reported: Promise<unknown> = Promise.resolve();
   try {
     await actions.banner?.();
     await actions.preflight();
+    if (postHogKey()) console.log(TELEMETRY_NOTICE);
     const revised = !add && Boolean(actions.chooseHarness);
     if (revised) squire?.useBatchSignup();
     const harness = revised ? await actions.chooseHarness?.() : undefined;
@@ -859,6 +868,8 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     session.signal.throwIfAborted();
     if (!readyCount) throw new Error('No adapters passed verification. Run usegrunt setup to resume.');
     if (revised && !smoked) throw new Error('Grunt did not answer a request through model grunt. Run usegrunt status, then usegrunt setup to resume.');
+    const version = installedRuntimeVersion();
+    reported = sendSetupCompleted({ directory: installedConfigRoot(), sourcesConfigured: readyCount, signal: telemetry.signal, ...(version ? { version } : {}) });
     if (plan?.discoverLater && actions.connectHarnesses) firstReady = actions.connectHarnesses(port, { table });
     for (const connected of (await firstReady) ?? []) configured.set(connected.id, connected);
     if (harnessReady && harness) configured.set(harness.id, harness);
@@ -881,6 +892,8 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     for (const line of launchLines([...configured.values()], port)) console.log(line);
     console.log('Ready');
   } finally {
+    await Promise.race([reported, delay(SETUP_TELEMETRY_GRACE_MS, undefined, { ref: false })]);
+    telemetry.abort();
     table.finish();
     session?.signal.removeEventListener('abort', abortSetup);
     try { await closeSquire(); }

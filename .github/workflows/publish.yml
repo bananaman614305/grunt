@@ -56,6 +56,8 @@ jobs:
       - name: Check passive efficiency collection
         run: python3 -m unittest discover -s scripts -p test_passive_efficiency_collector.py
       - run: pnpm build
+        env:
+          POSTHOG_PROJECT_KEY: ${{ secrets.POSTHOG_PROJECT_KEY }}
       - run: npm pack --ignore-scripts
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

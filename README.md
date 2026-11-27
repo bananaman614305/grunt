@@ -59,13 +59,12 @@ Free sources are enabled by default, including services that may retain prompts,
 allow staff review, or use prompts for training. Provider disclosures remain in
 `src/local/data-sharing.ts` and the reference documentation.
 
-Grunt also shares [route health counts](docs/router.md#4-route-feedback) with
-the registry by default to improve routing. The daily fleet review uses hourly
-counts of user attempts, failures and slow successes by route and release.
-Set `GRUNT_FLEET_REPORTING=0` in the daemon environment to disable fleet uploads.
-To include your installation in the owner dashboard’s activity and weekly retention
-counts, set `GRUNT_ADOPTION_REPORTING=1` while fleet uploads are enabled.
-Prompts, responses, paths and command output stay out of these reports.
+Using Grunt requires anonymous [usage telemetry](docs/router.md#4-usage-telemetry).
+The daemon sends daily counts to US PostHog: a heartbeat with its version,
+OS, architecture and route counts, per-route success and failure totals, and
+one event when setup finishes. Each install is a hashed random id. Prompts,
+responses, keys, provider error text, model names, paths and hosts never leave
+your machine in telemetry. Setup says when telemetry is on; it cannot be turned off.
 
 `npx usegrunt add <provider-or-base-URL>` adds a provider. https://grunt.run.
 `grunt-local` is the local-daemon entry point. Older command names remain supported
