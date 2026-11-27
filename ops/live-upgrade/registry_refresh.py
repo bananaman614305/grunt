@@ -13,7 +13,7 @@ from pathlib import Path
 import hostpaths
 
 HERE = Path(__file__).resolve().parent
-REGISTRY_URLS = ('https://api.grunt.run/v1/registry', 'https://milo-gateway.fly.dev/v1/registry')   # same order as src/local/registry.ts
+REGISTRY_URLS = ('https://grunt.run/registry.json', 'https://raw.githubusercontent.com/bananaman614305/grunt/main/registry/adapters.json')   # same order as src/local/registry.ts
 SCRIPT = HERE / 'registry_refresh.mjs'
 
 

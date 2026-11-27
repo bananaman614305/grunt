@@ -271,7 +271,7 @@ class Preparation(Base):
 
         def opener(url, timeout=0):
             urls.append(url)
-            if 'api.grunt.run' in url:
+            if 'grunt.run' in url:
                 raise OSError('no such host')
             response = io.BytesIO(b'{"published": "x", "adapters": []}')
             response.headers = {'ETag': '"abc"'}
@@ -279,7 +279,7 @@ class Preparation(Base):
         raw, url, etag = at.fetch_public_registry(opener=opener)
         self.assertEqual(etag, '"abc"')
         self.assertEqual(urls, list(at.REGISTRY_URLS))
-        self.assertIn('milo-gateway', url)
+        self.assertIn('raw.githubusercontent.com', url)
         with self.assertRaises(at.AttemptError):
             at.fetch_public_registry(opener=lambda url, timeout=0: (_ for _ in ()).throw(OSError('down')))
 

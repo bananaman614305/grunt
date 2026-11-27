@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "published": "2026-11-23T01:15:00Z",
+  "published": "2026-11-27T21:58:00.000Z",
   "adapters": [
     {
       "id": "opencode",
@@ -128,7 +128,8 @@
       ],
       "install": "builtin:perch",
       "signup": "https://www.perchai.app",
-      "model": "deepseek-flash-starter"
+      "model": "deepseek-flash-starter",
+      "hints": "On chat.perchai.app (the sign-in page if you are signed out) press 'Continue with Google' and choose the Squire-connected Google account. On the Google 'Sign in to Perch AI' screen press 'Continue'. The account opens on chat.perchai.app already on Starter (free); the sidebar shows 'Starter' and the home text is 'Your first message or file starts your account on Starter (free).' There is no name field, terms checkbox, phone step or card. Leave the optional 'How'd you find Perch?' survey unused, or dismiss it with '×'. Dismiss any 'Unlimited DeepSeek' paid banner; never buy a pass.\n\nStarter includes the 'Starter Data Program' (deidentified training data, on by default). The home page says to opt out in Settings → Privacy. Press 'Open account settings', then 'Privacy', and turn the program off if a toggle is shown; if Privacy shows protected settings with no visible toggle, leave it as is.\n\nDo not open 'Billing'; never press 'Get Pro', 'Get Ultra', 'Get 30 days for $69.99', 'Pro pass', 'Ultra pass', 'ADD $5 · 5,000 PT' or 'ADD $20 · 20,000 PT'; never check the paid Terms checkbox. There is no API Keys page and no public API key. 'Terminal' shows only 'npm install -g perchai-cli' and 'Desktop download'; the home page also links 'get the Desktop app'. Auth is the Google or GitHub session, not a key. In the chat model picker leave 'Standard' selected; never pick 'Pro' (Upgrade) or a DeepSeek 'Pass'."
     },
     {
       "id": "nous",
@@ -140,7 +141,8 @@
       ],
       "install": "builtin:nous",
       "signup": "https://portal.nousresearch.com/login",
-      "model": "qwen/qwen4-max:free"
+      "model": "qwen/qwen4-max:free",
+      "hints": "On portal.nousresearch.com/login type the Squire email in 'Email' and press 'Continue with email'. There is no separate signup page and no password. On the next page type the 6-digit code into 'Enter the 6-digit code' (from no-reply@auth-mail.nousresearch.com, subject 'Sign up for Nous Research', valid 10 minutes). If it does not arrive, press 'Resend code (30s)' and read the inbox again. The page text says 'By logging in I agree to the Terms & Privacy Policy'; there is no terms checkbox, name, phone or onboarding. Do not use the optional 'Use your ChatGPT plan' banner. Never open API Keys or billing to create a paid key; never press a top-up or billing control, never add a card, and never buy credits."
     },
     {
       "id": "kenari",
@@ -268,6 +270,94 @@
       "signup": "https://freepi.ai",
       "model": "deepseek-v4.1-flash",
       "hints": "On github.com/login/device/select_account press 'Continue as' the account Squire uses for GitHub. On /login/device type the device code from this goal into the 'User code' boxes (one character each), press 'Continue', then 'Authorize'."
+    }
+  ],
+  "candidates": [
+    {
+      "id": "inferbase",
+      "signup": "https://inferbase.ai/register",
+      "hints": "On inferbase.ai/register type the Squire email in the email field; name and company may be left empty. Type a new password in the password field (at least 8 characters, with an uppercase letter, a lowercase letter and a digit) and again in the confirm field, then create the account. Do not add a card. After submit, read the inbox now for the verification email from hello@inferbase.ai (valid 24 hours) and confirm the address before calling the API. On first login, skip any onboarding that can be skipped. Open /api-keys, create one key named grunt; the key is shown once: copy it so it is stored, then finish. Stay on the Free plan. Never press Upgrade, Billing, add credit, or add a payment method.",
+      "name": "Inferbase",
+      "models": [
+        "auto"
+      ],
+      "docs": "https://inferbase.ai/pricing",
+      "notes": "Official Free plan: $0, no time limit, no card. 5,000 requests/month; managed models priced up to $2.00 per 1M output tokens; 100 managed requests and $0.50 of model usage a day. Email must be verified before inference. OpenAI-compatible at https://api.inferbase.ai/v1; model id is auto."
+    },
+    {
+      "id": "exaone",
+      "signup": "https://id.exaone.ai/signup",
+      "hints": "On id.exaone.ai/signup complete the Korean form: type the Squire email in the email field (it is checked for a duplicate), a new password twice (it must include a character from !@#$%^~+-_), and grunt in the nickname field (permanent; 25-character limit). In the country modal choose the account country. Check the required Terms of Service box and the required 19+ age box, then submit. A 6-digit code is emailed from exaone@lgresearch.ai and is valid for 30 minutes: type it into the code field (if it is rejected, type it more slowly) and confirm. Then sign in at id.exaone.ai/login: type the Squire email in '이메일 계정을 입력하세요' and the password in '비밀번호를 입력하세요', and submit. When the docs site asks for API Platform terms consent, accept the required consent (this is not a card or a paid plan). Open docs.exaone.ai/en/my-profile/api-key and create the key; it is shown once and expires in 30 days: copy it so it is stored, then finish. Never add a card or open billing.",
+      "name": "EXAONE API Platform (LG AI Research)",
+      "models": [
+        "k-exaone_v2.5"
+      ],
+      "docs": "https://docs.exaone.ai/en/docs/changelog",
+      "notes": "Official changelog 2026-11-09: the API is currently available free of charge. Rate limits apply. Optional higher daily limit if you consent to usage-data analysis; consent is not required. Keys expire after 30 days. Base URL https://api.exaone.ai; model k-exaone_v2.5."
+    },
+    {
+      "id": "kyrune",
+      "name": "Kyrune Roleplay API",
+      "signup": "https://kyrune.com/login",
+      "hints": "On /login press 'Create account' in the header so the page shows 'Create your Kyrune account'. Type the Squire email in 'Email' and a new password (at least 8 characters) in 'Password', then press 'Create account' (or use 'Continue with Google' with the Squire-connected Google account). Stay on the Free plan. Then open the API dashboard at /api/ (footer link 'API dashboard'), name a key grunt, create it and copy the key (it starts with kammii-) so it is stored, then finish. Base URL https://kyrune.com/api/v1, model kyrune-mini-1.0-free. Never press 'Start free' trials of paid plans, 'Upgrade', billing, or add a card; never revoke or rotate keys.",
+      "models": [
+        "kyrune-mini-1.0-free"
+      ],
+      "docs": "https://kyrune.com/docs",
+      "notes": "Free plan, no card: 100 requests/day on Kyrune Mini (28K context, resets 00:00 UTC), one reply at a time; 10/day on other models. Roleplay-focused model. OpenAI-style API at https://kyrune.com/api/v1."
+    },
+    {
+      "id": "inferall",
+      "name": "InferAll AI Gateway",
+      "signup": "https://inferall.ai/auth?next=/keys",
+      "hints": "On /auth ('Create your account') type the Squire email in 'Email' and press 'Continue with email', then finish the email sign-in from the Squire inbox (or press 'Continue with Google' with the Squire-connected Google account). The same form signs in an existing account. After sign-in you land on /keys: create an API key named grunt and copy it (it starts with ifu_) so it is stored, then finish. Use only the free open NIM models, e.g. nvidia/nemotron-3-ultra-550b-a55b, at https://api.inferall.ai/v1. Never buy the '$5 activation' or starter pack, never press Starter, Pro, upgrade or billing, never add a card, and never revoke or rotate keys.",
+      "models": [
+        "nvidia/nemotron-3-ultra-550b-a55b"
+      ],
+      "docs": "https://inferall.ai/docs",
+      "notes": "Free plan, no card: open NVIDIA NIM models at $0, 25 calls/day (resets 00:00 UTC). OpenAI-compatible /v1 and Anthropic-compatible /v1/messages at https://api.inferall.ai. Premium models are paid."
+    },
+    {
+      "id": "anyapi",
+      "name": "AnyAPI",
+      "signup": "https://dash.anyapi.ai/sign-in",
+      "hints": "On dash.anyapi.ai/sign-in press the 'Sign Up' link at the bottom so the form shows 'Confirm Password *'. Type the Squire email in 'Email address *' and a new password in 'Password *' and 'Confirm Password *', then press 'Sign Up' (or use 'Continue with Google' with the Squire-connected Google account). Stay on the Free plan. In the dashboard open Settings, then API Keys in the sidebar, press 'Create API Key', name it grunt, and copy the generated key so it is stored, then finish. Base URL https://api.anyapi.ai/v1. Never choose Pay-as-you-go, Developer, Pro or Enterprise, never press upgrade or billing, never add a card, and never revoke or rotate keys.",
+      "docs": "https://docs.anyapi.ai/guides/quick-start",
+      "notes": "Free plan, no card: 100K ANY tokens/day on its free models (not named on the pricing page). OpenAI-style API at https://api.anyapi.ai/v1. Signup hints from a view-only walk on 2026-11-25; key steps from its quick-start docs."
+    },
+    {
+      "id": "orcarouter",
+      "signup": "https://www.orcarouter.ai/register",
+      "name": "OrcaRouter",
+      "models": [
+        "deepseek/deepseek-v4.1-flash-free",
+        "deepseek/deepseek-v4-flash-free",
+        "z-ai/glm-5.3-flash-free",
+        "tencent/hy4-preview-free",
+        "tencent/hy3-free"
+      ],
+      "docs": "https://docs.orcarouter.ai/routing/free-models",
+      "hints": "On /register ('Create your account') type the Squire email in 'Enter your email address' and press 'Send code'. Read the inbox now for the OrcaRouter code, type it in 'Enter verification code', type a new password in 'Enter your password' and press 'Create account'. ('GitHub', 'Google' and 'Microsoft' buttons are also on /register if the Squire browser is already signed in there.) Then open the Dashboard at /console and create an API key: type grunt as its Name, leave Credit limit blank, set Expiration to never, create it and copy the key (starts with sk-orca-) so it is stored, then finish. Call only model ids ending in -free; the same id without -free bills. Never top up, join a deposit-match offer or hackathon, or add a card.",
+      "notes": "Free -free models at $0, no card (seen on /register). Free tier 10 RPM / 50 requests a day per its /api/free-package/public. OpenAI-compatible base https://api.orcarouter.ai/v1. Dashboard key steps are from its docs, not a finished signup."
+    },
+    {
+      "id": "tokenrouter",
+      "signup": "https://www.tokenrouter.com/",
+      "name": "TokenRouter",
+      "models": [
+        "deepseek/deepseek-v4.1-flash-1017-free"
+      ],
+      "docs": "https://www.tokenrouter.com/models/deepseek/deepseek-v4.1-flash-1017-free/",
+      "hints": "On https://www.tokenrouter.com/ press 'Sign Up' in the nav to open the 'Create an Account' dialog. Type the Squire email in 'Email' and press 'Send Code'; read the inbox now for the TokenRouter code and type it in 'Verification Code'. Type a new password in 'Password', tick 'Click to verify you're a human', tick 'Accept Conditions of Use' and 'Accept Terms of Use and Privacy Policy', then press 'Sign Up'. Then open /console, find API key management, create a key named grunt and copy it so it is stored, then finish. Use only model deepseek/deepseek-v4.1-flash-1017-free. Never top up, use 'Top up 8, get 2 free', or add a card (payments go through Stripe).",
+      "notes": "DeepSeek V4.1 Flash 1017 free route at $0, billed as a Thanksgiving special with no end date. Signup dialog has a Cap captcha. Console key steps are not yet seen. OpenAI-compatible: https://api.tokenrouter.com/v1."
+    },
+    {
+      "id": "alysis-code",
+      "signup": "https://alysiscode.com/login",
+      "name": "Alysis Code",
+      "docs": "https://alysisai.com/news/alysis-code-paid-plans",
+      "hints": "On /login ('Welcome back') press 'Continue with Google' and choose the Squire-connected Google account. If that is not possible, press 'New here? Create an account' and use the Squire email, grunt as the name and a new password. The free plan is automatic: 50 credits every 30 days, no card. Install the Linux CLI from https://alysisai.com/ and sign in with that account. Never choose the Beta or Alpha plans, open checkout or add a card.",
+      "notes": "Coding agent (desktop app + Linux CLI) by Alysis AI. Free plan: 50 credits per 30 days (up to $0.50 of usage), 4 hosted models, no card. Create-account form fields beyond 'Your name' were not seen."
     }
   ]
 }
