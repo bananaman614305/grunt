@@ -252,7 +252,8 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
             ...(options.exportToVault !== undefined ? { exportToVault: options.exportToVault } : {}),
             notify: options.notify
           });
-          materialized = resolved.transport === 'direct';
+          // Only a key this call stored in the vault may be removed again on failure.
+          materialized = resolved.storedInVault;
           const keyField = apiKeyField(credential, provider);
           const secretPlaceholder = credential.field_names.length > 1 && keyField ? `\${SECRET.${keyField}}` : '${SECRET}';
           const context: RuncrateGrantContext = { reference: credential.reference, secretPlaceholder };
@@ -1534,19 +1535,23 @@ export async function setup(notify = console.log, providers: string[] = [], opti
       // quota still works after reset; it stays installed until a candidate passes.
       let limited = false, stale = false;
       const isQuota = (error: unknown) => error instanceof SourceError && error.code === 'quota';
-      // The daemon accepts zro.json only when it matches the local vault key, so
-      // replace a different vault key first, then confirm the daemon can load it.
+      // The daemon accepts zro.json only when it matches the local vault key.
+      // Decide before writing anything: a different vault key is replaced only for a
+      // direct key with explicit vault export opt-in; otherwise the installed key stays.
       const install = async (grant: { base_url: string; token: string }) => {
         const vaulted = await readVaultGrant('zro', location).catch(() => undefined);
         if (vaulted && credentialFingerprint(vaulted) !== credentialFingerprint(grant)) {
           let origin: string | undefined;
-          try { origin = validateDirectOrigin('zro', grant.base_url); } catch { /* Egress grant: cannot live in the vault. */ }
-          if (origin) await writeVaultEntry('zro', { api_key: grant.token, origin, source: 'squire' }, location);
+          try { origin = validateDirectOrigin('zro', grant.base_url); } catch { /* Egress grant: the daemon cannot load it beside this vault key. */ }
+          if (!origin || options.exportToVault !== true) {
+            throw new Error('Zro key verified, but the local Grunt vault holds a different zro key; the installed key was kept. Rerun setup with vault export enabled, or review it with usegrunt vault');
+          }
+          await writeVaultEntry('zro', { api_key: grant.token, origin, source: 'squire' }, location);
         }
         await writeZroGrant(grant, location);
         const loaded = await readZroGrant(location).catch(() => undefined);
         if (!loaded || credentialFingerprint(loaded) !== credentialFingerprint(grant)) {
-          throw new Error('Zro key verified but could not be installed beside the local vault key; run usegrunt vault to review the zro entry');
+          throw new Error('Zro key verified but the daemon cannot load it; review the zro entry with usegrunt vault');
         }
       };
       try {
@@ -1573,7 +1578,8 @@ export async function setup(notify = console.log, providers: string[] = [], opti
             } finally { await candidate.close(); }
             await install(grant);
           }
-        }, { providers: ['zro'], notify, signal: options.signal, directory: location, ...(options.background !== undefined ? { background: options.background } : {}) });
+        }, { providers: ['zro'], notify, signal: options.signal, directory: location, ...(options.background !== undefined ? { background: options.background } : {}),
+          ...(options.exportToVault !== undefined ? { exportToVault: options.exportToVault } : {}) });
         if (result.dropped.length) throw new Error('Zro setup incomplete; rerun usegrunt setup');
       } finally { await source.close(); }
       providers = providers.filter(provider => provider !== 'zro');

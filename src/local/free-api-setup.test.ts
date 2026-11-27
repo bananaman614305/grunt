@@ -414,24 +414,40 @@ it('stops credential selection immediately on cancellation', async () => {
   expect(squire.runs.start).not.toHaveBeenCalled();
 });
 
-it('replaces a quota-limited Zro vault key so the daemon loads the verified replacement', async () => {
-  const origin = 'https://zro.moonmath.ai';
-  await writeVaultEntry('zro', { api_key: 'vault-limited', origin, source: 'local' }, directory);
-  await writeZroGrant({ base_url: origin, token: 'vault-limited' }, directory);
-  await expect(readZroGrant(directory)).resolves.toMatchObject({ token: 'vault-limited' });
+const ZRO_ORIGIN = 'https://zro.moonmath.ai';
+async function installLimitedVaultZro() {
+  await writeVaultEntry('zro', { api_key: 'vault-limited', origin: ZRO_ORIGIN, source: 'local' }, directory);
+  await writeZroGrant({ base_url: ZRO_ORIGIN, token: 'vault-limited' }, directory);
+  await expect(readZroGrant(directory)).resolves.toMatchObject({ token: 'vault-limited', base_url: ZRO_ORIGIN });
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) =>
     new Headers(init!.headers).get('authorization') === 'Bearer working'
       ? Response.json({ model: 'deepseek-v4.1-flash', choices: [{ message: { content: 'ready' } }] })
       : new Response(null, { status: 402 }));
-  const squire = {
-    credentials: {
-      list: async () => [{ service: 'zro', reference: 'vault://working', field_names: ['api_key'] }],
-      grant: async () => ({ base_url: origin, token: 'working' })
-    }, runs: { start: vi.fn(), get: vi.fn() }
-  };
-  await expect(setup(() => {}, ['zro'], { directory, squire })).resolves.toEqual({});
-  // The daemon's own loader accepts the new receipt because the vault now holds the same key.
+}
+const zroSquire = (base_url: string) => ({
+  credentials: {
+    list: async () => [{ service: 'zro', reference: 'vault://working', field_names: ['api_key'] }],
+    grant: async () => ({ base_url, token: 'working' })
+  }, runs: { start: vi.fn(), get: vi.fn() }
+});
+
+it('replaces a quota-limited Zro vault key with explicit vault export opt-in, and the daemon loads the replacement', async () => {
+  await installLimitedVaultZro();
+  const squire = zroSquire(ZRO_ORIGIN);
+  await expect(setup(() => {}, ['zro'], { directory, squire, exportToVault: true })).resolves.toEqual({});
   await expect(readZroGrant(directory)).resolves.toMatchObject({ token: 'working' });
   await expect(new Zro({ directory }).available()).resolves.toBe(true);
+  expect(squire.runs.start).not.toHaveBeenCalled();
+});
+
+it.each([
+  { name: 'a direct key without vault export opt-in', base: ZRO_ORIGIN },
+  { name: 'a Squire egress grant', base: 'https://grant.test' }
+])('keeps the installed quota-limited Zro vault key when $name passes but cannot be loaded beside it', async ({ base }) => {
+  await installLimitedVaultZro();
+  const squire = zroSquire(base);
+  await expect(setup(() => {}, ['zro'], { directory, squire })).rejects.toThrow();
+  // Neither the vault nor the receipt changed, so the daemon still loads the limited key for the reset.
+  await expect(readZroGrant(directory)).resolves.toMatchObject({ token: 'vault-limited', base_url: ZRO_ORIGIN });
   expect(squire.runs.start).not.toHaveBeenCalled();
 });
