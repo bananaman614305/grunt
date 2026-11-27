@@ -320,7 +320,8 @@ it('records known eligibility, replayable failure, backup dispatch and accepted 
     // Seed successful availability evidence for both routes before dispatch.
     await pool.available(primary);
     await pool.available(backup);
-    await pool.complete({ ...request, cwd: await directory() }, AbortSignal.timeout(5000));
+    primary.supportsFunctionTools = backup.supportsFunctionTools = true;
+    await pool.complete({ ...request, tools: [{ type: 'function', function: { name: 'read', parameters: {} } }], cwd: await directory() }, AbortSignal.timeout(5000));
     const { events } = await value.list();
     const details = events.filter(e => ['route.eligible', 'attempt.start', 'attempt.failure', 'request.output'].includes(e.type));
     expect(details.map(e => [e.type, e.source])).toEqual([
@@ -328,6 +329,7 @@ it('records known eligibility, replayable failure, backup dispatch and accepted 
       ['attempt.start', 'kilo'], ['attempt.failure', 'kilo'],
       ['attempt.start', 'livekit'], ['request.output', 'livekit']
     ]);
+    expect(events.filter(e => e.type === 'attempt.finish').map(e => e.codingToolTurn)).toEqual([true, true]);
     expect(details[3]).toMatchObject({ attemptId: details[2]!.attemptId, replaySafe: true, failureReason: 'response_empty' });
     expect(JSON.stringify(events)).not.toContain('PRIVATE');
   } finally { await pool.close(); }
@@ -515,4 +517,41 @@ it('persists only matching request attribution and does not leak it to unrelated
   expect(rows[0]).toMatchObject({ id: matching.id, actor: 'worker', workerId });
   expect(rows[1]).not.toHaveProperty('actor'); expect(rows[1]).not.toHaveProperty('workerId');
   expect(rows[2]).toMatchObject({ id: client.id, actor: 'client' }); expect(rows[2]).not.toHaveProperty('workerId');
+});
+
+it('returns the currently configured routing tiers to the audit after a registry refresh', async () => {
+  const value = await store(), pool = new Sources([source('kilo')]);
+  const adapter = { ...bundledRegistry.adapters[0]!, id: 'live-only' };
+  let registry = { ...bundledRegistry, adapters: [adapter] };
+  pool.setChainRegistry(() => registry);
+  pool.setDiagnostics(value);
+  const app = createLocalApp(pool);
+  try {
+    for (const tier of ['experimental', 'stable'] as const) {
+      registry = { ...registry, adapters: [{ ...adapter, tier }] };
+      const response = await app.request('http://127.0.0.1:8788/v1/diagnostics/metrics');
+      expect(response.status).toBe(200);
+      expect((await response.json()).adapters).toEqual([expect.objectContaining({ id: 'live-only', tier })]);
+    }
+  } finally { await pool.close(); }
+});
+
+it('excludes an adapter that receives a required choice but does not convey it', async () => {
+  const value = await store(), provider = source('kilo');
+  provider.supportsFunctionTools = true;
+  const pool = new Sources([provider]);
+  pool.setDiagnostics(value);
+  const app = createLocalApp(pool);
+  try {
+    const response = await app.request('http://127.0.0.1:8788/v1/chat/completions', { method: 'POST',
+      headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+        model: 'kilo', cwd: '/tmp', messages: [{ role: 'user', content: 'work' }],
+        tools: [{ type: 'function', function: { name: 'read', parameters: {} } }], tool_choice: 'required'
+      }) });
+    expect(response.status).toBe(200);
+    const trace = await value.trace(response.headers.get('x-grunt-request-id')!);
+    const finish = trace.events.find(e => e.type === 'attempt.finish');
+    expect(finish?.codingToolTurn).toBe(true);
+    expect(finish?.dispatchedToolCallPassed).toBeUndefined();
+  } finally { await pool.close(); }
 });

@@ -48,6 +48,7 @@ export interface DiagnosticEvent extends SafeDiagnosticMetadata {
   outcome?: 'passed' | 'failed' | 'cancelled' | 'skipped'; durationMs?: number;
   errorCode?: typeof diagnosticErrors[number]; retryAfterSeconds?: number; inputTokens?: number; outputTokens?: number; free?: boolean;
   // Content-free reply ending on a successful attempt.finish: mapped finish_reason, whether the reply held tool calls, reasoning tokens when reported.
+  codingToolTurn?: boolean; dispatchedToolCallPassed?: boolean; firstOutputMs?: number;
   finishReason?: typeof diagnosticFinishReasons[number]; hadToolCalls?: boolean; reasoningTokens?: number;
   providerFinishReason?: typeof providerFinishReasons[number];
   caller?: string; endpoint?: 'chat' | 'messages' | 'responses';
@@ -61,7 +62,7 @@ export interface DiagnosticEvent extends SafeDiagnosticMetadata {
   replaySafe?: boolean;
 }
 export type StoredDiagnosticEvent = DiagnosticEvent & { seq: number };
-export interface DiagnosticContext { requestId: string; kind: typeof diagnosticKinds[number]; attemptId?: string; sink?: DiagnosticsStore; requestRecorded?: boolean; local?: boolean; incomplete?: boolean; responseBytes?: number; errorCode?: DiagnosticEvent['errorCode']; actor?: DiagnosticEvent['actor']; workerId?: string }
+export interface DiagnosticContext { toolChoiceEvidence?: { allConstrained?: boolean }; requestId: string; kind: typeof diagnosticKinds[number]; attemptId?: string; sink?: DiagnosticsStore; requestRecorded?: boolean; local?: boolean; incomplete?: boolean; responseBytes?: number; errorCode?: DiagnosticEvent['errorCode']; actor?: DiagnosticEvent['actor']; workerId?: string }
 const context = new AsyncLocalStorage<DiagnosticContext>();
 export const currentDiagnosticContext = () => context.getStore();
 export const withDiagnosticContext = <T>(value: DiagnosticContext, fn: () => T): T => context.run(value, fn);
@@ -107,6 +108,11 @@ export function sanitizeDiagnosticEvent(input: unknown): DiagnosticEvent | null 
   if (member(['chat', 'messages', 'responses'] as const, v.endpoint)) result.endpoint = v.endpoint;
   for (const field of ['promptBytes', 'responseBytes', 'maxOutputTokens'] as const) if (integer(v[field])) result[field] = v[field];
   if (integer(v.lastProgressAt) && v.lastProgressAt <= 8640000000000000) result.lastProgressAt = v.lastProgressAt;
+  if (result.type === 'attempt.finish') {
+    if (typeof v.dispatchedToolCallPassed === 'boolean') result.dispatchedToolCallPassed = v.dispatchedToolCallPassed;
+    if (typeof v.codingToolTurn === 'boolean') result.codingToolTurn = v.codingToolTurn;
+    if (finite(v.firstOutputMs)) result.firstOutputMs = v.firstOutputMs;
+  }
   if (typeof v.hadToolCalls === 'boolean') result.hadToolCalls = v.hadToolCalls;
   for (const field of ['durationMs', 'retryAfterSeconds'] as const) if (finite(v[field])) result[field] = v[field];
   return result;
@@ -118,9 +124,11 @@ export function observeRequestPhase(phase: NonNullable<DiagnosticEvent['phase']>
     requestId: current.requestId, kind: current.kind, ...(source ? { source } : {}) });
 }
 
-export function observeAttemptDispatch({ maxOutputTokens, ...details }: Pick<DiagnosticEvent, 'model' | 'account'> & { maxOutputTokens?: number | undefined }) {
+export function observeAttemptDispatch({ maxOutputTokens, constrained = false, ...details }: Pick<DiagnosticEvent, 'model' | 'account'> & { maxOutputTokens?: number | undefined; constrained?: boolean }) {
   const current = currentDiagnosticContext();
   if (!current?.sink || !current.attemptId) return;
+  // A retry or model rotation can issue several inference requests for one attempt.
+  if (current.toolChoiceEvidence) current.toolChoiceEvidence.allConstrained = current.toolChoiceEvidence.allConstrained !== false && constrained;
   current.sink.record({ ...details, version: 1, id: randomUUID(), at: Date.now(), type: 'attempt.dispatch',
     ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
     requestId: current.requestId, kind: current.kind, attemptId: current.attemptId });

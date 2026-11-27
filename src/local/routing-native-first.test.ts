@@ -40,15 +40,15 @@ it.each([0, 0.2, 0.5, 0.99])('draws a native source for a first request with too
   expect(picked).toEqual([result.text]);
 });
 
-it('keeps the pool weights among native sources', async () => {
+it('keeps relative native weights within each tool tier', async () => {
   const picks = async (random: number) => {
     const picked: string[] = [];
     const router = pool(mixed(), async item => { picked.push(item.id); return answer(item); }, { random: () => random }, { 'mistral-vibe': 100, perch: 100, kilo: 1, livekit: 3, runcrate: 1 });
     await router.complete(ask(`weights ${random}`), AbortSignal.timeout(2000));
     return picked[0];
   };
-  // Draw points over the 5 native weight units, in source order kilo (1), livekit (3), runcrate (1).
-  expect(await picks(0.1)).toBe('kilo'); expect(await picks(0.5)).toBe('livekit'); expect(await picks(0.95)).toBe('runcrate');
+  // Kilo gets the stable share. LiveKit and Runcrate split the experimental share three to one.
+  expect(await picks(0.1)).toBe('kilo'); expect(await picks(0.94)).toBe('livekit'); expect(await picks(0.96)).toBe('runcrate');
 });
 
 it('still draws a bridged source for a text-only request, with the unchanged weighted draw', async () => {

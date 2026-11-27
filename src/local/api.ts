@@ -221,7 +221,14 @@ export function decode(original: Obj, api: string, fallback?: string, options: {
   const tokens = body.max_tokens ?? body.max_output_tokens ?? body.max_completion_tokens;
   const imageInput = !options.omitImages && messages.some(message => Array.isArray(message.content) && message.content.some(part => part.type === 'image_url'));
   const model = String(body.model ?? 'grunt');
-  return { model, messages, userMessages, tools, cwd, cwdSource, ...(responseNamespaces.size ? { responseNamespaces } : {}), stream: body.stream === true, ...(imageInput ? { imageInput: true } : {}), ...(typeof tokens === 'number' ? { maxTokens: tokens } : {}) };
+  const choice = object(body.tool_choice);
+  const anyFunction = (body.tool_choice === 'required' || api === 'messages' && choice.type === 'any')
+    && tools.length > 0 && tools.every(tool => tool.type === 'function');
+  const selectedName = choice.type === 'function' ? object(choice.function).name ?? choice.name
+    : api === 'messages' && choice.type === 'tool' ? choice.name : undefined;
+  const namedFunction = typeof selectedName === 'string' && tools.some(tool => tool.type === 'function' && object(tool.function).name === selectedName);
+  const expectedFunctionCall = namedFunction ? { name: selectedName } : anyFunction ? {} : undefined;
+  return { model, messages, userMessages, tools, cwd, cwdSource, ...(expectedFunctionCall ? { expectedFunctionCall } : {}), ...(responseNamespaces.size ? { responseNamespaces } : {}), stream: body.stream === true, ...(imageInput ? { imageInput: true } : {}), ...(typeof tokens === 'number' ? { maxTokens: tokens } : {}) };
 }
 function toolInput(arguments_: string): unknown {
   try { return JSON.parse(arguments_ || '{}'); } catch { return arguments_; }
@@ -385,7 +392,7 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
     try {
       const since = c.req.query('since'), until = c.req.query('until');
       const result = await store.metrics({ ...(since === undefined ? {} : { since: Number(since) }), ...(until === undefined ? {} : { until: Number(until) }) });
-      return c.json(result, result.coverage.available ? 200 : 503);
+      return c.json({ ...result, adapters: sources.auditAdapters() }, result.coverage.available ? 200 : 503);
     } catch { return c.json({ error: 'Invalid diagnostic metrics window' }, 400); }
   });
   app.get('/v1/diagnostics/traces/:id', async c => {
