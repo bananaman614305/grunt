@@ -1,5 +1,4 @@
-# Existing gateway app/volume/database are retained to preserve deployed data.
-app = "milo-gateway"
+app = "grunt-gateway"
 primary_region = "iad"
 
 [build]
@@ -7,10 +6,10 @@ primary_region = "iad"
 
 [env]
   PORT = "8787"
-  GRUNT_DB = "file:/data/milo.db"
+  GRUNT_DB = "file:/data/grunt.db"
 
 [[mounts]]
-  source = "milo_data"
+  source = "grunt_data"
   destination = "/data"
 
 [http_service]
