@@ -184,7 +184,8 @@ export function start(env = process.env) {
       sources.verifying.clear();
       for (const id of session?.verifying ?? []) if (sources.pending.has(id)) sources.verifying.add(id);
       reconcile();
-      if (released) triggerRecovery();
+      // Setup just finished: send its queued setup_completed event now.
+      if (released) { triggerRecovery(); void telemetry.exchange(); }
       return session;
     });
     sessionRead = result.catch(() => {});

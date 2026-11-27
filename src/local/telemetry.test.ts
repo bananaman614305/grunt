@@ -6,7 +6,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
-import { HEARTBEAT_KEYS, PostHogTelemetry, ROUTE_SUMMARY_KEYS, SETUP_KEYS, SYSTEM_KEYS, sendSetupCompleted } from './telemetry.js';
+import { HEARTBEAT_KEYS, POSTHOG_HOST, PostHogTelemetry, ROUTE_SUMMARY_KEYS, SETUP_KEYS, SYSTEM_KEYS, postHogHost, postHogKey, queueSetupCompleted } from './telemetry.js';
 import type { TelemetryEvent } from './telemetry.js';
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -120,13 +120,43 @@ it('creates a private install id when none exists and never sends its raw value'
   expect(JSON.stringify(received)).not.toContain(install);
 });
 
-it('sends setup_completed with only allowlisted fields', async () => {
-  const { received, env } = await posthog();
-  expect(await sendSetupCompleted({ directory: await directory(), sourcesConfigured: 3, version: '1.2.3', env, now: () => now })).toBe(true);
-  const [event] = received[0]!.body.batch;
-  expectAllowlisted(event!, SETUP_KEYS);
-  expect(event).toMatchObject({ event: 'setup_completed', properties: { version: '1.2.3', os: process.platform, arch: process.arch,
+it('sends a queued setup_completed with the next exchange and removes it only after a 2xx response', async () => {
+  let status = 503;
+  const { received, env } = await posthog((_request, response) => { response.writeHead(status).end(); });
+  const dir = await directory();
+  expect(await queueSetupCompleted({ directory: dir, sourcesConfigured: 3, version: '1.2.3', env, now: () => now })).toBe(true);
+  if (process.platform !== 'win32') expect((await stat(join(dir, 'telemetry-setup.json'))).mode & 0o777).toBe(0o600);
+  const sent = telemetry(dir, env);
+  await sent.exchange();
+  const setup = (index: number) => received[index]!.body.batch.filter(event => event.event === 'setup_completed');
+  expect(setup(0)).toHaveLength(1);
+  expectAllowlisted(setup(0)[0]!, SETUP_KEYS);
+  expect(setup(0)[0]).toMatchObject({ properties: { version: '1.2.3', os: process.platform, arch: process.arch,
     sources_configured: 3, $insert_id: `setup:${DISTINCT}:2026-11-27` } });
+  status = 200;
+  await sent.exchange();
+  expect(setup(1)).toHaveLength(1);
+  await sent.exchange();
+  expect(setup(2)).toEqual([]);
+});
+
+it('drops a malformed queued setup event instead of sending its contents', async () => {
+  const { received, env } = await posthog();
+  const dir = await directory();
+  await writeFile(join(dir, 'telemetry-setup.json'), JSON.stringify({ day: '2026-11-27', version: '/home/PRIVATE', sources_configured: 1 }), { mode: 0o600 });
+  await telemetry(dir, env).exchange();
+  expect(received[0]!.body.batch.map(event => event.event)).toEqual(['daemon_heartbeat']);
+  expect(JSON.stringify(received)).not.toMatch(PII);
+});
+
+it('pins release builds to US PostHog and reads a test host only in keyless builds', () => {
+  const env = { GRUNT_POSTHOG_KEY: KEY, GRUNT_POSTHOG_HOST: 'http://127.0.0.1:9' };
+  expect(postHogKey(env, 'phc_release')).toBe('phc_release');
+  expect(postHogHost(env, 'phc_release')).toBe(POSTHOG_HOST);
+  expect(POSTHOG_HOST).toBe('https://us.i.posthog.com');
+  expect(postHogKey(env, '')).toBe(KEY);
+  expect(postHogHost(env, '')).toBe('http://127.0.0.1:9');
+  expect(postHogHost({}, '')).toBe(POSTHOG_HOST);
 });
 
 it('does nothing without a project key', async () => {
@@ -137,21 +167,22 @@ it('does nothing without a project key', async () => {
   sent.record('kilo', 'ok', 100);
   expect(sent.enabled).toBe(false);
   await sent.exchange();
-  expect(await sendSetupCompleted({ directory: dir, sourcesConfigured: 1, env: offline })).toBe(false);
+  expect(await queueSetupCompleted({ directory: dir, sourcesConfigured: 1, env: offline })).toBe(false);
   expect(received).toEqual([]);
   await expect(readFile(join(dir, 'registry-install'))).rejects.toMatchObject({ code: 'ENOENT' });
+  await expect(readFile(join(dir, 'telemetry-setup.json'))).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
-it('swallows unreachable hosts, refuses redirects and lets callers cancel a stalled request', async () => {
+it('swallows unreachable hosts and refuses redirects', async () => {
   const dir = await directory();
   await expect(telemetry(dir, { GRUNT_POSTHOG_KEY: KEY, GRUNT_POSTHOG_HOST: 'http://127.0.0.1:0' }).exchange()).resolves.toBeUndefined();
-  const redirect = await posthog((_request, response) => { response.writeHead(307, { Location: 'http://127.0.0.1:1/batch/' }).end(); });
-  expect(await sendSetupCompleted({ directory: dir, sourcesConfigured: 1, env: redirect.env })).toBe(false);
-  const stalled = await posthog(() => {});
-  const controller = new AbortController();
-  const started = Date.now();
-  const pending = sendSetupCompleted({ directory: dir, sourcesConfigured: 1, env: stalled.env, signal: controller.signal });
-  setTimeout(() => controller.abort(), 50);
-  expect(await pending).toBe(false);
-  expect(Date.now() - started).toBeLessThan(2000);
+  let followed = false;
+  const target = await posthog(() => { followed = true; });
+  const redirect = await posthog((_request, response) => { response.writeHead(307, { Location: `${target.env.GRUNT_POSTHOG_HOST}/batch/` }).end(); });
+  const sent = telemetry(dir, redirect.env, { at: now - 24 * 60 * 60 * 1000 });
+  sent.record('kilo', 'ok', 100);
+  await sent.exchange();
+  await sent.exchange();
+  expect(followed).toBe(false);
+  expect(redirect.received[1]!.body.batch.map(event => String(event.properties.$insert_id))).toContain(`route:${DISTINCT}:2026-11-26:kilo`);
 });

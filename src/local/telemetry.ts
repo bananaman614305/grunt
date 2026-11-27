@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ErrorCode } from './source.js';
 import { POSTHOG_KEY } from './telemetry-key.js';
@@ -22,13 +22,15 @@ type Properties = Record<string, string | number | boolean>;
 export interface TelemetryEvent { event: string; distinct_id: string; uuid: string; timestamp: string; properties: Properties }
 interface Counts { ok: number; failed: number; quota: number; auth: number; latencyMs?: number; signupOk: number; signupFailed: number }
 
-// An embedded release key wins over the environment, so a release build always reports.
-export function postHogKey(env: Env = process.env) {
-  const embedded = typeof GRUNT_POSTHOG_KEY === 'string' ? GRUNT_POSTHOG_KEY : POSTHOG_KEY;
+export const embeddedPostHogKey = () => typeof GRUNT_POSTHOG_KEY === 'string' ? GRUNT_POSTHOG_KEY : POSTHOG_KEY;
+// A release build's embedded key and US PostHog host cannot be changed. Only a
+// keyless build reads a test key and host from the environment.
+export function postHogKey(env: Env = process.env, embedded = embeddedPostHogKey()) {
   return embedded || env.GRUNT_POSTHOG_KEY || '';
 }
-// GRUNT_POSTHOG_HOST points tests and the smoke harness at a local server.
-export function postHogHost(env: Env = process.env) { return (env.GRUNT_POSTHOG_HOST || POSTHOG_HOST).replace(/\/+$/, ''); }
+export function postHogHost(env: Env = process.env, embedded = embeddedPostHogKey()) {
+  return embedded ? POSTHOG_HOST : (env.GRUNT_POSTHOG_HOST || POSTHOG_HOST).replace(/\/+$/, '');
+}
 const utcDay = (at: number) => new Date(at).toISOString().slice(0, 10);
 
 // The random install id in the daemon config directory, hashed so PostHog never
@@ -53,16 +55,15 @@ function event(name: string, distinctId: string, insertId: string, day: string, 
     properties: { ...properties, $insert_id: insertId, $process_person_profile: false, $geoip_disable: true } };
 }
 
-interface SendOptions { env?: Env; fetcher?: typeof fetch; signal?: AbortSignal }
+interface SendOptions { env?: Env; fetcher?: typeof fetch }
 // One batch request. Resolves false on any failure and never throws.
 export async function sendBatch(batch: TelemetryEvent[], options: SendOptions = {}) {
   const key = postHogKey(options.env);
   if (!key || !batch.length) return false;
   try {
-    const timeout = AbortSignal.timeout(TIMEOUT_MS);
     const response = await (options.fetcher ?? fetch)(`${postHogHost(options.env)}/batch/`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, redirect: 'error',
-      signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout,
+      signal: AbortSignal.timeout(TIMEOUT_MS),
       body: JSON.stringify({ api_key: key, batch })
     });
     await response.body?.cancel().catch(() => {});
@@ -129,20 +130,40 @@ export class PostHogTelemetry {
     if (!this.enabled) return;
     try {
       const distinctId = await anonymousId(this.options.directory);
-      const batch = [this.heartbeat(distinctId, today), ...this.summaries(distinctId, yesterday), ...this.summaries(distinctId, today)];
-      if (await sendBatch(batch, { ...(this.options.env ? { env: this.options.env } : {}), ...(this.options.fetcher ? { fetcher: this.options.fetcher } : {}) })) this.days.delete(yesterday);
+      const setup = await queuedSetup(this.options.directory, distinctId);
+      const batch = [this.heartbeat(distinctId, today), ...setup ? [setup.event] : [], ...this.summaries(distinctId, yesterday), ...this.summaries(distinctId, today)];
+      if (await sendBatch(batch, { ...(this.options.env ? { env: this.options.env } : {}), ...(this.options.fetcher ? { fetcher: this.options.fetcher } : {}) })) {
+        this.days.delete(yesterday);
+        // Remove only the queued event that was sent; a newer setup may have replaced it.
+        if (setup) await rm(setup.path).catch(() => {});
+      }
     } catch { /* Telemetry is best effort. */ }
   }
 }
 
-export interface SetupCompletedOptions extends SendOptions { directory: string; sourcesConfigured: number; version?: string; now?: () => number }
-// One event when setup finishes. Pass a signal so the CLI can exit without waiting.
-export async function sendSetupCompleted(options: SetupCompletedOptions) {
+const SETUP_FILE = 'telemetry-setup.json';
+export interface SetupCompletedOptions { directory: string; sourcesConfigured: number; version?: string; env?: Env; now?: () => number }
+// Setup queues setup_completed in a private file and makes no network request,
+// so it never holds the CLI open. The daemon sends it on its next exchange.
+export async function queueSetupCompleted(options: SetupCompletedOptions) {
   if (!postHogKey(options.env)) return false;
   try {
-    const distinctId = await anonymousId(options.directory);
-    const day = utcDay((options.now ?? Date.now)());
-    return await sendBatch([event('setup_completed', distinctId, `setup:${distinctId}:${day}`, day,
-      { version: options.version ?? 'unknown', os: process.platform, arch: process.arch, sources_configured: options.sourcesConfigured })], options);
+    const path = join(options.directory, SETUP_FILE), temporary = `${path}.${randomBytes(8).toString('hex')}`;
+    await mkdir(options.directory, { recursive: true, mode: 0o700 });
+    await writeFile(temporary, JSON.stringify({ day: utcDay((options.now ?? Date.now)()), version: options.version ?? 'unknown', sources_configured: options.sourcesConfigured }), { mode: 0o600, flag: 'wx' });
+    await rename(temporary, path).catch(async error => { await rm(temporary, { force: true }); throw error; });
+    return true;
   } catch { return false; }
+}
+async function queuedSetup(directory: string, distinctId: string) {
+  const path = join(directory, SETUP_FILE), sending = `${path}.sending`;
+  // Claim the queued file so a setup that finishes during the send is kept.
+  await rename(path, sending).catch(() => {});
+  let saved: unknown;
+  try { saved = JSON.parse(await readFile(sending, 'utf8')); } catch { return undefined; }
+  const { day, version, sources_configured: count } = (saved ?? {}) as Record<string, unknown>;
+  if (typeof day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(day) || typeof version !== 'string' || !/^[0-9A-Za-z.+-]{1,64}$/.test(version)
+    || !Number.isSafeInteger(count) || (count as number) < 0) { await rm(sending, { force: true }); return undefined; }
+  return { path: sending, event: event('setup_completed', distinctId, `setup:${distinctId}:${day}`, day,
+    { version, os: process.platform, arch: process.arch, sources_configured: count as number }) };
 }

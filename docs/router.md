@@ -328,7 +328,7 @@ event and UTC day, so a later send of the same day replaces the earlier one.
 |---|---|---|
 | `daemon_heartbeat` | After every registry sync | `version`, `os`, `arch`, `open_routes`, `enabled_sources` |
 | `route_daily_summary` | After every registry sync, one per listed route with activity today or unacknowledged activity yesterday | `version`, `route`, `ok`, `failed`, `quota`, `auth`, `latency_ms`, `signup_ok`, `signup_failed`, `retired` |
-| `setup_completed` | When `usegrunt setup` finishes | `version`, `os`, `arch`, `sources_configured` |
+| `setup_completed` | Queued by `usegrunt setup` when it finishes; the daemon sends it once setup releases its session, or on the next sync | `version`, `os`, `arch`, `sources_configured` |
 
 Route counts: successful replies (`ok`), upstream/timeout/refused failures
 (`failed`), quota failures (`quota`), logged-out/not-installed failures
@@ -339,9 +339,10 @@ after PostHog accepts them. Counters live in memory, so a restart loses part of
 a day. Nothing else is sent: no prompts, responses, tool data, keys, grants,
 emails, provider error text, request ids, model names, paths or hosts.
 
-Sends never block routing, registry sync or daemon startup. Each request has a
-10-second timeout and refuses redirects. Setup waits at most one second for its
-event before it exits. A scheduled workflow (`.github/workflows/npm-stats.yml`)
+Sends never block routing, registry sync or daemon startup, and setup makes no
+telemetry request, so it never waits on the network. Each request has a
+10-second timeout and refuses redirects. Release builds always send to US
+PostHog with the embedded key; the environment cannot change either. A scheduled workflow (`.github/workflows/npm-stats.yml`)
 adds the daily `usegrunt` npm download count as `npm_daily_downloads`. The
 routing weight stays local (§2); the daemon reads nothing back.
 
