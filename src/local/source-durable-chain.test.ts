@@ -22,7 +22,7 @@ async function restarted(now: number, until: number) {
   await seed.failure('perch', new SourceError('quota', 'Preserved runtime cooldown'), (until - now) / 1000, false, now);
   await seed.close();
   const store = await RoutingHistory.open(directory); stores.push(store);
-  const legacy = fake('freellmapi'), held = fake('perch'), fallback = fake('kilo');
+  const legacy = fake('codex'), held = fake('perch'), fallback = fake('kilo');
   const pool = new Sources([legacy, held, fallback]); pools.push(pool);
   pool.setChainRegistry(() => ({ ...bundledRegistry, adapters: bundledRegistry.adapters.filter(row => ['perch', 'kilo'].includes(row.id)) }));
   await pool.setRoutingHistory(store);
@@ -34,7 +34,7 @@ it('exposes exact cold-restored quota deadlines in a mixed fixed-chain status wi
   vi.spyOn(Date, 'now').mockReturnValue(now);
   const { pool, legacy, held, fallback, store } = await restarted(now, until);
   expect(pool.status().sources.find(row => row.id === 'perch')).toMatchObject({ state: 'limited', errorCode: 'quota', retryAt: until });
-  expect(pool.status().sources.find(row => row.id === 'freellmapi')?.state).not.toBe('disabled');
+  expect(pool.status().sources.find(row => row.id === 'codex')?.state).not.toBe('disabled');
   for (const source of [legacy, held, fallback]) {
     expect(source.available).not.toHaveBeenCalled(); expect(source.complete).not.toHaveBeenCalled();
   }
@@ -46,14 +46,14 @@ it('honors restored quota before a mixed foreground attempt and resumes the same
   vi.spyOn(Date, 'now').mockImplementation(() => now);
   const { pool, legacy, held, fallback } = await restarted(now, until);
   const order: string[] = [];
-  vi.mocked(legacy.complete).mockImplementation(async () => { order.push('freellmapi'); throw new SourceError('upstream', 'synthetic'); });
+  vi.mocked(legacy.complete).mockImplementation(async () => { order.push('codex'); throw new SourceError('upstream', 'synthetic'); });
   vi.mocked(held.complete).mockImplementation(async () => { order.push('perch'); return { text: 'perch' }; });
   vi.mocked(fallback.complete).mockImplementation(async () => { order.push('kilo'); return { text: 'kilo' }; });
   await expect(pool.complete({ ...request, model: 'perch' }, new AbortController().signal)).rejects.toBeInstanceOf(SourceError);
   expect(held.available).not.toHaveBeenCalled(); expect(held.complete).not.toHaveBeenCalled();
   expect((await pool.complete(request, new AbortController().signal)).text).toBe('kilo');
-  expect(order).toEqual(['freellmapi', 'kilo']);
+  expect(order).toEqual(['codex', 'kilo']);
   now = until + 1; order.length = 0;
   expect((await pool.complete(request, new AbortController().signal)).text).toBe('perch');
-  expect(order).toEqual(['freellmapi', 'perch']);
+  expect(order).toEqual(['codex', 'perch']);
 });

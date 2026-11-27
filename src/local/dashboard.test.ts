@@ -178,9 +178,7 @@ it('finds the installed port safely and lets explicit configuration override a b
   expect(stub).toHaveBeenLastCalledWith('http://127.0.0.1:8793/v1/status', expect.anything());
   await statusCommand([], { env: { ...env, GRUNT_PORT: '8794' }, output, fetcher: stub });
   expect(stub).toHaveBeenLastCalledWith('http://127.0.0.1:8794/v1/status', expect.anything());
-  await statusCommand([], { env: { MILO_CONFIG_DIR: directory, MILO_PORT: '8792' }, output, fetcher: stub });
-  expect(stub).toHaveBeenLastCalledWith('http://127.0.0.1:8792/v1/status', expect.anything());
-  await statusCommand([], { env: { ...env, GRUNT_PORT: '8792', MILO_PORT: '8794' }, output, fetcher: stub });
+  await statusCommand([], { env: { ...env, GRUNT_PORT: '8792' }, output, fetcher: stub });
   expect(stub).toHaveBeenLastCalledWith('http://127.0.0.1:8792/v1/status', expect.anything());
   await writeFile(hint, '8792'); await chmod(hint, 0o644);
   await expect(statusCommand([], { env, output, fetcher: stub })).rejects.toThrow('Invalid saved Grunt port');

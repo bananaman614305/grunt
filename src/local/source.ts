@@ -39,7 +39,19 @@ export const requestRefusal = (message: string, failureReason: 'request_tools' |
 export class RequestError extends SourceError {
   constructor(message: string) { super('refused', message); }
 }
-export interface Message { role: string; content: string; tool_call_id?: string; tool_calls?: ToolCall[] }
+export interface TextContentPart { type: 'text'; text: string }
+export interface ImageContentPart { type: 'image_url'; image_url: { url: string; detail?: 'auto' | 'low' | 'high' } }
+export type ContentPart = TextContentPart | ImageContentPart;
+export type MessageContent = string | ContentPart[];
+export function messageText(content: MessageContent): string {
+  return typeof content === 'string' ? content
+    : content.filter((part): part is TextContentPart => part.type === 'text').map(part => part.text).join('\n');
+}
+export function messageBytes(content: MessageContent): number {
+  return typeof content === 'string' ? Buffer.byteLength(content)
+    : content.reduce((total, part) => total + Buffer.byteLength(part.type === 'text' ? part.text : part.image_url.url), 0);
+}
+export interface Message { role: string; content: MessageContent; tool_call_id?: string; tool_calls?: ToolCall[] }
 export interface ToolCall { id: string; type: 'function'; function: { name: string; arguments: string } }
 export type Tool = { type: 'function'; function: { name: string; description?: string; parameters: unknown } } | { type: string; [key: string]: unknown };
 export interface ModelRequest {
@@ -129,7 +141,7 @@ export function observeRequestInput(request: ModelRequest) {
   const current = currentDiagnosticContext();
   current?.sink?.record({ version: 1, id: randomUUID(), at: Date.now(), type: 'request.input',
     requestId: current.requestId, kind: current.kind, model: request.model,
-    promptBytes: request.messages.reduce((total, message) => total + Buffer.byteLength(message.content), 0),
+    promptBytes: request.messages.reduce((total, message) => total + messageBytes(message.content), 0),
     ...(request.maxTokens === undefined ? {} : { maxOutputTokens: request.maxTokens }) });
 }
 // Names the adapter that produced each completion; setup checks it against the requested adapter.
@@ -222,6 +234,8 @@ export interface Source {
 // keeps the agent loop. Automatic selection skips sources that run their own
 // tools instead (OpenCode). A source the caller names explicitly stays eligible.
 export const needsFunctionTools = (request: ModelRequest) => request.tools.some(tool => tool.type === 'function');
+export const hasImageInput = (request: ModelRequest) => request.imageInput === true
+  || request.messages.some(message => Array.isArray(message.content) && message.content.some(part => part.type === 'image_url'));
 // Hosted or native tool types (web_search, custom, ...) that no source can run.
 // Only the type name reaches the message, and only if it looks like a plain identifier.
 export const unsupportedToolTypes = (request: ModelRequest) =>
@@ -658,7 +672,7 @@ export class Sources {
       const source = this.sources.find(source => source.id === request.model);
       if (!source) throw new SourceError('not_installed', `No source for model ${this.safeModel(request.model)}`);
       if (this.router && !this.router.listed(source.id)) throw new SourceError('not_installed', `${request.model} is not in the current provider registry`);
-      if (this.router && !this.router.supportsInput(source.id, request.imageInput)) throw new SourceError('refused', `${request.model} does not support this input modality`);
+      if (this.router && !this.router.supportsInput(source.id, hasImageInput(request))) throw new SourceError('refused', `${request.model} does not support this input modality`);
       // A setup probe is one exact-source call, never sticky failover or a
       // retry of a provider refusal. The source retains every normal guard.
       const completion = await this.observation.complete(source, request, signal);
@@ -684,20 +698,26 @@ export class Sources {
     const automatic = request.model === 'grunt' || !known;
     if (automatic && request.model !== 'grunt') console.error('grunt model mapping: unrecognized model -> grunt');
     const toolsRequired = automatic && needsFunctionTools(request);
+    const imageRequest = hasImageInput(request);
     const candidates = automatic ? pool : pool.filter(s => s.id === request.model);
     let last = routedFailure ?? new SourceError('not_installed', toolsRequired ? NO_TOOL_SOURCE : `No source for model ${this.safeModel(request.model)}`);
     // A routed pool may report quota for general exhaustion without a retry
     // hint. A concrete hint or an actual quota failure can guide the client.
     let quota = routedFailure?.code === 'quota' && routedFailure.retryAfter !== undefined ? routedFailure : undefined;
     let attempted = false;
+    let imageBlocked = false;
     for (const source of candidates) {
       signal.throwIfAborted();
+      // Never dispatch an image-bearing request to an unregistered or text-only source
+      // when a registry-backed router governs this pool (including legacy fallbacks).
+      const imageUnsupported = imageRequest && this.registeredRouter !== undefined && !this.registeredRouter.supportsInput(source.id, true);
       const blocked = toolsRequired && !toolCapable(source) ? 'tools_unsupported' : this.pending.has(source.id) ? 'pending_setup'
         : this.retired(source.id) ? 'retired' : this.registeredRouter?.trialBusy(source.id) ? 'trial_in_progress'
-        : this.chainRouter?.listed(source.id) && !this.chainRouter.supportsInput(source.id, request.imageInput) ? 'input_unsupported'
+        : imageUnsupported ? 'input_unsupported'
         : this.chainRouter && this.chainRouter.registered(source.id) && !this.dispatchEligible(source.id)
           ? !this.chainRouter.listed(source.id) ? 'not_listed' : this.disabledModels.has(source.id) ? 'disabled' : 'cooldown' : undefined;
       if (blocked) {
+        if (blocked === 'input_unsupported') imageBlocked = true;
         this.observeRoute(source.id, blocked, true);
         const code = blocked === 'retired' || blocked === 'cooldown' ? this.registeredRouter?.cooldown(source.id)?.code : undefined;
         const detail = this.observation.routeSkip(source.id, blocked, code);
@@ -737,6 +757,9 @@ export class Sources {
       console.error(`grunt source: ${source.id} answered model ${this.safeModel(request.model)}`);
       answeredBy.set(completion, source.id);
       return completion;
+    }
+    if (!attempted && imageBlocked && !routedFailure) {
+      throw new RequestError('This conversation contains an image, but no source on this route accepts image input; remove the image or continue in text');
     }
     throw quota ?? last;
   }

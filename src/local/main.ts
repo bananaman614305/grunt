@@ -11,7 +11,6 @@ import { OBSERVATION_PATH } from './observe.js';
 import type { ObservationRuntime } from './observe.js';
 import { positive } from './numbers.js';
 import { SourceError, Sources } from './source.js';
-import { FreeLLMAPI } from './freellmapi.js';
 import { MillionSeek } from './millionseek.js';
 import { FreePi } from './freepi.js';
 import { Nvidia } from './nvidia.js';
@@ -37,12 +36,10 @@ import { Goedel } from './goedel.js';
 import { Numes, NUMES_DEEPSEEK_FLASH_MODEL } from './numes.js';
 import { FREE_API_PROVIDERS } from './free-api.js';
 import { RegistrySource } from './registry-source.js';
-import { ManagedRouter } from './managed-router.js';
 import { ConsentSource } from './consent-source.js';
 import { DATA_SHARING_OPT_OUT, readDataSharingConsent, refreshDataSharingConsent, registryDataSharingPolicies, requiresDataSharing } from './data-sharing.js';
 import { Codex } from './codex.js';
 import { OpenCode, DEFAULT_OPENCODE_MODELS } from './opencode.js';
-import { Dots } from './dots.js';
 import type { Source } from './source.js';
 import { toolCapable } from './source.js';
 import { bundledRegistry } from '../registry.js';
@@ -60,19 +57,6 @@ import { automaticPoolSelection } from './automatic-pool.js';
 import { createRuntimeRoutingHistory } from './runtime-routing.js';
 export const HOST = '127.0.0.1';
 export function configure(env = process.env, registry: () => Registry = () => bundledRegistry, anonymousKilo = () => false) {
-  const url = gruntEnv('FREELLMAPI_URL', env) ?? 'http://127.0.0.1:3001/v1';
-  let key = gruntEnv('FREELLMAPI_KEY', env) ?? '';
-  let pending: Promise<string> | undefined;
-  const loadKey = async () => {
-    if (key) return key;
-    pending ??= import('./setup.js').then(module => module.loadRouterKey(url)).then(value => key = value).catch(() => {
-      console.error('grunt router login unavailable or invalid; will retry on the next request. Check the local router and its saved login.');
-      return '';
-    }).finally(() => { pending = undefined; });
-    return pending;
-  };
-  const connection = { url, loadKey };
-  const dots = new Dots({ env, timeout: positive(gruntEnv('DOTS_TIMEOUT_MS', env), 300000) });
   const opencodeModels = () => {
     const override = gruntEnv('OPENCODE_MODEL', env);
     if (override) return [override];
@@ -84,15 +68,17 @@ export function configure(env = process.env, registry: () => Registry = () => bu
   const codexModel = gruntEnv('CODEX_MODEL', env), opencodeURL = gruntEnv('OPENCODE_URL', env);
   const numesModel = gruntEnv('NUMES_MODEL', env);
   const deepSeekFlash = numesModel === NUMES_DEEPSEEK_FLASH_MODEL;
-  const registered: Source[] = [dots, new Codex(codexModel ? { model: codexModel } : {}), new ManagedRouter(new FreeLLMAPI(connection), url, configDir(env)), new Kilo({ directory: configDir(env), anonymous: anonymousKilo }), new Nvidia({ directory: configDir(env) }), new Zro({ directory: configDir(env) }), new TokenHarbor({ directory: configDir(env) }), new Runcrate({ directory: configDir(env) }), new MistralVibe({ directory: configDir(env) }), new LiveKit({ directory: configDir(env) }), new Pollinations({ directory: configDir(env) }), new BeatAPI({ directory: configDir(env) }), new Perch({ directory: configDir(env) }), new Nous({ directory: configDir(env), env }), new Kenari({ directory: configDir(env) }), new Numes({ directory: configDir(env), deepSeekFlash }), new Goedel({ directory: configDir(env) }), new Darus({ directory: configDir(env) }), new Aperture({ directory: configDir(env) }), new CrowLLM({ directory: configDir(env) }), new MillionSeek({ directory: configDir(env) }), new Ifm({ directory: configDir(env) }), new FreePi({ directory: configDir(env) }), new PromotionalApi('fikra', { directory: configDir(env) }), new PromotionalApi('openference', { directory: configDir(env) }), new OpenCode({ models: opencodeModels, configFile: join(configDir(env), 'opencode-free.json'), ...(opencodeURL ? { url: opencodeURL } : {}) })];
+  const registered: Source[] = [new Codex(codexModel ? { model: codexModel } : {}), new Kilo({ directory: configDir(env), anonymous: anonymousKilo }), new Nvidia({ directory: configDir(env) }), new Zro({ directory: configDir(env) }), new TokenHarbor({ directory: configDir(env) }), new Runcrate({ directory: configDir(env) }), new MistralVibe({ directory: configDir(env) }), new LiveKit({ directory: configDir(env) }), new Pollinations({ directory: configDir(env) }), new BeatAPI({ directory: configDir(env) }), new Perch({ directory: configDir(env) }), new Nous({ directory: configDir(env), env }), new Kenari({ directory: configDir(env) }), new Numes({ directory: configDir(env), deepSeekFlash }), new Goedel({ directory: configDir(env) }), new Darus({ directory: configDir(env) }), new Aperture({ directory: configDir(env) }), new CrowLLM({ directory: configDir(env) }), new MillionSeek({ directory: configDir(env) }), new Ifm({ directory: configDir(env) }), new FreePi({ directory: configDir(env) }), new PromotionalApi('fikra', { directory: configDir(env) }), new PromotionalApi('openference', { directory: configDir(env) }), new OpenCode({ models: opencodeModels, configFile: join(configDir(env), 'opencode-free.json'), ...(opencodeURL ? { url: opencodeURL } : {}) })];
   const declared = gruntEnv('SOURCES', env)?.split(',').map(id => id.trim()).filter(Boolean);
   const curated = registry().adapters.filter(adapter => isSupportedAdapter(adapter)).map(adapter => adapter.id);
-  const selection = declared ? automaticPoolSelection(configDir(env), [...new Set(declared)], curated, gruntEnv('DAEMON', env) === '1')
+  const managed = gruntEnv('DAEMON', env) === '1';
+  const selection = declared ? automaticPoolSelection(configDir(env), [...new Set(declared)], curated, managed)
     : { sources: curated, automatic: true, explicit: [] };
   const configured = selection.sources;
   const optedIn = (gruntEnv('OPT_IN_SOURCES', env)?.split(',') ?? []).map(id => id.trim())
     .filter(id => localOptInAdapters.some(adapter => adapter.id === id) || id === 'reflection-beam');
-  const ids = [...new Set([...configured, ...optedIn])].filter(id => id && !disabledAdapters.has(id));
+  const ids = [...new Set([...configured, ...optedIn])].filter(id => id && !disabledAdapters.has(id)
+    && (!managed || id === 'codex' || knownAdapters.has(id) || curated.includes(id)));
   if (numesModel !== undefined && (!deepSeekFlash || ids.length !== 1 || ids[0] !== 'numes')) {
     throw new Error('The Numes qualification model requires the exact Numes-only source');
   }
@@ -116,10 +102,10 @@ export function configure(env = process.env, registry: () => Registry = () => bu
         ...(published?.expires !== undefined ? { expires: published.expires } : {}) };
     })] };
   };
-  // A manual GRUNT_SOURCES list containing legacy sources (Dots, Codex, FreeLLMAPI)
+  // A manual GRUNT_SOURCES list containing an unregistered source like Codex
   // deliberately keeps its ordered chain: the person chose that order (docs/reference.md).
   // A managed automatic pool must not lose weighted, sticky routing because one preserved
-  // source, such as an earlier FreeLLMAPI setup, has no registry entry. Those sources stay
+  // source has no registry entry. Those sources stay
   // selectable by model id and run only after every routed source fails.
   const isDeclarative = (id: string, current: Registry = routingRegistry()) =>
     isDeclarativeAdapter(current.adapters.find(adapter => adapter.id === id));
@@ -288,10 +274,10 @@ export function start(env = process.env) {
   void ready.then(() => { readiness = 'ready'; }, () => { readiness = 'failed'; });
   void ready.then(() => sync.start()).catch(() => console.error('Registry sync could not start; using the bundled list'));
   void ready.then(() => maintenance.start()).catch(() => console.error('Daily maintenance could not start; run usegrunt setup to repair local configuration'));
-  const redactedSettings = ['FREELLMAPI_KEY', 'FREELLMAPI_URL', 'OPENCODE_URL', 'CONFIG_DIR']
+  const redactedSettings = ['OPENCODE_URL', 'CONFIG_DIR']
     .filter(name => gruntEnv(name, env) !== undefined);
   if (env.GRUNT_REGISTRY_URL) redactedSettings.push('REGISTRY_URL');
-  const app = createLocalApp(sources, { port, dotsEnv: env, log: cwd => console.error(`grunt working directory: ${cwd}`),
+  const app = createLocalApp(sources, { port, log: cwd => console.error(`grunt working directory: ${cwd}`),
     observation: () => ({ version: runtimeVersion, startedAt, port, readiness, config: {
       fleetReporting: reportFleet, adoptionReporting: adoptionConsent, backgroundAccountAcquisition: acquireAccounts,
       registry: env.GRUNT_REGISTRY_URL ? 'custom' : 'bundled_and_public', redactedSettings
@@ -344,10 +330,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
     } catch (error) { console.error(error instanceof Error ? error.message : 'Grunt vault command failed'); process.exitCode = 1; }
   } else if (['--help', '-h'].includes(process.argv[2] ?? '')) {
     console.log('Usage: usegrunt [setup | update | add <provider> | vault <list|set|export|remove> | status [--watch] [--json] [--port <port>] | observe [--limit <N>] [--json] [--port <port>] | efficiency metrics [--port <port>] [--since <epoch-ms>] [--until <epoch-ms>] | execution-host <serve|tick|status> --config <private-policy.json>]\n\nRun setup to connect free sources, vault to manage direct local API keys, update to refresh the installed daemon, status --watch to view the pool.\nRun observe --help for request, attempt, and daemon diagnostics.');
-  } else if (process.argv[2] === 'dots' && process.argv[3] === 'link') {
-    const { dotsLink } = await import('./dots-link.js');
-    try { await dotsLink(process.argv[4]); }
-    catch { console.error('Dots pairing failed. Use the fallback code from the Allow page: usegrunt dots link <code>.'); process.exitCode = 1; }
   } else if (['setup', 'add'].includes(process.argv[2] ?? '') || (!process.argv[2] && basename(process.argv[1]) === 'usegrunt' && process.env.GRUNT_DAEMON !== '1')) {
     const { wizard } = await import('./wizard.js');
     try {

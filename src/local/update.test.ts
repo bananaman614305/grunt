@@ -26,18 +26,20 @@ afterEach(async () => { cleanup.fail = false; vi.restoreAllMocks(); await Promis
 type Settings = { brand?: 'grunt' | 'milo'; duplicate?: boolean; active?: boolean; platform?: 'linux' | 'darwin' | 'win32'; bundled?: boolean; badReady?: boolean; stopError?: boolean; rollbackStopError?: boolean; portEnv?: string; envFile?: string; unsafeNames?: boolean; unsafeLink?: boolean; wrongExec?: boolean; corrupt?: boolean; abort?: AbortController; cancelNpm?: boolean; abortOnStop?: boolean; failBootstrap?: boolean; configMismatch?: boolean; configMissing?: boolean; legacyStatus?: boolean; automaticPool?: boolean };
 async function fixture(settings: Settings = {}) {
   const base = await mkdtemp(join(tmpdir(), 'grunt-update-test-')); directories.push(base);
-  const brand = settings.brand ?? 'milo', prefix = brand.toUpperCase();
+  const brand = settings.brand ?? 'grunt', prefix = brand.toUpperCase();
   const directory = join(base, brand), runtime = join(directory, 'runtime'), remote = join(base, 'remote'), pkg = join(remote, 'package'), piDirectory = join(base, 'pi');
   const bundled = settings.bundled || settings.platform === 'win32', entry = join(runtime, bundled ? 'daemon.mjs' : 'dist/local/main.js');
   await mkdir(join(runtime, 'dist/local'), { recursive: true, mode: 0o700 });
   await writeFile(entry, 'original runtime');
   if (!bundled) await writeFile(join(runtime, 'package.json'), JSON.stringify({ name: 'milo-runtime', version: '0.1.0', type: 'module' }));
-  const windowsEnv = { GRUNT_CONFIG_DIR: directory, GRUNT_PORT: '18792', GRUNT_DAEMON: '1', GRUNT_SOURCES: 'freellmapi,perch' };
+  const windowsEnv = { GRUNT_CONFIG_DIR: directory, GRUNT_PORT: '18792', GRUNT_DAEMON: '1', GRUNT_SOURCES: 'kilo,perch' };
   if (settings.platform === 'win32') await writeWindowsLauncher(runtime, windowsEnv);
-  const saved = { 'installed-sources.json': '["freellmapi","perch"]', 'installed-port.json': '8788', 'maintenance.json': '{"keep":"maintenance history"}', 'private-grant.json': 'synthetic private receipt' };
+  const saved = { 'installed-sources.json': '["kilo","perch"]', 'installed-port.json': '8788', 'maintenance.json': '{"keep":"maintenance history"}', 'private-grant.json': 'synthetic private receipt' };
   for (const [name, contents] of Object.entries(saved)) await writeFile(join(directory, name), contents, { mode: 0o600 });
   const unit = join(base, `${brand}.service`), dropIn = join(base, 'custom.conf'), plist = join(base, `ai.${brand}.service.plist`);
+  const replacement = join(base, settings.platform === 'darwin' ? 'ai.grunt.service.plist' : 'grunt.service');
   for (const file of [unit, dropIn, plist]) await writeFile(file, 'preserve original service configuration', { mode: 0o600 });
+  if (settings.duplicate && settings.platform === 'darwin') await writeFile(join(base, 'ai.milo.service.plist'), 'duplicate', { mode: 0o600 });
   await mkdir(join(pkg, 'dist/local'), { recursive: true });
   await writeFile(join(pkg, 'dist/local/main.js'), 'if(process.argv[1])throw new Error("CLI must not start while staging");export const fixture=true;');
   if (bundled) {
@@ -45,7 +47,7 @@ async function fixture(settings: Settings = {}) {
     await mkdir(join(pkg, 'dist/registry'));
     await writeFile(join(pkg, 'dist/registry/adapters.json'), '{}');
   }
-  await writeFile(join(pkg, 'package.json'), JSON.stringify({ name: 'usegrunt', version: '1.2.3', type: 'module', dependencies: { hono: '^4.13.8', standardwebhooks: '^1.1.1', 'ipaddr.js': '^2.5.0' }, scripts: { preinstall: 'do not run this' } }));
+  await writeFile(join(pkg, 'package.json'), JSON.stringify({ name: 'usegrunt', version: '1.2.3', type: 'module', dependencies: { hono: '^4.13.8', 'ipaddr.js': '^2.5.0' }, scripts: { preinstall: 'do not run this' } }));
   await writeFile(join(pkg, 'README.md'), 'synthetic release');
   const archivePath = join(base, 'release.tgz');
   await execute('tar', ['-czf', archivePath, '-C', remote, 'package']);
@@ -53,6 +55,14 @@ async function fixture(settings: Settings = {}) {
   const metadata = { name: 'usegrunt', version: '1.2.3', dist: { tarball: 'https://registry.npmjs.org/usegrunt/-/usegrunt-1.2.3.tgz', integrity: 'sha512-' + createHash('sha512').update(archive).digest('base64') } };
   let active = settings.active ?? true, loaded = true, stops = 0, starts = 0, clock = Date.now();
   const calls: { binary: string; args: string[] }[] = [], urls: string[] = [];
+  const installedEnvironment = (identity: string) => {
+    const key = identity.toUpperCase();
+    return {
+      ...(!settings.configMissing ? { [key + '_CONFIG_DIR']: settings.configMismatch ? '/unrelated/configuration' : directory } : {}),
+      [key + '_SOURCES']: 'kilo,perch', [key + '_PORT']: '18792', [key + '_OPENCODE_URL']: 'http://127.0.0.1:3301',
+      ...(settings.automaticPool ? { [key + '_DAEMON']: '1' } : {})
+    };
+  };
   const run: UpdateRun = async (binary, args, options) => {
     calls.push({ binary, args }); options?.signal?.throwIfAborted();
     if (binary === 'powershell.exe') {
@@ -67,8 +77,9 @@ async function fixture(settings: Settings = {}) {
       if (args.includes('show')) {
         const name = args[args.indexOf('-p') + 1];
         if (!args.includes(`${brand}.service`) && !settings.duplicate) return name === 'LoadState' ? 'not-found' : '';
-        return ({ LoadState: 'loaded', ExecStart: `{ path=${process.execPath} ; argv[]=${process.execPath} ${settings.wrongExec ? '/unrelated/project/main.js' : entry} ; ignore_errors=no ; }`,
-          Environment: (settings.automaticPool ? `${prefix}_DAEMON=1 ` : '') + (settings.portEnv ?? `${prefix}_PORT=18792 ${prefix}_SOURCES=freellmapi,perch ${prefix}_FREELLMAPI_URL=http://127.0.0.1:3001/v1`) + (settings.configMissing ? '' : ` ${prefix}_CONFIG_DIR=${settings.configMismatch ? '/unrelated/configuration' : directory}`), EnvironmentFiles: settings.envFile ?? '', UnsetEnvironment: '', ActiveState: active ? 'active' : 'inactive' } as Record<string, string>)[name!] ?? '';
+        const key = args.includes('grunt.service') ? 'GRUNT' : 'MILO';
+        return ({ FragmentPath: unit, UnitFileState: 'enabled', LoadState: 'loaded', ExecStart: `{ path=${process.execPath} ; argv[]=${process.execPath} ${settings.wrongExec ? '/unrelated/project/main.js' : entry} ; ignore_errors=no ; }`,
+          Environment: settings.portEnv ? `${settings.portEnv} ${key}_CONFIG_DIR=${directory}` : Object.entries(installedEnvironment(key)).map(([key, value]) => `${key}=${value}`).join(' '), EnvironmentFiles: settings.envFile ?? '', UnsetEnvironment: '', ActiveState: active ? 'active' : 'inactive' } as Record<string, string>)[name!] ?? '';
       }
       if (args.includes('stop')) {
         stops++;
@@ -84,7 +95,7 @@ async function fixture(settings: Settings = {}) {
       if (args[0] === 'print' && args[1] === `gui/${process.getuid!()}`) return `${args[1]} = {\n services = {\n${loaded ? `123 0 ai.${brand}.service\n` : ''} }\n}\n`;
       if (args[0] === 'print') {
         if (!args[1]?.endsWith(`/ai.${brand}.service`) && !settings.duplicate) throw new Error('Synthetic job not installed');
-        return `path = ${plist}\nstate = ${active ? 'running' : 'waiting'}\n`;
+        return `path = ${settings.duplicate && !args[1]?.endsWith(`/ai.${brand}.service`) ? join(base, 'ai.milo.service.plist') : plist}\nstate = ${active ? 'running' : 'waiting'}\n`;
       }
       if (args[0] === 'list') return `PID\tStatus\tLabel\n${loaded ? `${active ? '123' : '-'}\t0\tai.${brand}.service\n` : ''}`;
       if (args[0] === 'bootout') {
@@ -92,23 +103,24 @@ async function fixture(settings: Settings = {}) {
         if (settings.abortOnStop && stops === 1) settings.abort!.abort();
       }
       if (args[0] === 'bootstrap') {
-        starts++; expect(args[2]).toBe(plist);
+        starts++; expect([plist, replacement]).toContain(args[2]);
         if (settings.failBootstrap && starts === 1) throw new Error('Synthetic bootstrap failed before registration');
         active = true; loaded = true;
       }
       return '';
     }
     if (binary === 'plutil') {
+      if (args.includes('EnvironmentVariables')) return JSON.stringify(installedEnvironment(args.at(-1)?.includes('ai.milo.service') ? 'milo' : brand));
       if (args.some(arg => arg.startsWith('EnvironmentVariables.') && !arg.startsWith(`EnvironmentVariables.${prefix}_`)) || args.includes(`EnvironmentVariables.${prefix}_CONFIG_DIR`) && settings.configMissing) throw new Error('Synthetic plist field missing');
       if (args.includes(`EnvironmentVariables.${prefix}_DAEMON`)) return settings.automaticPool ? '1' : '';
-      if (args.includes(`EnvironmentVariables.${prefix}_SOURCES`)) return 'freellmapi,perch';
+      if (args.includes(`EnvironmentVariables.${prefix}_SOURCES`)) return 'kilo,perch';
       return args.includes('ProgramArguments') ? JSON.stringify([process.execPath, entry]) : args.includes(`EnvironmentVariables.${prefix}_CONFIG_DIR`) ? settings.configMismatch ? '/unrelated/configuration' : directory : '18792';
     }
     if (binary === 'npm') {
       expect(args).toContain('--ignore-scripts'); expect(args).toContain('--registry=https://registry.npmjs.org');
       const installed = JSON.parse(await readFile(join(args[args.indexOf('--prefix') + 1]!, 'package.json'), 'utf8'));
       expect(installed.scripts).toBeUndefined();
-      expect(installed.dependencies).toEqual({ hono: '^4.13.8' });
+      expect(installed.dependencies).toEqual({ hono: '^4.13.8', 'ipaddr.js': '^2.5.0' });
       if (settings.cancelNpm) { settings.abort!.abort(); options?.signal?.throwIfAborted(); }
       return '';
     }
@@ -127,14 +139,14 @@ async function fixture(settings: Settings = {}) {
     if (settings.badReady && updated) return new Response('synthetic unavailable', { status: 503 });
     return new Response(JSON.stringify({ version: 1, activeRequests: 0, sources: [] }));
   };
-  const options: UpdateOptions = { directory, env: { MILO_PORT: '8788', PATH: process.env.PATH, PI_CODING_AGENT_DIR: piDirectory }, platform: settings.platform ?? 'linux', run, fetcher, now: () => clock,
+  const options: UpdateOptions = { directory, env: { GRUNT_PORT: '8788', PATH: process.env.PATH, PI_CODING_AGENT_DIR: piDirectory }, platform: settings.platform ?? 'linux', run, fetcher, now: () => clock,
     wait: async ms => { clock += ms; }, ...(settings.abort ? { signal: settings.abort.signal } : {}) };
   const preserved = async () => {
     for (const [name, contents] of Object.entries(saved)) expect(await readFile(join(directory, name), 'utf8')).toBe(contents);
     for (const file of [unit, dropIn, plist]) expect(await readFile(file, 'utf8')).toBe('preserve original service configuration');
     expect((await readdir(directory)).some(name => name.startsWith('.setup-session-'))).toBe(false);
   };
-  return { directory, runtime, piDirectory, options, calls, urls, metadata, preserved, counts: () => ({ stops, starts, active }) };
+  return { directory, runtime, piDirectory, options, calls, urls, metadata, preserved, replacement, legacyFile: settings.platform === 'darwin' ? plist : unit, counts: () => ({ stops, starts, active }) };
 }
 
 async function legacyPi(directory: string, port = 18792, contextWindow = 128000) {
@@ -151,7 +163,7 @@ async function legacyPi(directory: string, port = 18792, contextWindow = 128000)
 it.each(['linux', 'darwin'] as const)('enrolls verified setup-managed services in current curated defaults on update (%s)', async platform => {
   const f = await fixture({ platform, automaticPool: true });
   await updateRuntime(f.options);
-  expect(automaticPoolSelection(f.directory, ['freellmapi', 'perch'], ['perch', 'reflection-beam'], true).sources).toEqual(['freellmapi', 'perch', 'reflection-beam']);
+  expect(automaticPoolSelection(f.directory, ['kilo', 'perch'], ['perch', 'reflection-beam'], true).sources).toEqual(['kilo', 'perch', 'reflection-beam']);
   await f.preserved();
 });
 
@@ -242,6 +254,30 @@ it.each(['linux', 'darwin'] as const)('updates the primary Grunt service without
   expect(JSON.parse(await readFile(join(f.runtime, 'package.json'), 'utf8')).name).toBe('grunt-runtime');
   await f.preserved();
 });
+it.each(['linux', 'darwin'] as const)('migrates the old service identity at the same port (%s)', async platform => {
+  const f = await fixture({ brand: 'milo', platform });
+  expect((await updateRuntime(f.options)).port).toBe(18792);
+  await expect(readFile(f.legacyFile)).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(await readFile(f.replacement, 'utf8')).toMatch(platform === 'linux' ? /GRUNT_PORT=18792/ : /<key>GRUNT_PORT<\/key><string>18792<\/string>/);
+  expect(f.calls.filter(call => call.args.includes('start') || call.args.includes('bootstrap')).at(-1)?.args.join(' ')).toContain('grunt.service');
+  if (platform === 'linux') {
+    expect(f.calls.map(call => call.args)).toEqual(expect.arrayContaining([
+      ['--user', 'stop', 'milo.service'], ['--user', 'disable', 'milo.service'], ['--user', 'enable', 'grunt.service']
+    ]));
+  }
+});
+
+it('restores the legacy unit and runtime if the renamed service fails readiness', async () => {
+  const f = await fixture({ brand: 'milo', badReady: true });
+  await expect(updateRuntime(f.options)).rejects.toThrow('previous runtime and service were restored');
+  await expect(readFile(f.replacement)).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(await readFile(join(f.runtime, 'dist/local/main.js'), 'utf8')).toBe('original runtime');
+  expect(f.calls.map(call => call.args)).toEqual(expect.arrayContaining([
+    ['--user', 'stop', 'grunt.service'], ['--user', 'enable', 'milo.service'], ['--user', 'start', 'milo.service']
+  ]));
+  await f.preserved();
+});
+
 it('honors primary Grunt settings over legacy aliases in the unchanged installed environment', async () => {
   const f = await fixture({ brand: 'grunt', portEnv: 'MILO_PORT=8788 GRUNT_PORT=18792 MILO_CONFIG_DIR=/unrelated/old-state GRUNT_SOURCES=kilo' });
   expect((await updateRuntime(f.options)).port).toBe(18792);
@@ -254,7 +290,7 @@ it.each(['linux', 'darwin'] as const)('refuses two service identities claiming t
   expect(f.counts().stops).toBe(0); expect(f.urls).toEqual([]); await f.preserved();
 });
 it('parses effective Environment tokens without using fake port text inside another quoted variable', async () => {
-  const f = await fixture({ portEnv: 'MILO_PORT=8788 "MILO_PORT=18792" "OTHER=example MILO_PORT=8788" "PRIVATE=synthetic\\x20secret\\\" value"' });
+  const f = await fixture({ portEnv: 'GRUNT_PORT=8788 "GRUNT_PORT=18792" "OTHER=example GRUNT_PORT=8788" "PRIVATE=synthetic\\x20secret\\\" value"' });
   expect((await updateRuntime(f.options)).port).toBe(18792); await f.preserved();
 });
 it('preserves an intentionally stopped Linux service without probing a possibly unrelated listener', async () => {

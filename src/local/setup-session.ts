@@ -98,7 +98,7 @@ export async function readSetupSession(directory: string): Promise<SetupSessionS
     // Hold provisioning and dispatch conservatively until its owner repairs or
     // aborts, rather than treating unsafe IO as permission to duplicate signup.
     for (let i = 0; i < active.length; i++) if (!states[i] && await blockingClaim(active[i]!)) {
-      const all = new Set([...knownAdapters, 'freellmapi']);
+      const all = new Set(knownAdapters);
       return { owned: all, pending: all, verifying: new Set() };
     }
     const valid = states.filter((state): state is State => state !== undefined && state.expires > Date.now());

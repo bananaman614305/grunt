@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { chmod, mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, link, mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -24,11 +24,13 @@ vi.mock('./squire-client-path.js', () => ({ saveSquireClientPath: vi.fn(async ()
 import { installService, installBackgroundService, preflight } from './wizard.js';
 import { automaticPoolSelection } from './automatic-pool.js';
 import { installedPort } from './dashboard.js';
+import { serviceEnvironment } from './service-environment.js';
 
 let directory: string;
 const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
 beforeEach(async () => {
   vi.clearAllMocks(); fixture.abortAt = undefined;
+  vi.stubGlobal('fetch', vi.fn(async () => new Response('ok')));
   fixture.serviceEnvironment = '';
   fixture.copy.mockImplementation(async (source: string, destination: string) => writeFile(destination, basename(source)));
   fixture.execFile.mockImplementation(async () => ({ stdout: fixture.serviceEnvironment, stderr: '' }));
@@ -53,9 +55,23 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   Object.defineProperty(process, 'platform', platform);
-  vi.unstubAllEnvs(); vi.restoreAllMocks();
+  vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.restoreAllMocks();
   await rm(directory, { recursive: true, force: true });
 });
+
+async function effectiveEnvironment(unit: string, inherited: string[] = []) {
+  const files = (await readdir(unit + '.d')).filter(name => name.endsWith('.conf')).map(name => join(unit + '.d', name));
+  const byName = new Map([...inherited, ...files].map(file => [basename(file), file]));
+  const overrides = [...byName.values()].sort((a, b) => Buffer.compare(Buffer.from(basename(a)), Buffer.from(basename(b))));
+  let environment: NodeJS.ProcessEnv = {};
+  for (const file of [unit, ...overrides]) {
+    for (const [, assignment] of (await readFile(file, 'utf8')).matchAll(/^Environment=(.*)$/gm)) {
+      if (assignment) Object.assign(environment, serviceEnvironment(assignment));
+      else environment = {};
+    }
+  }
+  return environment;
+}
 
 it('does not start an already-cancelled runtime installation', async () => {
   fixture.controller!.abort();
@@ -149,11 +165,10 @@ it('keeps the no-options installation API compatible', async () => {
 });
 
 it('copies just the daemon and registry and points the new systemd unit at the bundle', async () => {
-  vi.stubEnv('GRUNT_FREELLMAPI_URL', 'http://127.0.0.1:3301/v1');
   await installService(['kilo']);
   const unit = await readFile(join(directory, 'xdg/systemd/user/grunt.service'), 'utf8');
   expect(unit).toContain('GRUNT_CONFIG_DIR='); expect(unit).toContain('GRUNT_PORT=18792');
-  expect(unit).toContain('GRUNT_SOURCES=kilo'); expect(unit).toContain('GRUNT_FREELLMAPI_URL=http://127.0.0.1:3301/v1');
+  expect(unit).toContain('GRUNT_SOURCES=kilo');
   expect(unit).toContain(join(directory, 'grunt/runtime/daemon.mjs'));
   expect(unit).not.toContain('MILO_');
   expect(await readFile(join(directory, 'grunt/runtime/daemon.mjs'), 'utf8')).toBe('daemon.mjs');
@@ -167,44 +182,127 @@ it.each(['milo', 'grunt'])('moves the installed %s unit to the bundle and keeps 
   const prefix = identity.toUpperCase();
   const entry = join(directory, 'grunt/runtime/dist/local/main.js');
   const original = `[Service]\nExecStart="${process.execPath}" "${entry}"\nEnvironment="${prefix}_CONFIG_DIR=${join(directory, 'grunt')}"\nEnvironment="${prefix}_PORT=8788"\n`;
-  const custom = `[Service]\nEnvironment="${prefix}_PORT=8792"\nEnvironment="${prefix}_FREELLMAPI_URL=http://127.0.0.1:3301/v1"\n`;
+  const custom = `[Service]\nEnvironment="${prefix}_PORT=8792"\nEnvironment="${prefix}_OPENCODE_URL=http://127.0.0.1:3301/v1"\n`;
   await mkdir(join(units, `${identity}.service.d`), { recursive: true });
   await writeFile(unit, original, { mode: 0o600 }); await writeFile(dropIn, custom, { mode: 0o600 });
-  fixture.serviceEnvironment = `${prefix}_CONFIG_DIR=${join(directory, 'grunt')} ${prefix}_PORT=8792 ${prefix}_SOURCES=opencode,kilo ${prefix}_FREELLMAPI_URL=http://127.0.0.1:3301/v1`;
-  await installService(['kilo', 'antseed-vikey', 'freellmapi']);
-  expect(await readFile(unit, 'utf8')).toBe(original.replace(entry, join(directory, 'grunt/runtime/daemon.mjs')));
-  expect(await readFile(dropIn, 'utf8')).toBe(custom);
-  expect(fixture.spawn.mock.calls.map(([binary, args]) => [binary, args])).toEqual([
-    ['systemctl', ['--user', 'daemon-reload']], ['systemctl', ['--user', 'enable', `${identity}.service`]],
-    ['loginctl', ['--no-ask-password', 'enable-linger']], ['systemctl', ['--user', 'restart', `${identity}.service`]]
-  ]);
+  fixture.serviceEnvironment = `${prefix}_CONFIG_DIR=${join(directory, 'grunt')} ${prefix}_PORT=8792 ${prefix}_SOURCES=opencode,kilo ${prefix}_OPENCODE_URL=http://127.0.0.1:3301/v1`;
+  await installService(['kilo', 'antseed-vikey']);
+  const current = await readFile(join(units, 'grunt.service'), 'utf8');
+  expect(await readFile(join(units, 'grunt.service.d/custom.conf'), 'utf8')).toBe(custom);
+  expect(current).toBe(original.replace(entry, join(directory, 'grunt/runtime/daemon.mjs')));
+  if (identity === 'milo') {
+    expect(await effectiveEnvironment(join(units, 'grunt.service'))).toMatchObject({
+      GRUNT_PORT: '8792', GRUNT_OPENCODE_URL: 'http://127.0.0.1:3301/v1'
+    });
+    expect(fixture.spawn.mock.calls.map(([, args]) => args)).toContainEqual(['--user', 'stop', 'milo.service']);
+    expect(fixture.execFile.mock.calls.map(([, args]) => args)).toEqual(expect.arrayContaining([
+      ['--user', 'disable', 'milo.service'], ['--user', 'enable', 'grunt.service'], ['--user', 'start', 'grunt.service']
+    ]));
+  } else {
+    expect(fixture.spawn.mock.calls.map(([, args]) => args)).toContainEqual(['--user', 'restart', 'grunt.service']);
+  }
   expect(JSON.parse(await readFile(join(directory, 'grunt/installed-port.json'), 'utf8'))).toBe(8792);
   // The owned service file can keep its old source environment while setup
   // enrolls newly curated sources through a private, matching selection anchor.
-  expect(automaticPoolSelection(join(directory, 'grunt'), ['opencode', 'kilo'], ['opencode', 'kilo', 'reflection-beam'], true).sources).toEqual(['opencode', 'kilo', 'antseed-vikey', 'freellmapi', 'reflection-beam']);
+  expect(automaticPoolSelection(join(directory, 'grunt'), ['opencode', 'kilo'], ['opencode', 'kilo', 'reflection-beam'], true).sources).toEqual(['opencode', 'kilo', 'antseed-vikey', 'reflection-beam']);
   expect(automaticPoolSelection(join(directory, 'grunt'), ['kilo'], ['opencode', 'kilo', 'reflection-beam'], true).sources).toEqual(['kilo']);
-  expect(JSON.parse(await readFile(join(directory, 'grunt/installed-sources.json'), 'utf8'))).toEqual(['kilo', 'antseed-vikey', 'freellmapi']);
-  await expect(readFile(join(units, `${identity === 'grunt' ? 'milo' : 'grunt'}.service`), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(JSON.parse(await readFile(join(directory, 'grunt/installed-sources.json'), 'utf8'))).toEqual(['kilo', 'antseed-vikey']);
+  await expect(readFile(join(units, 'milo.service'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
-it('preserves the legacy native router service identity and saved environment', async () => {
-  const unit = join(directory, 'xdg/systemd/user/milo-router.service'), entry = join(directory, 'grunt/runner.mjs');
-  const original = `[Service]\nExecStart="${process.execPath}" "${entry}"\nEnvironment="MILO_ROUTER_ENTRY=/saved/router/server.js"\n`;
-  await mkdir(join(directory, 'xdg/systemd/user'), { recursive: true }); await writeFile(unit, original, { mode: 0o600 });
-  await installBackgroundService('grunt-router', entry, { GRUNT_ROUTER_ENTRY: '/new/router/server.js' });
-  expect(await readFile(unit, 'utf8')).toBe(original);
-  expect(fixture.spawn.mock.calls.map(([, args]) => args)).toEqual([
-    ['--user', 'enable', 'milo-router.service'], ['--no-ask-password', 'enable-linger'], ['--user', 'restart', 'milo-router.service']
-  ]);
-  await expect(readFile(join(directory, 'xdg/systemd/user/grunt-router.service'))).rejects.toMatchObject({ code: 'ENOENT' });
+const lastOverrideName = '\u{10fffd}'.repeat(62) + '\u07ff.conf';
+it.each([
+  { label: 'service override', ownerOverride: 'zz-owner.conf' },
+  { label: 'inherited override', ownerOverride: 'zz-owner.conf', inheritedOverride: 'zzzz-type.conf' },
+  { label: 'maximum-length service override', ownerOverride: 'z'.repeat(250) + '.conf' },
+  { label: 'maximum-length inherited override', ownerOverride: 'zz-owner.conf', inheritedOverride: 'é'.repeat(125) + '.conf' },
+  { label: 'last possible service override', ownerOverride: lastOverrideName },
+  { label: 'last possible hard-linked service override', ownerOverride: lastOverrideName, hardLinked: true },
+  { label: 'last possible inherited override', ownerOverride: 'zz-owner.conf', inheritedOverride: lastOverrideName }
+])('keeps the effective state directory and port after a reset in a $label', async ({ ownerOverride, inheritedOverride, hardLinked }) => {
+  const units = join(directory, 'xdg/systemd/user');
+  const legacy = join(units, 'milo.service'), current = join(units, 'grunt.service');
+  const state = join(directory, 'grunt'), entry = join(state, 'runtime/dist/local/main.js');
+  const reset = `[Service]\nEnvironment=\nEnvironment="MILO_CONFIG_DIR=${state}" "MILO_PORT=8792"\n`;
+  const inheritedFiles = inheritedOverride ? [join(units, 'service.d', inheritedOverride)] : [];
+  if (inheritedFiles[0]) {
+    await mkdir(join(units, 'service.d'), { recursive: true });
+    await writeFile(inheritedFiles[0], reset, { mode: 0o600 });
+  }
+  await mkdir(legacy + '.d', { recursive: true });
+  await writeFile(legacy, `[Service]\nExecStart="${process.execPath}" "${entry}"\nEnvironment="MILO_PORT=8788"\n`, { mode: 0o600 });
+  await writeFile(join(legacy + '.d', ownerOverride), reset, { mode: 0o600 });
+  const otherOverride = join(units, 'other.service.d', 'shared.conf');
+  if (hardLinked) {
+    await mkdir(join(units, 'other.service.d'));
+    await link(join(legacy + '.d', ownerOverride), otherOverride);
+  }
+  fixture.execFile.mockImplementation(async (_binary: string, args: string[]) => {
+    if (args.includes('Environment')) {
+      const effective = await effectiveEnvironment(legacy, inheritedFiles);
+      return { stdout: Object.entries(effective).map(([name, value]) => `"${name}=${value}"`).join(' ') };
+    }
+    if (args.includes('DropInPaths')) return { stdout: [join(legacy + '.d', ownerOverride), ...inheritedFiles].join(' ') };
+    if (args.includes('start') && args.includes('grunt.service')) {
+      expect(await effectiveEnvironment(current, inheritedFiles)).toMatchObject({ GRUNT_CONFIG_DIR: state, GRUNT_PORT: '8792' });
+    }
+    return { stdout: '' };
+  });
+  await installService(['kilo']);
+  const ownerOverrideContents = await readFile(join(current + '.d', ownerOverride), 'utf8');
+  if (ownerOverride === lastOverrideName) expect(ownerOverrideContents.startsWith(reset)).toBe(true);
+  else expect(ownerOverrideContents).toBe(reset);
+  if (hardLinked) {
+    expect(await readFile(otherOverride)).toEqual(Buffer.from(reset));
+    const replacement = await stat(join(current + '.d', ownerOverride));
+    expect(replacement.ino).not.toBe((await stat(otherOverride)).ino);
+    expect(replacement.mode & 0o777).toBe(0o600);
+  }
+  if (inheritedFiles[0]) expect(await readFile(inheritedFiles[0], 'utf8')).toBe(reset);
+  expect(await readFile(join(state, 'installed-port.json'), 'utf8')).toBe('8792');
+});
+
+it.each(['owner.conf', lastOverrideName])('restores the old runtime and override when migration cannot start Grunt', async ownerOverride => {
+  const units = join(directory, 'xdg/systemd/user'), oldUnit = join(units, 'milo.service');
+  const state = join(directory, 'grunt'), runtime = join(state, 'runtime');
+  const entry = join(runtime, 'dist/local/main.js');
+  const original = `[Service]\nExecStart="${process.execPath}" "${entry}"\n`;
+  await mkdir(oldUnit + '.d', { recursive: true });
+  await writeFile(oldUnit, original, { mode: 0o600 });
+  const override = '[Service]\nEnvironment=MILO_PORT=8792\n';
+  const originalOverride = join(oldUnit + '.d', ownerOverride), otherOverride = join(units, 'linked-override');
+  await writeFile(originalOverride, override, { mode: 0o600 });
+  await link(originalOverride, otherOverride);
+  await mkdir(runtime, { mode: 0o700 });
+  const oldRuntime = join(runtime, 'previous-runtime');
+  await writeFile(oldRuntime, 'old runtime');
+  fixture.execFile.mockImplementation(async (_binary: string, args: string[]) => {
+    if (args.includes('Environment')) return { stdout: `MILO_CONFIG_DIR=${state} MILO_PORT=8792 MILO_SOURCES=opencode` };
+    if (args.includes('ActiveState')) return { stdout: 'active' };
+    if (args.includes('UnitFileState')) return { stdout: 'enabled' };
+    if (args.includes('start') && args.includes('grunt.service')) {
+      expect(await readFile(otherOverride)).toEqual(Buffer.from(override));
+      throw new Error('Synthetic start failure');
+    }
+    if (args.includes('start') && args.includes('milo.service')) expect(await readFile(oldRuntime, 'utf8')).toBe('old runtime');
+    return { stdout: '' };
+  });
+  await expect(installService(['kilo'])).rejects.toThrow('Synthetic start failure');
+  expect(await readFile(oldUnit, 'utf8')).toBe(original);
+  expect(await readdir(oldUnit + '.d')).toEqual([ownerOverride]);
+  expect(await readFile(originalOverride, 'utf8')).toBe(override);
+  expect((await stat(originalOverride)).ino).toBe((await stat(otherOverride)).ino);
+  await expect(readFile(join(units, 'grunt.service'))).rejects.toMatchObject({ code: 'ENOENT' });
+  await expect(readdir(join(units, 'grunt.service.d'))).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(fixture.execFile.mock.calls.map(([, args]) => args)).toContainEqual(['--user', 'start', 'milo.service']);
 });
 
 it('does not start either identity when duplicate legacy and Grunt services are installed', async () => {
-  const units = join(directory, 'xdg/systemd/user'), entry = join(directory, 'grunt/runner.mjs');
+  const units = join(directory, 'xdg/systemd/user'), entry = join(directory, 'grunt/runtime/dist/local/main.js');
   const original = `[Service]\nExecStart="${process.execPath}" "${entry}"\n`;
   await mkdir(units, { recursive: true });
-  for (const name of ['grunt-router', 'milo-router']) await writeFile(join(units, `${name}.service`), original, { mode: 0o600 });
-  await expect(installBackgroundService('grunt-router', entry, {})).rejects.toThrow('Multiple Grunt service identities');
+  for (const name of ['grunt', 'milo']) await writeFile(join(units, `${name}.service`), original, { mode: 0o600 });
+  await expect(installBackgroundService(entry, {})).rejects.toThrow('Multiple Grunt service identities');
   expect(fixture.spawn).not.toHaveBeenCalled();
 });
 
@@ -217,24 +315,27 @@ it('writes a primary Grunt launch agent for a fresh macOS installation', async (
   expect(fixture.spawn.mock.calls.at(-1)![1]).toEqual(['bootstrap', `gui/${process.getuid!()}`, join(directory, 'home/Library/LaunchAgents/ai.grunt.service.plist')]);
 });
 
-it('reuses the legacy macOS launch agent and preserves its port and endpoint settings', async () => {
+it('replaces the legacy macOS launch agent and preserves its port and endpoint settings', async () => {
   Object.defineProperty(process, 'platform', { ...platform, value: 'darwin' });
   const file = join(directory, 'home/Library/LaunchAgents/ai.milo.service.plist');
   const entry = join(directory, 'grunt/runtime/dist/local/main.js');
-  const original = `<plist><array><string>${process.execPath}</string><string>${entry}</string></array><dict><key>MILO_PORT</key><string>8792</string><key>MILO_FREELLMAPI_URL</key><string>http://127.0.0.1:3301/v1</string></dict></plist>`;
+  const original = `<plist><array><string>${process.execPath}</string><string>${entry}</string></array><dict><key>MILO_PORT</key><string>8792</string><key>MILO_OPENCODE_URL</key><string>http://127.0.0.1:3301/v1</string></dict></plist>`;
   await mkdir(join(directory, 'home/Library/LaunchAgents'), { recursive: true }); await writeFile(file, original, { mode: 0o600 });
   fixture.execFile.mockImplementation(async (_binary: string, args: string[]) => {
-    if (args.includes('EnvironmentVariables.MILO_CONFIG_DIR')) return { stdout: join(directory, 'grunt') + '\n' };
-    if (args.includes('EnvironmentVariables.MILO_PORT')) return { stdout: '8792\n' };
-    throw new Error('Synthetic primary plist variable is absent');
+    if (args.includes('EnvironmentVariables')) return { stdout: JSON.stringify({
+      MILO_CONFIG_DIR: join(directory, 'grunt'), MILO_PORT: '8792', MILO_OPENCODE_URL: 'http://127.0.0.1:3301'
+    }) };
+    return { stdout: '' };
   });
   await installService(['kilo']);
-  expect(await readFile(file, 'utf8')).toBe(original.replace(entry, join(directory, 'grunt/runtime/daemon.mjs')));
-  expect(fixture.spawn.mock.calls.map(([, args]) => args)).toEqual([
-    ['bootout', `gui/${process.getuid!()}/ai.milo.service`], ['bootstrap', `gui/${process.getuid!()}`, file]
-  ]);
+  const replacement = join(directory, 'home/Library/LaunchAgents/ai.grunt.service.plist');
+  expect(await readFile(replacement, 'utf8')).toContain(join(directory, 'grunt/runtime/daemon.mjs'));
+  expect(await readFile(replacement, 'utf8')).toContain('<key>GRUNT_OPENCODE_URL</key><string>http://127.0.0.1:3301</string>');
+  expect(fixture.execFile.mock.calls.map(([, args]) => args)).toEqual(expect.arrayContaining([
+    ['bootout', `gui/${process.getuid!()}/ai.milo.service`], ['bootstrap', `gui/${process.getuid!()}`, replacement]
+  ]));
   expect(JSON.parse(await readFile(join(directory, 'grunt/installed-port.json'), 'utf8'))).toBe(8792);
-  await expect(readFile(join(directory, 'home/Library/LaunchAgents/ai.grunt.service.plist'))).rejects.toMatchObject({ code: 'ENOENT' });
+  await expect(readFile(file)).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
 it('preflights Windows through Task Scheduler without npm or tar', async () => {
@@ -248,7 +349,8 @@ it('registers a limited Windows logon task and restarts it with the saved enviro
   Object.defineProperty(process, 'platform', { ...platform, value: 'win32' });
   const config = join(directory, 'Grunt & local state');
   vi.stubEnv('GRUNT_CONFIG_DIR', config);
-  vi.stubEnv('GRUNT_FREELLMAPI_URL', 'http://127.0.0.1:3301/v1?source="local"');
+  await mkdir(config, { mode: 0o700 });
+  await writeFile(join(config, 'opencode-free.json'), '{}', { mode: 0o600 });
   let definition = '', state = 0;
   fixture.execFile.mockImplementation(async (binary: string, args: string[]) => {
     if (binary === 'whoami.exe') return { stdout: '"LOCAL\\jellybean","S-1-5-21-123-456-789-1000"\r\n' };
@@ -274,7 +376,7 @@ it('registers a limited Windows logon task and restarts it with the saved enviro
   expect(definition).toContain(`<Arguments>&quot;${path.replace('&', '&amp;')}&quot;</Arguments>`);
   expect(launcher).toContain('import("./daemon.mjs")');
   const env = JSON.parse(launcher.split('\n')[0]!.slice('const environment = '.length, -1));
-  expect(env).toMatchObject({ GRUNT_DAEMON: '1', GRUNT_SOURCES: 'kilo', GRUNT_PORT: '18792', GRUNT_CONFIG_DIR: config, GRUNT_FREELLMAPI_URL: process.env.GRUNT_FREELLMAPI_URL });
+  expect(env).toMatchObject({ GRUNT_DAEMON: '1', GRUNT_SOURCES: 'kilo', GRUNT_PORT: '18792', GRUNT_CONFIG_DIR: config, OPENCODE_CONFIG: join(config, 'opencode-free.json') });
   vi.stubEnv('GRUNT_PORT', '18793');
   await installService(['kilo', 'opencode']);
   expect(await readFile(path, 'utf8')).toBe(launcher);

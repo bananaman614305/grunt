@@ -32,20 +32,20 @@ it.each(['freebuff', 'opencode', 'kilo'])('gates %s before consulting installed 
   await source.close(); expect(delegate.close).toHaveBeenCalledOnce();
 });
 
-it('guards explicit vetted adapters while preserving a custom freellmapi source', async () => {
-  const sources = configure({ GRUNT_CONFIG_DIR: await directory(), GRUNT_SOURCES: 'freebuff,apinex,opencode,kilo,freellmapi,zro' });
+it('guards explicit vetted adapters while preserving a Codex source', async () => {
+  const sources = configure({ GRUNT_CONFIG_DIR: await directory(), GRUNT_SOURCES: 'freebuff,apinex,opencode,kilo,codex,zro' });
   expect(sources.sources.filter(source => source instanceof RegistrySource && source.source instanceof ConsentSource).map(source => source.id)).toEqual(['opencode', 'kilo']);
-  expect(sources.sources.map(source => source.id)).toEqual(['opencode', 'kilo', 'freellmapi', 'zro']);
+  expect(sources.sources.map(source => source.id)).toEqual(['opencode', 'kilo', 'codex', 'zro']);
   for (const source of sources.sources.filter(source => ['opencode', 'kilo'].includes(source.id))) expect(await source.available()).toBe(false);
   await sources.close();
 });
 
-it('enforces registry revocation with a preserved custom legacy source in the same list', async () => {
+it('enforces registry revocation with Codex in the same list', async () => {
   const { bundledRegistry } = await import('../registry.js');
   const registry = structuredClone(bundledRegistry);
-  const sources = configure({ GRUNT_CONFIG_DIR: await directory(), GRUNT_SOURCES: 'freellmapi,zro' }, () => registry);
+  const sources = configure({ GRUNT_CONFIG_DIR: await directory(), GRUNT_SOURCES: 'codex,zro' }, () => registry);
   const zro = sources.sources.find(source => source.id === 'zro')!;
-  const legacy = sources.sources.find(source => source.id === 'freellmapi')!;
+  const legacy = sources.sources.find(source => source.id === 'codex')!;
   expect(zro).toBeInstanceOf(RegistrySource); expect(legacy).not.toBeInstanceOf(RegistrySource);
   const delegate = (zro as RegistrySource).source;
   const available = vi.spyOn(delegate, 'available').mockResolvedValue(true);

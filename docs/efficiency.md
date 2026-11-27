@@ -129,7 +129,7 @@ usegrunt efficiency metrics --port 8792
 usegrunt efficiency metrics --port 8792 --since 1795363200000 --until 1795366800000
 ```
 
-Without `--port`, the command uses `GRUNT_PORT` (or the compatibility `MILO_PORT`),
+Without `--port`, the command uses `GRUNT_PORT`,
 then the saved installed port, then 8788. It defaults to the last 24 hours;
 `--since` and `--until` accept Unix milliseconds and cannot request future data.
 This only reads local `/v1/diagnostics/metrics`; it never probes providers. Runtime
@@ -193,7 +193,7 @@ node /trusted/candidate/dist/local/workload-benchmark.js \
 The compiled harness requires a built baseline (`dist/local/source.js`); build a
 source-only baseline first, or run the source harness with
 `node --import tsx src/local/workload-benchmark.ts`. The source harness can load either format.
-Public `usegrunt` and managed `grunt-runtime`/`milo-runtime` packages are accepted.
+Public `usegrunt` and managed `grunt-runtime` packages are accepted.
 Git metadata is optional: source-free packages report a null commit and bounded
 code fingerprints. Fallback-replay and metadata comparison commands above remain
 development-source tools and require trusted source checkouts.

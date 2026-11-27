@@ -27,10 +27,10 @@ FAILURES = {'request_body', 'request_tools', 'request_tool_schema', 'request_siz
             'completion_billing', 'completion_usage', 'completion_attestation', 'completion_protocol',
             'stream_read', 'stream_format', 'stream_incomplete', 'stream_cleanup', 'turn_limit',
             'token_limit', 'price_limit', 'deadline', 'terminated', 'length', 'refusal'}
-PROVIDERS = {'dots', 'codex', 'opencode', 'kilo', 'nvidia', 'zro', 'tokenharbor', 'runcrate',
+PROVIDERS = {'codex', 'opencode', 'kilo', 'nvidia', 'zro', 'tokenharbor', 'runcrate',
              'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'perch', 'nous', 'kenari',
              'numes', 'goedel', 'darus', 'aperture-ai', 'crowllm', 'millionseek', 'freepi', 'fikra',
-             'openference', 'reflection-beam', 'antseed-vikey', 'freellmapi'}
+             'openference', 'reflection-beam', 'antseed-vikey'}
 BINS_MS = (1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000, 60000, 180000, 600000, 3600000)
 SEMVER = re.compile(r'\d{1,6}\.\d{1,6}\.\d{1,6}(?:-[0-9A-Za-z.-]{1,32})?(?:\+[0-9A-Za-z.-]{1,32})?\Z')
 MAX_AGGREGATES = 100000
