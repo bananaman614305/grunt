@@ -19,7 +19,7 @@ import { bundledRegistry, disabledAdapters, isDeclarativeAdapter, knownAdapters,
 import type { Registry } from '../registry.js';
 import { BROWSER_CONCURRENCY } from './parallel.js';
 import { Nvidia, writeNvidiaGrant } from './nvidia.js';
-import { Zro, readZroGrant, writeZroGrant } from './zro.js';
+import { Zro, writeZroGrant } from './zro.js';
 import { TokenHarbor, writeTokenHarborGrant } from './tokenharbor.js';
 import { Runcrate, RuncrateVerificationError, readRuncrateGrant, validateRuncrateVerification, verifyRuncrateDirectGrant, verifyRuncrateSquireGrant, writeRuncrateGrant } from './runcrate.js';
 import type { RuncrateGrantContext, RuncrateGrantVerifier } from './runcrate.js';
@@ -1529,29 +1529,34 @@ export async function setup(notify = console.log, providers: string[] = [], opti
     if (!providers.length) return {};
     if (providers.includes('zro')) {
       const source = new Zro({ directory: location });
-      // A key that only reports quota still works after reset. Keep it installed
-      // until another candidate passes, so a later rejected key cannot erase it.
-      let limited: { base_url: string; token: string } | undefined;
+      // Each candidate is probed in memory and installed only after it answers,
+      // so the daemon never reads an unverified key. A key that only reports
+      // quota still works after reset; it stays installed until a candidate passes.
+      let limited = false, stale = false;
       const isQuota = (error: unknown) => error instanceof SourceError && error.code === 'quota';
       try {
         const result = await setupProviders(squire, {
           hasKey: async provider => {
             if (provider !== 'zro') return false;
-            try { return await source.healthCheck(options.signal); }
-            catch (error) {
-              if (isQuota(error)) limited ??= await readZroGrant(location).then(({ base_url, token }) => ({ base_url, token }), () => undefined);
-              throw error;
-            }
+            try { return (stale = !await source.healthCheck(options.signal)) === false; }
+            catch (error) { if (isQuota(error)) limited = true; throw error; }
           },
           addGrant: async (provider, grant) => {
             if (provider !== 'zro') throw new Error('Unexpected Zro credential');
-            await writeZroGrant(grant, location);
-            try { await probeGrant(source, location, options.signal); }
-            catch (error) {
-              if (isQuota(error)) limited ??= { base_url: grant.base_url, token: grant.token };
-              else if (limited) await writeZroGrant(limited, location);
+            const candidate = new Zro({ directory: location,
+              loadGrant: async () => ({ base_url: grant.base_url, token: grant.token, free_account_verified: true, verified_at: new Date().toISOString() }) });
+            const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(60000)]);
+            try {
+              await candidate.complete({ model: 'zro', cwd: location, messages: [{ role: 'user', content: 'Reply with one word: ready' }], tools: [], stream: false, maxTokens: 16 }, signal);
+              signal.throwIfAborted();
+            } catch (error) {
+              signal.throwIfAborted();
+              if (isQuota(error) && !limited) { await writeZroGrant(grant, location); limited = true; }
+              // A local key that already failed its health check is removed, never a limited one.
+              else if (!isQuota(error) && stale && !limited) await rm(join(location, 'zro.json'), { force: true });
               throw error;
-            }
+            } finally { await candidate.close(); }
+            await writeZroGrant(grant, location);
           }
         }, { providers: ['zro'], notify, signal: options.signal, directory: location, ...(options.background !== undefined ? { background: options.background } : {}) });
         if (result.dropped.length) throw new Error('Zro setup incomplete; rerun usegrunt setup');

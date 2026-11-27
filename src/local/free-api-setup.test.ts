@@ -355,8 +355,8 @@ it.each([true, false])('tries vaulted Zro access after local readiness reports q
   else await expect(setup(() => {}, ['zro'], { directory, squire })).rejects.toMatchObject({ code: 'quota' });
   expect(requests).toEqual(['Bearer local-limited', 'Bearer working']);
   expect(squire.runs.start).not.toHaveBeenCalled();
-  // A quota reply proves the key works, so a limited key stays installed for recovery at reset.
-  await expect(readZroGrant(directory)).resolves.toMatchObject({ token: 'working' });
+  // A passing candidate replaces the local key; otherwise the installed limited key stays for the reset.
+  await expect(readZroGrant(directory)).resolves.toMatchObject({ token: working ? 'working' : 'local-limited' });
 });
 
 it('removes a Zro key the provider rejects, but not one that is only over quota', async () => {
@@ -383,14 +383,17 @@ it.each([false, true])('keeps a quota-limited Zro key when a later candidate is 
       grant: async (reference: string) => ({ base_url: 'https://grant.test', token: reference.slice('vault://'.length) })
     }, runs: { start: vi.fn(), get: vi.fn() }
   };
-  const requests: string[] = [];
+  const requests: string[] = [], installedDuringProbe: (string | undefined)[] = [];
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
     const authorization = new Headers(init!.headers).get('authorization')!;
     requests.push(authorization);
+    // The daemon reads zro.json; a candidate under test is never installed there.
+    if (authorization === 'Bearer revoked') installedDuringProbe.push((await readZroGrant(directory).catch(() => undefined))?.token);
     return new Response(null, { status: authorization === 'Bearer limited' ? 402 : 401 });
   });
   await expect(setup(() => {}, ['zro'], { directory, squire })).rejects.toMatchObject({ code: 'quota' });
   expect(requests).toEqual(['Bearer limited', 'Bearer revoked']);
+  expect(installedDuringProbe).toEqual(['limited']);
   await expect(readZroGrant(directory)).resolves.toMatchObject({ token: 'limited' });
   expect(squire.runs.start).not.toHaveBeenCalled();
 });
