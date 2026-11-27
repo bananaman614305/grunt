@@ -57,12 +57,12 @@ it('connects in-process using Grunt-owned isolated browser-profile and signup-se
 
 it('refuses paths aliasing Trusty Squire personal Chrome profile or personal session store', async () => {
   const personalSquireConfig = join(homedir(), '.config', 'trusty-squire');
-  expect(() => gruntSignupPaths(personalSquireConfig)).toThrow(SignupSessionIsolationError);
+  await expect(gruntSignupPaths(personalSquireConfig)).rejects.toThrow(SignupSessionIsolationError);
 
   const symlinkDir = await mkdtemp(join(tmpdir(), 'grunt-squire-symlink-'));
   try {
     await symlink(join(homedir(), '.trusty-squire', 'chrome-profile'), join(symlinkDir, GRUNT_BROWSER_PROFILE_DIR));
-    expect(() => gruntSignupPaths(symlinkDir)).toThrow(SignupProfileIsolationError);
+    await expect(gruntSignupPaths(symlinkDir)).rejects.toThrow(SignupProfileIsolationError);
   } finally {
     await rm(symlinkDir, { recursive: true, force: true });
   }
@@ -79,7 +79,7 @@ it('stops before interactive sign-in when GRUNT_SETUP_NO_HUMAN=1 and no saved se
 
 it('reuses a saved isolated session when GRUNT_SETUP_NO_HUMAN=1 without starting a browser ceremony', async () => {
   vi.stubEnv('GRUNT_SETUP_NO_HUMAN', '1');
-  const { sessionPath } = gruntSignupPaths(dir);
+  const { sessionPath } = await gruntSignupPaths(dir);
   await writeSignupSession(sessionPath, sampleSession);
 
   const ensureSession = vi.fn(async (_options, runtime) => {

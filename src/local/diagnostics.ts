@@ -1,7 +1,8 @@
+import { hasOwnerMode, openPrivateFile } from './private-file.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { chmod, lstat, mkdir, open, realpath } from 'node:fs/promises';
+import { chmod, lstat, mkdir, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Client, InValue, Transaction } from '@libsql/client';
@@ -48,6 +49,7 @@ export interface DiagnosticEvent extends SafeDiagnosticMetadata {
   outcome?: 'passed' | 'failed' | 'cancelled' | 'skipped'; durationMs?: number;
   errorCode?: typeof diagnosticErrors[number]; retryAfterSeconds?: number; inputTokens?: number; outputTokens?: number; free?: boolean;
   // Content-free reply ending on a successful attempt.finish: mapped finish_reason, whether the reply held tool calls, reasoning tokens when reported.
+  codingToolTurn?: boolean; dispatchedToolCallPassed?: boolean; firstOutputMs?: number;
   finishReason?: typeof diagnosticFinishReasons[number]; hadToolCalls?: boolean; reasoningTokens?: number;
   providerFinishReason?: typeof providerFinishReasons[number];
   caller?: string; endpoint?: 'chat' | 'messages' | 'responses';
@@ -61,7 +63,7 @@ export interface DiagnosticEvent extends SafeDiagnosticMetadata {
   replaySafe?: boolean;
 }
 export type StoredDiagnosticEvent = DiagnosticEvent & { seq: number };
-export interface DiagnosticContext { requestId: string; kind: typeof diagnosticKinds[number]; attemptId?: string; sink?: DiagnosticsStore; requestRecorded?: boolean; local?: boolean; incomplete?: boolean; responseBytes?: number; errorCode?: DiagnosticEvent['errorCode']; actor?: DiagnosticEvent['actor']; workerId?: string }
+export interface DiagnosticContext { toolChoiceEvidence?: { allConstrained?: boolean }; requestId: string; kind: typeof diagnosticKinds[number]; attemptId?: string; sink?: DiagnosticsStore; requestRecorded?: boolean; local?: boolean; incomplete?: boolean; responseBytes?: number; errorCode?: DiagnosticEvent['errorCode']; actor?: DiagnosticEvent['actor']; workerId?: string }
 const context = new AsyncLocalStorage<DiagnosticContext>();
 export const currentDiagnosticContext = () => context.getStore();
 export const withDiagnosticContext = <T>(value: DiagnosticContext, fn: () => T): T => context.run(value, fn);
@@ -107,6 +109,11 @@ export function sanitizeDiagnosticEvent(input: unknown): DiagnosticEvent | null 
   if (member(['chat', 'messages', 'responses'] as const, v.endpoint)) result.endpoint = v.endpoint;
   for (const field of ['promptBytes', 'responseBytes', 'maxOutputTokens'] as const) if (integer(v[field])) result[field] = v[field];
   if (integer(v.lastProgressAt) && v.lastProgressAt <= 8640000000000000) result.lastProgressAt = v.lastProgressAt;
+  if (result.type === 'attempt.finish') {
+    if (typeof v.dispatchedToolCallPassed === 'boolean') result.dispatchedToolCallPassed = v.dispatchedToolCallPassed;
+    if (typeof v.codingToolTurn === 'boolean') result.codingToolTurn = v.codingToolTurn;
+    if (finite(v.firstOutputMs)) result.firstOutputMs = v.firstOutputMs;
+  }
   if (typeof v.hadToolCalls === 'boolean') result.hadToolCalls = v.hadToolCalls;
   for (const field of ['durationMs', 'retryAfterSeconds'] as const) if (finite(v[field])) result[field] = v[field];
   return result;
@@ -118,9 +125,11 @@ export function observeRequestPhase(phase: NonNullable<DiagnosticEvent['phase']>
     requestId: current.requestId, kind: current.kind, ...(source ? { source } : {}) });
 }
 
-export function observeAttemptDispatch({ maxOutputTokens, ...details }: Pick<DiagnosticEvent, 'model' | 'account'> & { maxOutputTokens?: number | undefined }) {
+export function observeAttemptDispatch({ maxOutputTokens, constrained = false, ...details }: Pick<DiagnosticEvent, 'model' | 'account'> & { maxOutputTokens?: number | undefined; constrained?: boolean }) {
   const current = currentDiagnosticContext();
   if (!current?.sink || !current.attemptId) return;
+  // A retry or model rotation can issue several inference requests for one attempt.
+  if (current.toolChoiceEvidence) current.toolChoiceEvidence.allConstrained = current.toolChoiceEvidence.allConstrained !== false && constrained;
   current.sink.record({ ...details, version: 1, id: randomUUID(), at: Date.now(), type: 'attempt.dispatch',
     ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
     requestId: current.requestId, kind: current.kind, attemptId: current.attemptId });
@@ -303,14 +312,16 @@ export class DiagnosticsStore {
     try {
       await mkdir(options.directory, { recursive: true, mode: 0o700 });
       const dir = await lstat(options.directory);
-      if (!dir.isDirectory() || dir.isSymbolicLink() || dir.uid !== process.getuid?.() || (dir.mode & 0o777) !== 0o700 || await realpath(options.directory) !== resolve(options.directory)) throw new Error('private_storage_required');
-      const path = join(resolve(options.directory), 'diagnostics.db');
-      try { const file = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); await file.close(); }
+      if (!dir.isDirectory() || dir.isSymbolicLink() || !hasOwnerMode(dir, 0o700)) throw new Error('private_storage_required');
+      const canonical = await realpath(options.directory), configured = resolve(options.directory);
+      if (process.platform === 'win32' ? canonical.toLowerCase() !== configured.toLowerCase() : canonical !== configured) throw new Error('private_storage_required');
+      const path = join(canonical, 'diagnostics.db');
+      try { const file = await openPrivateFile(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); await file.close(); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
       const info = await lstat(path);
-      if (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid?.() || (info.mode & 0o777) !== 0o600 || info.size > 256 * 1024 * 1024) throw new Error('private_storage_required');
+      if (!info.isFile() || info.isSymbolicLink() || !hasOwnerMode(info, 0o600) || info.size > 256 * 1024 * 1024) throw new Error('private_storage_required');
       for (const suffix of ['-wal', '-shm']) {
-        try { const sidecar = await lstat(path + suffix); if (!sidecar.isFile() || sidecar.isSymbolicLink() || sidecar.uid !== process.getuid?.() || (sidecar.mode & 0o777) !== 0o600) throw new Error('private_storage_required'); }
+        try { const sidecar = await lstat(path + suffix); if (!sidecar.isFile() || sidecar.isSymbolicLink() || !hasOwnerMode(sidecar, 0o600)) throw new Error('private_storage_required'); }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
       }
       // Passive runtime imports and isolated provider probes do not enable

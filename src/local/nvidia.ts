@@ -1,7 +1,8 @@
+import { hasOwnerMode, openPrivateFile } from './private-file.js';
 import { configRoot } from '../brand.js';
 import { diagnosticFetch, observeAttemptDispatch } from './diagnostics.js';
 import { constants } from 'node:fs';
-import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { lengthLimited, truncatedCompletion, withObservedEnding, SourceError } from './source.js';
@@ -21,10 +22,10 @@ function validateGrant(value: unknown): NvidiaGrant {
 export async function readNvidiaGrant(directory = configDirectory(), env: NodeJS.ProcessEnv = process.env): Promise<NvidiaGrant> {
   const vaulted = await readVaultGrant('nvidia', directory, env);
   if (vaulted) return validateGrant({ base_url: vaulted.base_url, token: vaulted.token });
-  const file = await open(join(directory, 'nvidia.json'), constants.O_RDONLY | constants.O_NOFOLLOW);
+  const file = await openPrivateFile(join(directory, 'nvidia.json'), constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = await file.stat();
-    if (!stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.uid !== process.getuid?.()) throw new Error('Unsafe NVIDIA grant file');
+    if (!stat.isFile() || !hasOwnerMode(stat, 0o600)) throw new Error('Unsafe NVIDIA grant file');
     return validateGrant(JSON.parse(await file.readFile('utf8')));
   } finally { await file.close(); }
 }

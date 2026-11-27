@@ -3,10 +3,12 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { Kilo, KILO_BEAM, KILO_CATALOG_CACHE_MS, KILO_NOT_FOR_TOOL_WORK, KILO_ORIGIN, KILO_PARTICLE, verifyKiloAccess } from './kilo.js';
+import { Kilo, KILO_BEAM, KILO_CATALOG_CACHE_MS, KILO_IMAGE_MAX_BYTES, KILO_NOT_FOR_TOOL_WORK, KILO_ORIGIN, KILO_PARTICLE, KILO_TEXT_MAX_BYTES, verifyKiloAccess, verifyKiloCatalog } from './kilo.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 import { writePrivateProviderGrant } from './provider-grant.js';
 import { beginSetupSession, readSetupSession } from './setup-session.js';
+import { DiagnosticsStore } from './diagnostics.js';
+import { buildRecoveryAudit } from '../recovery-audit.js';
 import { createLocalApp } from './api.js';
 import { Sources, endingOf, guardToolCalls } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
@@ -29,6 +31,35 @@ function fixture(options: { catalog?: unknown; catalogRows?: unknown[]; reflecti
   const source = new Kilo({ directory, fetcher, ...(options.reflectionBeam ? { reflectionBeam: true } : {}), ...(options.timeout ? { timeout: options.timeout } : {}), ...(options.anonymous ? { anonymous: options.anonymous } : {}) }); sources.push(source);
   return { source, fetcher, posts: () => fetcher.mock.calls.filter(([, init]) => init?.method === 'POST') };
 }
+it.each([true, false])('scores only choices conveyed in the Kilo POST (model supports tool choice: %s)', async supported => {
+  const catalog = model();
+  if (supported) catalog.supported_parameters.push('tool_choice');
+  const named = (name: string) => ({ type: 'function', function: { name } });
+  const tools = [tool, { ...tool, function: { ...tool.function, name: 'another' } }];
+  const f = fixture({ catalog, infer: init => {
+    const choice = JSON.parse(String(init?.body)).tool_choice;
+    return Response.json(choice?.function ? result({ choices: [{ message: { content: '', tool_calls: [call] } }] }) : result());
+  } });
+  const pool = new Sources([f.source]), store = await DiagnosticsStore.open({ directory });
+  pool.setDiagnostics(store);
+  const app = createLocalApp(pool);
+  try {
+    for (const choice of ['required', named('nonce'), named('another'), 'auto']) {
+      const response = await app.request('http://localhost:8788/v1/chat/completions', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...request(), tools, tool_choice: choice })
+      });
+      expect(response.status).toBe(200);
+      const wire = JSON.parse(String(f.posts().at(-1)?.[1]?.body));
+      expect(wire.tool_choice).toEqual(supported && choice !== 'auto' ? choice : undefined);
+    }
+    const events = (await store.list()).events;
+    const audit = buildRecoveryAudit(events, { since: 0, until: Date.now() + 1 }, undefined, undefined, [{ id: 'kilo', tier: 'stable' }]);
+    expect(audit.toolTiers.adapters[0]).toMatchObject({ attempts: 4, expectedCalls: supported ? 3 : 0,
+      toolCallPassRate: supported ? 1 / 3 : null, passRate: 1 });
+  } finally { await pool.close(); await store.close(); }
+});
+
 it.each([false, true])('aborts a stalled Kilo stream after the first delta (client stream: %s)', async stream => {
   const f = fixture({ infer: () => new Response(new ReadableStream({
     start(controller) {
@@ -122,7 +153,7 @@ it.each([
   ['request_tool_schema', () => ({ ...request(), tools: [{ ...tool, function: { ...tool.function, parameters: { type: 'imaginary' } } }] })],
   ['request_tools', () => ({ ...request(), messages: [{ role: 'tool', content: 'private uncorrelated result', tool_call_id: 'invented' }] })],
   ['request_body', () => ({ ...request(), maxTokens: 0 })],
-  ['request_body', () => ({ ...request(), imageInput: true })],
+  ['request_body', () => ({ ...request(), messages: [{ role: 'user', content: [] }] })],
   ['request_size', () => ({ ...request(), messages: [{ role: 'user', content: 'private request marker ' + 'x'.repeat(2 * 1024 * 1024) }] })]
 ] as const)('records only a fixed %s reason for local request refusals before the network', async (failureReason, makeRequest) => {
   const f = fixture();
@@ -387,8 +418,14 @@ it.each([
   await expect(f.source.complete(request(), new AbortController().signal)).rejects.toThrow(); expect(f.posts()).toHaveLength(1);
 });
 it('does not move on after a request timeout', async () => {
-  const fetcher = vi.fn<typeof fetch>(async url => String(url).endsWith('/models') ? Response.json({ data: rotation() }) : new Promise<Response>(() => {}));
-  const source = new Kilo({ directory, fetcher, timeout: 5 }); sources.push(source);
+  const deadline = new AbortController();
+  vi.spyOn(AbortSignal, 'timeout').mockReturnValueOnce(deadline.signal);
+  const fetcher = vi.fn<typeof fetch>(async url => {
+    if (String(url).endsWith('/models')) return Response.json({ data: rotation() });
+    queueMicrotask(() => deadline.abort());
+    return new Promise<Response>(() => {});
+  });
+  const source = new Kilo({ directory, fetcher }); sources.push(source);
   await expect(source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'timeout' });
   expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
 });
@@ -463,4 +500,123 @@ it('caches verified /models metadata for 60s while preserving exact model and ze
   billed = false;
   await source.complete(request(), new AbortController().signal);
   expect(modelGets()).toBe(3);
+});
+
+const visionModel = (id: string = KILO_PARTICLE, extra: Record<string, unknown> = {}) => ({
+  ...model(id),
+  architecture: { input_modalities: ['text', 'image'] },
+  ...extra
+});
+const imageMessage = (data = 'AAAA') => ({
+  role: 'user',
+  content: [
+    { type: 'text' as const, text: 'Describe this image' },
+    { type: 'image_url' as const, image_url: { url: `data:image/png;base64,${data}` } }
+  ]
+});
+
+it('discovers only verified $0 :free vision models from architecture.input_modalities and rejects text-only or paid vision models', async () => {
+  const ling = 'inclusionai/ling-3.2-flash:free';
+  const nemotronVl = 'nvidia/nemotron-3.5-super-vl:free';
+  const rows = [
+    visionModel(ling),
+    { ...model('nvidia/nemotron-3.5-lightning:free'), architecture: { input_modalities: ['text'] } },
+    visionModel('vendor/paid-vision:free', { isFree: false }),
+    visionModel('vendor/billed-image:free', { pricing: { prompt: '0', completion: '0', image: '0.001' } }),
+    visionModel('vendor/nonfree-suffix', { isFree: true }),
+    visionModel(KILO_BEAM), // Reflection Beam stays text-only even if catalog lists image.
+    visionModel(KILO_PARTICLE, { pricing: { prompt: '0', completion: '0', image: '0' } }),
+    visionModel(nemotronVl, { architecture: { input_modalities: ['text', 'image', 'video'] } })
+  ];
+  const fetcher = async () => Response.json({ data: rows });
+  const catalog = await verifyKiloCatalog({ fetcher });
+  expect(catalog.models).toEqual([KILO_PARTICLE, KILO_BEAM, ling, 'nvidia/nemotron-3.5-lightning:free', nemotronVl]);
+  expect(catalog.imageModels).toEqual([KILO_PARTICLE, ling, nemotronVl]);
+  expect(await verifyKiloAccess({ fetcher, imageInput: true })).toEqual([KILO_PARTICLE, ling, nemotronVl]);
+  expect((await verifyKiloCatalog({ fetcher, reflectionBeam: true })).imageModels).toEqual([]);
+  await expect(verifyKiloAccess({ fetcher: async () => Response.json({ data: [model(KILO_PARTICLE), visionModel('vendor/paid:free', { isFree: false })] }), imageInput: true }))
+    .rejects.toMatchObject({ code: 'refused' });
+});
+
+it('routes image requests on kilo only to verified free vision models, forwards multimodal parts, and keeps reflection-beam text-only', async () => {
+  const ling = 'inclusionai/ling-3.2-flash:free';
+  const textOnly = 'nvidia/nemotron-3.5-lightning:free';
+  const rows = [
+    { ...model(textOnly), architecture: { input_modalities: ['text'] } },
+    visionModel(KILO_PARTICLE),
+    visionModel(ling),
+    visionModel('vendor/paid-vl:free', { isFree: false }),
+    visionModel('vendor/image-cost:free', { pricing: { prompt: '0', completion: '0', image: '0.01' } }),
+    model(KILO_BEAM)
+  ];
+  let sentBody: Record<string, unknown> = {};
+  const f = fixture({
+    catalogRows: rows,
+    infer: init => {
+      sentBody = JSON.parse(String(init?.body));
+      if (sentBody.model === KILO_PARTICLE) return new Response('limited', { status: 429, headers: { 'retry-after': '30' } });
+      return Response.json(result({ model: sentBody.model as string }));
+    }
+  });
+  // Even if a text-only model became preferred earlier, an image request skips it and tries only verified vision models.
+  await expect(f.source.complete({ ...request(), messages: [imageMessage()], imageInput: true }, new AbortController().signal))
+    .resolves.toMatchObject({ servedModel: ling, free: true, text: 'Hello.' });
+  expect(f.posts().map(([, init]) => sentModel(init))).toEqual([KILO_PARTICLE, ling]);
+  expect(sentBody.messages).toEqual([imageMessage()]);
+
+  // When no free vision model is verified in the catalog, kilo refuses cleanly without posting.
+  const noVision = fixture({ catalogRows: [{ ...model(KILO_PARTICLE), architecture: { input_modalities: ['text'] } }, visionModel('vendor/paid-vl:free', { isFree: false })] });
+  await expect(noVision.source.complete({ ...request(), messages: [imageMessage()], imageInput: true }, new AbortController().signal))
+    .rejects.toMatchObject({ code: 'refused', diagnostics: { failureReason: 'request_body' } });
+  expect(noVision.posts()).toHaveLength(0);
+
+  // Reflection Beam remains strictly text-only and refuses before hitting the network.
+  await recordDataSharingConsent(directory, ['reflection-beam']);
+  const beam = fixture({ reflectionBeam: true, catalogRows: [visionModel(KILO_BEAM)] });
+  await expect(beam.source.complete({ ...request(), model: 'reflection-beam', messages: [imageMessage()], imageInput: true }, new AbortController().signal))
+    .rejects.toMatchObject({ code: 'refused', diagnostics: { failureReason: 'request_body' } });
+  expect(beam.fetcher).not.toHaveBeenCalled();
+});
+
+it('allows larger bounded payloads for image requests on kilo while keeping text-only requests capped at 2 MiB', async () => {
+  const f = fixture({ catalogRows: [visionModel(KILO_PARTICLE)] });
+  // 3 MiB base64 image exceeds the 2 MiB text cap but fits within KILO_IMAGE_MAX_BYTES.
+  const mediumImage = 'A'.repeat(3 * 1024 * 1024);
+  await expect(f.source.complete({ ...request(), messages: [imageMessage(mediumImage)], imageInput: true }, new AbortController().signal))
+    .resolves.toMatchObject({ servedModel: KILO_PARTICLE, free: true });
+  expect(f.posts()).toHaveLength(1);
+  // Over KILO_IMAGE_MAX_BYTES is still rejected locally before the network.
+  const hugeImage = 'A'.repeat(KILO_IMAGE_MAX_BYTES + 1024);
+  await expect(f.source.complete({ ...request(), messages: [imageMessage(hugeImage)], imageInput: true }, new AbortController().signal))
+    .rejects.toMatchObject({ code: 'refused', diagnostics: { failureReason: 'request_size' } });
+  expect(f.posts()).toHaveLength(1);
+  // Text-only stays capped at KILO_TEXT_MAX_BYTES.
+  await expect(f.source.complete({ ...request(), messages: [{ role: 'user', content: 'x'.repeat(KILO_TEXT_MAX_BYTES + 1) }] }, new AbortController().signal))
+    .rejects.toMatchObject({ code: 'refused', diagnostics: { failureReason: 'request_size' } });
+  expect(f.posts()).toHaveLength(1);
+});
+
+it('accepts trailing empty-string content on a post-finish usage SSE chunk while still rejecting non-empty content after finish', async () => {
+  const nemotronVl = 'nvidia/nemotron-3.5-super-vl:free';
+  const sse = (frames: unknown[]) => frames.map(frame => `data: ${JSON.stringify(frame)}\n\n`).join('') + 'data: [DONE]\n\n';
+  const good = fixture({
+    catalogRows: [visionModel(nemotronVl)],
+    infer: () => new Response(sse([
+      { model: nemotronVl, choices: [{ index: 0, delta: { content: 'Green', role: 'assistant' }, finish_reason: null }] },
+      { model: nemotronVl, choices: [{ index: 0, delta: { content: '', role: 'assistant' }, finish_reason: 'stop' }] },
+      { model: nemotronVl, choices: [{ index: 0, delta: { content: '', role: 'assistant' }, finish_reason: 'stop' }], usage: usage() }
+    ]), { headers: { 'content-type': 'text/event-stream' } })
+  });
+  await expect(good.source.complete({ ...request(), messages: [imageMessage()], imageInput: true }, new AbortController().signal))
+    .resolves.toMatchObject({ servedModel: nemotronVl, free: true, text: 'Green' });
+
+  const bad = fixture({
+    catalogRows: [visionModel(nemotronVl)],
+    infer: () => new Response(sse([
+      { model: nemotronVl, choices: [{ index: 0, delta: { content: 'Green', role: 'assistant' }, finish_reason: 'stop' }] },
+      { model: nemotronVl, choices: [{ index: 0, delta: { content: 'extra', role: 'assistant' }, finish_reason: 'stop' }], usage: usage() }
+    ]), { headers: { 'content-type': 'text/event-stream' } })
+  });
+  await expect(bad.source.complete({ ...request(), messages: [imageMessage()], imageInput: true }, new AbortController().signal))
+    .rejects.toMatchObject({ code: 'upstream', diagnostics: { failureReason: 'response_content' } });
 });

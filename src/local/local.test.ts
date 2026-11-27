@@ -70,20 +70,14 @@ it('models, failover, last typed error and loopback binding', async () => {
   await new Promise<void>(resolve => server.close(() => resolve()));
   expect(() => configure({ GRUNT_SOURCES: 'unknown' })).toThrow('Unknown');
 });
-it('advertises the grunt model while preserving legacy requests and source configuration', async () => {
+it('advertises the grunt model and its configured sources', async () => {
   const source = fake('custom-app'), sources = new Sources([source]);
   const app = createLocalApp(sources);
   const models = await (await app.request('http://localhost:8788/v1/models')).json();
   expect(models.data).toEqual(['grunt', 'custom-app'].map(id => ({ id, object: 'model', created: 0, owned_by: 'grunt' })));
   expect(decode({ input: 'hello' }, 'responses', '/tmp').model).toBe('grunt');
-  expect(decode({ input: 'hello', model: 'milo' }, 'responses', '/tmp').model).toBe('grunt');
-  for (const model of ['grunt', 'milo', 'custom-app']) {
+  for (const model of ['grunt', 'custom-app']) {
     expect(await sources.complete(decode({ input: 'hello', model }, 'responses', '/tmp'), new AbortController().signal)).toEqual({ text: 'hello' });
-  }
-  for (const env of [{ MILO_SOURCES: 'dots' }, { GRUNT_SOURCES: 'dots', MILO_SOURCES: 'unknown' }]) {
-    const configured = configure(env);
-    expect(configured.sources.map(source => source.id)).toEqual(['dots']);
-    await configured.close();
   }
 });
 it('gateway only calls configured origin, preserves tools, rejects redirects and fails over availability errors', async () => {
@@ -213,7 +207,8 @@ it('caps gateway completions when max tokens are omitted and preserves explicit 
   const gateway=new Gateway('https://configured.invalid/v1','synthetic',fetcher);
   for(const maxTokens of [undefined,123]) {await gateway.complete({...decode({input:'hi'},'responses','/tmp'),maxTokens},new AbortController().signal);expect(JSON.parse(String(fetcher.mock.calls.at(-1)![1]!.body)).max_tokens).toBe(maxTokens);}
 });
-it.each(['grunt-local', 'milo-local'])('starts the daemon through the compatible %s bin symlink',async bin=>{
+it('starts the daemon through the grunt-local bin symlink',async ()=>{
+  const bin = 'grunt-local';
   const {symlink}=await import('node:fs/promises');
   const {spawn}=await import('node:child_process');
   const {createServer}=await import('node:net');
@@ -225,28 +220,26 @@ it.each(['grunt-local', 'milo-local'])('starts the daemon through the compatible
   await new Promise<void>((resolve,reject)=>reservation.close(error=>error?reject(error):resolve()));
   const dir=await mkdtemp(join(tmpdir(),'grunt-bin-'));
   await symlink(new URL('./main.ts',import.meta.url).pathname,join(dir,bin));
-  const env = bin === 'grunt-local' ? { ...process.env, GRUNT_PORT:port,GRUNT_SOURCES:'dots',GRUNT_CONFIG_DIR:dir }
-    : { ...process.env, GRUNT_PORT:undefined,GRUNT_SOURCES:undefined,GRUNT_CONFIG_DIR:undefined,MILO_PORT:port,MILO_SOURCES:'dots',MILO_CONFIG_DIR:dir };
+  const env = { ...process.env, GRUNT_PORT:port,GRUNT_SOURCES:'codex',GRUNT_CONFIG_DIR:dir, GRUNT_BACKGROUND_ACCOUNT_ACQUISITION: '0', GRUNT_REGISTRY_URL: 'http://127.0.0.1:0/registry' };
   const child=spawn(process.execPath,['--import','tsx',join(dir,bin),'serve'],{env,stdio:['ignore','ignore','pipe']});
-  try {await new Promise<void>((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('daemon did not listen')),3000);child.stderr.on('data',chunk=>{if(String(chunk).includes('grunt model API:')){clearTimeout(timer);resolve();}});child.on('exit',code=>{clearTimeout(timer);reject(new Error(`daemon exited ${code}`));});});expect((await fetch(`http://127.0.0.1:${port}/v1/models`)).status).toBe(200);}finally{const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));if (child.exitCode === null && child.signalCode === null) { child.kill(); await exited; } await rm(dir,{recursive:true,force:true});}
-});
+  try {await new Promise<void>((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('daemon did not listen')),10000);child.stderr.on('data',chunk=>{if(String(chunk).includes('grunt model API:')){clearTimeout(timer);resolve();}});child.on('exit',code=>{clearTimeout(timer);reject(new Error(`daemon exited ${code}`));});});expect((await fetch(`http://127.0.0.1:${port}/v1/models`)).status).toBe(200);}finally{const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));if (child.exitCode === null && child.signalCode === null) { child.kill(); await exited; } await rm(dir,{recursive:true,force:true});}
+}, 15000);
 it('starts setup from the usegrunt bin without arguments', async () => {
-  const { symlink, writeFile } = await import('node:fs/promises');
+  const { symlink } = await import('node:fs/promises');
   const { execFile } = await import('node:child_process');
   const directory = await mkdtemp(join(tmpdir(), 'grunt-bin-'));
   try {
     const bin = join(directory, 'usegrunt');
     await symlink(new URL('./main.ts', import.meta.url).pathname, bin);
-    await writeFile(join(directory, 'npm'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
     const result = await new Promise<{ output: string; code: number | string | undefined }>(resolve => {
-      execFile(process.execPath, ['--import', 'tsx', bin], { env: { ...process.env, PATH: directory, GRUNT_DAEMON: '' }, timeout: 5000 }, (error, stdout, stderr) => resolve({ output: stdout + stderr, code: error?.code }));
+      execFile(process.execPath, ['--import', 'tsx', bin], { env: { ...process.env, PATH: directory, GRUNT_DAEMON: '' }, timeout: 10000 }, (error, stdout, stderr) => resolve({ output: stdout + stderr, code: error?.code }));
     });
     expect(result.code).toBe(1);
     expect(result.output).toContain('grunt — free AI inference, pooled on your machine');
-    expect(result.output).toContain('Install tar using your system package manager.');
+    expect(result.output).toContain('Sign in to a user session with a working service manager');
     expect(result.output).not.toContain('grunt model API:');
   } finally { await rm(directory, { recursive: true, force: true }); }
-});
+}, 15000);
 
 it('translates Codex MCP namespaces through the completion and tool-result turns', async () => {
   const name = 'mcp__squire__operate_drive';

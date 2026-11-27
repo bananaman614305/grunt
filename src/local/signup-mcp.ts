@@ -1,32 +1,33 @@
 import { randomBytes } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import {
-  assertIsolatedProfileDir,
-  assertIsolatedSessionPath,
-  ensureSignupSession,
-  isCompleteSignupSession,
-  readSignupSession,
-  redactSecrets,
-  redactUnknownSecrets,
-  runSignup
-} from '@trusty-squire/mcp/signup';
+import type * as SignupSdkModule from '@trusty-squire/mcp/signup';
 import type {
   CapturedCredential,
+  CreateSignupSessionOptions,
+  EmbeddedSignupSession,
   SignupCeremonyOpenInfo,
   SignupConnectRuntime,
+  SignupDriveOptions,
+  SignupObservationSummary,
   SignupResult,
   SignupRunRuntime,
-  SignupSession
+  SignupSession,
+  createSignupSession as createSignupSessionFn,
+  ensureSignupSession as ensureSignupSessionFn,
+  readSignupSession as readSignupSessionFn,
+  runSignup as runSignupFn
 } from '@trusty-squire/mcp/signup';
 import { configRoot } from '../brand.js';
 import { isDeclarativeAdapter, safePublicHttpsOrigin } from '../registry.js';
 import type { Registry } from '../registry.js';
+import { squireClientPath } from './squire-client-path.js';
 import {
   defaultProviderOrigin,
   extractCredentialSecret,
@@ -40,8 +41,12 @@ import type { VaultProvider } from './vault.js';
 
 export type {
   CapturedCredential,
+  CreateSignupSessionOptions,
+  EmbeddedSignupSession,
   SignupCeremonyOpenInfo,
   SignupConnectRuntime,
+  SignupDriveOptions,
+  SignupObservationSummary,
   SignupResult,
   SignupRunRuntime,
   SignupSession
@@ -51,18 +56,41 @@ export const GRUNT_BROWSER_PROFILE_DIR = 'browser-profile';
 export const GRUNT_SIGNUP_SESSION_FILE = 'signup-session.json';
 export const EMBEDDED_DRIVE_GOAL_LIMIT = 4000;
 
-export interface EmbeddedSignupContinuation {
-  answer?: string;
-  selectedOptionLabel?: string;
-  previousField?: string;
-  previousQuestion?: string;
-  previousDecisions?: readonly string[];
+type SignupSdk = typeof SignupSdkModule;
+
+let cachedSignupSdk: Promise<SignupSdk> | undefined;
+
+/**
+ * Lazily loads `@trusty-squire/mcp/signup` so the standalone bundled background
+ * daemon (`dist/local/daemon.mjs`) starts with zero `node_modules` dependencies
+ * and resolves the CLI-owned package path only if embedded signup is invoked.
+ */
+export function loadEmbeddedSignupSdk(directory = configRoot()): Promise<SignupSdk> {
+  if (typeof GRUNT_DAEMON_BUNDLE === 'undefined') {
+    return cachedSignupSdk ??= import('@trusty-squire/mcp/signup');
+  }
+  return import('@trusty-squire/mcp/signup').catch(async () => {
+    const binPath = await squireClientPath(directory);
+    const signupEntry = join(dirname(binPath), 'signup.js');
+    return await import(pathToFileURL(signupEntry).href) as SignupSdk;
+  });
+}
+
+const SIGNUP_CONFIG_ERROR_NAMES = new Set([
+  'SignupConfigError',
+  'SignupProfileIsolationError',
+  'SignupSessionIsolationError'
+]);
+
+export function isSignupConfigError(error: unknown): boolean {
+  return error instanceof Error && SIGNUP_CONFIG_ERROR_NAMES.has(error.name);
 }
 
 export interface EmbeddedSignupRuntime {
-  ensureSession?: typeof ensureSignupSession;
-  runSignup?: typeof runSignup;
-  readSession?: typeof readSignupSession;
+  ensureSession?: typeof ensureSignupSessionFn;
+  createSignupSession?: typeof createSignupSessionFn;
+  runSignup?: typeof runSignupFn;
+  readSession?: typeof readSignupSessionFn;
   connectRuntime?: SignupConnectRuntime;
   signupRuntime?: SignupRunRuntime;
 }
@@ -79,6 +107,32 @@ export interface PersistedCaptureSummary {
   provider: string;
   origin: string;
   storedInVault: boolean;
+}
+
+export interface EmbeddedDriveOutcome {
+  driveResult: Record<string, unknown>;
+  signupResult: SignupResult;
+}
+
+export interface ManagedEmbeddedSignupSession {
+  readonly provider: string;
+  readonly profileDir: string;
+  readonly sessionId: string | null;
+  readonly currentUrl: string | null;
+  readonly closed: boolean;
+  drive(options: {
+    url?: string;
+    goal: string;
+    facts?: Record<string, string>;
+    answer?: string;
+    maxSteps?: number;
+    maxSeconds?: number;
+    timeoutMs?: number;
+    signal?: AbortSignal;
+  }): Promise<EmbeddedDriveOutcome>;
+  click(ref: string): Promise<SignupObservationSummary>;
+  observe(format?: 'compact' | 'full'): Promise<SignupObservationSummary>;
+  close(): Promise<void>;
 }
 
 const SERVICE_TO_VAULT_PROVIDER: Record<string, VaultProvider> = {
@@ -103,10 +157,11 @@ export function vaultProviderForService(service: string): VaultProvider | undefi
  * profile and embedded signup session file. Refuses any path that aliases
  * Trusty Squire's personal profile or personal session store.
  */
-export function gruntSignupPaths(directory = configRoot()): { profileDir: string; sessionPath: string } {
+export async function gruntSignupPaths(directory = configRoot()): Promise<{ profileDir: string; sessionPath: string }> {
+  const sdk = await loadEmbeddedSignupSdk(directory);
   return {
-    profileDir: assertIsolatedProfileDir(join(directory, GRUNT_BROWSER_PROFILE_DIR)),
-    sessionPath: assertIsolatedSessionPath(join(directory, GRUNT_SIGNUP_SESSION_FILE))
+    profileDir: sdk.assertIsolatedProfileDir(join(directory, GRUNT_BROWSER_PROFILE_DIR)),
+    sessionPath: sdk.assertIsolatedSessionPath(join(directory, GRUNT_SIGNUP_SESSION_FILE))
   };
 }
 
@@ -127,14 +182,15 @@ export async function ensureEmbeddedSignupSession(
 ): Promise<{ state: 'existing' | 'installed'; session: SignupSession; profileDir: string; sessionPath: string }> {
   options.signal?.throwIfAborted();
   const directory = options.directory ?? configRoot();
-  const { profileDir, sessionPath } = gruntSignupPaths(directory);
+  const sdk = await loadEmbeddedSignupSdk(directory);
+  const { profileDir, sessionPath } = await gruntSignupPaths(directory);
   await mkdir(directory, { recursive: true, mode: 0o700 });
   options.signal?.throwIfAborted();
 
   const nonInteractive = options.noHuman === true || options.background === true;
   if (nonInteractive) {
-    const existing = await (runtime.readSession ?? readSignupSession)(sessionPath);
-    if (!isCompleteSignupSession(existing)) {
+    const existing = await (runtime.readSession ?? sdk.readSignupSession)(sessionPath);
+    if (!sdk.isCompleteSignupSession(existing)) {
       throw new Error('Squire login needs human verification; stopped before onboarding');
     }
   }
@@ -151,7 +207,7 @@ export async function ensureEmbeddedSignupSession(
       }
     : runtime.connectRuntime;
 
-  const ensure = runtime.ensureSession ?? ensureSignupSession;
+  const ensure = runtime.ensureSession ?? sdk.ensureSignupSession;
   const result = await ensure(
     {
       profileDir,
@@ -253,22 +309,67 @@ export async function persistCapturedCredential(input: {
   return { provider: input.provider, origin: parsed.origin, storedInVault: false };
 }
 
-// Chrome enforces exclusive custody per user-data-dir. Serialize embedded
-// runSignup calls targeting the same Grunt profile directory so concurrent
-// provider setups never collide on ProfileBusyError.
-const profileQueues = new Map<string, Promise<unknown>>();
+// Chrome enforces exclusive custody per user-data-dir. Hold an exclusive lease
+// per Grunt profile directory for the full lifetime of each live embedded
+// signup session so concurrent provider setups never collide on ProfileBusyError
+// while multi-turn resumes keep the same browser tab and open dialog alive.
+interface ProfileLeaseState {
+  held: boolean;
+  waiters: { grant(): void }[];
+}
 
-function serializeProfileRun<T>(profileDir: string, signal: AbortSignal | undefined, work: () => Promise<T>): Promise<T> {
-  const previous = profileQueues.get(profileDir) ?? Promise.resolve();
-  const next = previous.catch(() => {}).then(async () => {
-    signal?.throwIfAborted();
-    return work();
+const profileLeases = new Map<string, ProfileLeaseState>();
+
+function acquireProfileLease(profileDir: string, signal?: AbortSignal): Promise<() => void> {
+  signal?.throwIfAborted();
+  let state = profileLeases.get(profileDir);
+  if (!state) {
+    state = { held: false, waiters: [] };
+    profileLeases.set(profileDir, state);
+  }
+
+  const createRelease = (leaseState: ProfileLeaseState) => {
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const next = leaseState.waiters.shift();
+      if (next) {
+        next.grant();
+      } else {
+        leaseState.held = false;
+        if (profileLeases.get(profileDir) === leaseState) {
+          profileLeases.delete(profileDir);
+        }
+      }
+    };
+  };
+
+  if (!state.held) {
+    state.held = true;
+    return Promise.resolve(createRelease(state));
+  }
+
+  const leaseState = state;
+  return new Promise<() => void>((resolve, reject) => {
+    const waiter = {
+      grant: () => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve(createRelease(leaseState));
+      }
+    };
+    const onAbort = () => {
+      const index = leaseState.waiters.indexOf(waiter);
+      if (index !== -1) leaseState.waiters.splice(index, 1);
+      if (!leaseState.held && leaseState.waiters.length === 0 && profileLeases.get(profileDir) === leaseState) {
+        profileLeases.delete(profileDir);
+      }
+      reject(signal?.reason ?? new Error('Provider signup cancelled'));
+    };
+    leaseState.waiters.push(waiter);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
   });
-  profileQueues.set(profileDir, next);
-  void next.finally(() => {
-    if (profileQueues.get(profileDir) === next) profileQueues.delete(profileDir);
-  }).catch(() => {});
-  return next;
 }
 
 function mapEmbeddedDriveStatus(result: SignupResult): string {
@@ -285,159 +386,73 @@ function mapEmbeddedDriveStatus(result: SignupResult): string {
   }
 }
 
-const EMBEDDED_FIXED_ANSWERS = new Set([
-  'WAIT',
-  'DONE',
-  'BLOCKED',
-  'NONE_OF_THESE',
-  'STUCK',
-  'TAKE_OVER',
-  'I AM TAKING OVER'
-]);
+function formatEmbeddedDriveResult(
+  sdk: SignupSdk,
+  signupResult: SignupResult,
+  capturedSecrets: ReadonlySet<string>
+): EmbeddedDriveOutcome {
+  const scrubbed = sdk.redactUnknownSecrets(signupResult, capturedSecrets);
+  const scrubText = (value: string | undefined) =>
+    value === undefined ? undefined : redactVaultSecrets(sdk.redactSecrets(value, capturedSecrets), [...capturedSecrets]);
 
-const MAX_CONTINUATION_DECISIONS = 6;
-
-function normalizeContinuationText(value: string): string {
-  return redactVaultSecrets(value.replace(/\s+/g, ' ').trim());
-}
-
-/**
- * Translates an `operate_drive` resume answer and prior pause metadata into
- * updated `facts` and a bounded continuation directive for `runSignup`, which
- * starts each browser turn from the persisted profile directory and current
- * page URL rather than an external live MCP session.
- */
-export function applyEmbeddedContinuation(input: {
-  goal: string;
-  facts?: Record<string, string>;
-  continuation?: EmbeddedSignupContinuation;
-}): { goal: string; facts: Record<string, string>; decision?: string } {
-  const mergedFacts: Record<string, string> = { ...(input.facts ?? {}) };
-  const continuation = input.continuation;
-  const rawAnswer = typeof continuation?.answer === 'string' ? continuation.answer.trim() : '';
-  const previousField = typeof continuation?.previousField === 'string' ? continuation.previousField.trim() : '';
-  const selectedOptionLabel = typeof continuation?.selectedOptionLabel === 'string'
-    ? continuation.selectedOptionLabel.trim()
-    : '';
-
-  let decision: string | undefined;
-  if (rawAnswer) {
-    const upper = rawAnswer.toUpperCase();
-    if (upper === 'WAIT') {
-      decision = 'Wait for the current page or OAuth redirect to finish loading, then continue.';
-    } else if (previousField && Object.hasOwn(mergedFacts, rawAnswer)) {
-      if (mergedFacts[previousField] === undefined) {
-        mergedFacts[previousField] = mergedFacts[rawAnswer]!;
-      }
-      const safeField = normalizeContinuationText(previousField);
-      decision = `For the "${safeField}" field, use the supplied "${safeField}" fact.`;
-    } else if (selectedOptionLabel) {
-      const safeLabel = normalizeContinuationText(selectedOptionLabel);
-      const safeKey = normalizeContinuationText(rawAnswer);
-      decision = `Select "${safeLabel}" (option "${safeKey}") and continue.`;
-    } else if (previousField && !EMBEDDED_FIXED_ANSWERS.has(upper)) {
-      if (mergedFacts[previousField] === undefined) {
-        mergedFacts[previousField] = rawAnswer;
-      }
-      const safeField = normalizeContinuationText(previousField);
-      decision = `For the "${safeField}" field, use the supplied "${safeField}" fact.`;
-    } else {
-      const safeAnswer = normalizeContinuationText(rawAnswer);
-      decision = `Apply the resume answer "${safeAnswer}" and continue.`;
-    }
-  }
-
-  const decisions: string[] = [];
-  for (const item of continuation?.previousDecisions ?? []) {
-    const trimmed = item.trim();
-    if (trimmed && !decisions.includes(trimmed)) decisions.push(trimmed);
-  }
-  if (decision && !decisions.includes(decision)) {
-    decisions.push(decision);
-  }
-  const boundedDecisions = decisions.slice(-MAX_CONTINUATION_DECISIONS);
-
-  const baseGoal = input.goal.trim();
-  if (!boundedDecisions.length) {
-    return {
-      goal: baseGoal,
-      facts: mergedFacts,
-      ...(decision ? { decision } : {})
-    };
-  }
-
-  const prefix = ' Resume instructions from previous turns: ';
-  let activeDecisions = [...boundedDecisions];
-  let suffix = `${prefix}${activeDecisions.join(' ')}`;
-  while (activeDecisions.length > 1 && baseGoal.length + suffix.length > EMBEDDED_DRIVE_GOAL_LIMIT) {
-    activeDecisions = activeDecisions.slice(1);
-    suffix = `${prefix}${activeDecisions.join(' ')}`;
-  }
-
-  const combined = baseGoal.length + suffix.length <= EMBEDDED_DRIVE_GOAL_LIMIT
-    ? `${baseGoal}${suffix}`
-    : `${baseGoal.slice(0, Math.max(0, EMBEDDED_DRIVE_GOAL_LIMIT - suffix.length)).trimEnd()}${suffix}`.slice(0, EMBEDDED_DRIVE_GOAL_LIMIT);
-
-  return {
-    goal: combined,
-    facts: mergedFacts,
-    ...(decision ? { decision } : {})
+  const driveResult: Record<string, unknown> = {
+    status: mapEmbeddedDriveStatus(scrubbed),
+    ...(scrubbed.url ? { url: scrubbed.url } : {}),
+    captured: scrubbed.captured,
+    credentials: scrubbed.credentials,
+    ...(scrubbed.reason !== undefined ? { reason: scrubText(scrubbed.reason) } : {}),
+    ...(scrubbed.remaining !== undefined ? { remaining: scrubText(scrubbed.remaining) } : {}),
+    ...(scrubbed.field !== undefined ? { field: scrubText(scrubbed.field) } : {}),
+    ...(scrubbed.question !== undefined ? { question: scrubText(scrubbed.question) } : {}),
+    ...(scrubbed.options !== undefined ? { options: scrubbed.options } : {}),
+    ...(scrubbed.probabilities !== undefined ? { probabilities: scrubbed.probabilities } : {}),
+    ...(scrubbed.needsUser !== undefined ? { needs_user: scrubbed.needsUser } : {}),
+    ...(scrubbed.oauth !== undefined ? { oauth: scrubbed.oauth } : {}),
+    ...(scrubbed.observation !== undefined ? { observation: scrubbed.observation } : {})
   };
+  return { driveResult, signupResult: scrubbed };
 }
 
 /**
- * Runs one embedded provider signup directly in-process via
- * `@trusty-squire/mcp/signup`'s `runSignup`, delivering captured API keys
- * straight into Grunt's local vault and redacting all secrets from transcripts.
+ * Opens a live stateful embedded signup session via `@trusty-squire/mcp/signup`'s
+ * `createSignupSession`, preserving the browser tab, open dialogs, and
+ * provision session across `needs_value` / `low_confidence` resume turns until
+ * `close()` or `AbortSignal` teardown.
  */
-export async function runEmbeddedSignup(
+export async function openEmbeddedSignupSession(
   options: {
     provider: string;
-    url: string;
-    goal: string;
+    url?: string;
     facts?: Record<string, string>;
-    continuation?: EmbeddedSignupContinuation;
     directory?: string;
     session?: SignupSession;
     registry?: Registry;
-    maxSteps?: number;
-    maxSeconds?: number;
     signal?: AbortSignal;
     storeInMemory?: (grant: InMemoryCapturedGrant) => void;
     onCaptured?: (summary: PersistedCaptureSummary) => void;
     onProgress?: (message: string, data?: Record<string, unknown>) => Promise<void> | void;
   },
   runtime: EmbeddedSignupRuntime = {}
-): Promise<{
-  driveResult: Record<string, unknown>;
-  signupResult: SignupResult;
-  appliedFacts: Record<string, string>;
-  decision?: string;
-}> {
+): Promise<ManagedEmbeddedSignupSession> {
   options.signal?.throwIfAborted();
   const directory = options.directory ?? configRoot();
-  const { profileDir, sessionPath } = gruntSignupPaths(directory);
+  const sdk = await loadEmbeddedSignupSdk(directory);
+  const { profileDir, sessionPath } = await gruntSignupPaths(directory);
+  const releaseLease = await acquireProfileLease(profileDir, options.signal);
   const capturedSecrets = new Set<string>();
-  const prepared = applyEmbeddedContinuation({
-    goal: options.goal,
-    ...(options.facts ? { facts: options.facts } : {}),
-    ...(options.continuation ? { continuation: options.continuation } : {})
-  });
 
-  const execute = async () => {
+  let signupSession: EmbeddedSignupSession;
+  try {
     options.signal?.throwIfAborted();
-    const runner = runtime.runSignup ?? runSignup;
-    const signupResult = await runner(
+    const createSession = runtime.createSignupSession ?? sdk.createSignupSession;
+    signupSession = await createSession(
       {
-        url: options.url,
-        goal: prepared.goal,
+        ...(options.url ? { url: options.url } : {}),
         service: options.provider,
-        ...(Object.keys(prepared.facts).length ? { facts: prepared.facts } : {}),
+        ...(options.facts && Object.keys(options.facts).length ? { facts: options.facts } : {}),
         profileDir,
         ...(options.session ? { session: options.session } : { sessionPath }),
         agentIdentity: 'grunt',
-        ...(options.maxSteps !== undefined ? { maxSteps: options.maxSteps } : {}),
-        ...(options.maxSeconds !== undefined ? { maxSeconds: options.maxSeconds } : {}),
         ...(options.signal ? { signal: options.signal } : {}),
         ...(options.onProgress ? { onProgress: options.onProgress } : {}),
         onCredentialCaptured: async credential => {
@@ -451,7 +466,7 @@ export async function runEmbeddedSignup(
             credential,
             directory,
             ...(options.registry ? { registry: options.registry } : {}),
-            fallbackUrl: options.url,
+            ...(options.url ? { fallbackUrl: options.url } : {}),
             ...(options.storeInMemory ? { storeInMemory: options.storeInMemory } : {})
           });
           if (summary) options.onCaptured?.(summary);
@@ -466,34 +481,176 @@ export async function runEmbeddedSignup(
       },
       runtime.signupRuntime
     );
+  } catch (error) {
+    releaseLease();
+    throw error;
+  }
 
-    const scrubbed = redactUnknownSecrets(signupResult, capturedSecrets);
-    const scrubText = (value: string | undefined) =>
-      value === undefined ? undefined : redactVaultSecrets(redactSecrets(value, capturedSecrets), [...capturedSecrets]);
+  let closePromise: Promise<void> | undefined;
+  let closed = false;
 
-    const driveResult: Record<string, unknown> = {
-      status: mapEmbeddedDriveStatus(scrubbed),
-      ...(scrubbed.url ? { url: scrubbed.url } : {}),
-      captured: scrubbed.captured,
-      credentials: scrubbed.credentials,
-      ...(scrubbed.reason !== undefined ? { reason: scrubText(scrubbed.reason) } : {}),
-      ...(scrubbed.remaining !== undefined ? { remaining: scrubText(scrubbed.remaining) } : {}),
-      ...(scrubbed.field !== undefined ? { field: scrubText(scrubbed.field) } : {}),
-      ...(scrubbed.question !== undefined ? { question: scrubText(scrubbed.question) } : {}),
-      ...(scrubbed.options !== undefined ? { options: scrubbed.options } : {}),
-      ...(scrubbed.probabilities !== undefined ? { probabilities: scrubbed.probabilities } : {}),
-      ...(scrubbed.needsUser !== undefined ? { needs_user: scrubbed.needsUser } : {}),
-      ...(scrubbed.oauth !== undefined ? { oauth: scrubbed.oauth } : {})
-    };
-    return {
-      driveResult,
-      signupResult: scrubbed,
-      appliedFacts: prepared.facts,
-      ...(prepared.decision ? { decision: prepared.decision } : {})
-    };
+  const onSessionAbort = () => {
+    void close();
   };
 
-  return serializeProfileRun(profileDir, options.signal, execute);
+  const close = () => {
+    if (closePromise) return closePromise;
+    closed = true;
+    options.signal?.removeEventListener('abort', onSessionAbort);
+    closePromise = (async () => {
+      try {
+        await signupSession.close();
+      } finally {
+        releaseLease();
+      }
+    })();
+    return closePromise;
+  };
+
+  if (options.signal?.aborted) {
+    await close();
+  } else {
+    options.signal?.addEventListener('abort', onSessionAbort, { once: true });
+  }
+
+  return {
+    provider: options.provider,
+    profileDir,
+    get sessionId() { return signupSession.sessionId; },
+    get currentUrl() { return signupSession.currentUrl; },
+    get closed() { return closed || signupSession.closed; },
+    async drive(turnOptions) {
+      const result = await signupSession.drive({
+        ...(turnOptions.url ? { url: turnOptions.url } : {}),
+        goal: turnOptions.goal,
+        ...(turnOptions.facts && Object.keys(turnOptions.facts).length ? { facts: turnOptions.facts } : {}),
+        ...(turnOptions.answer !== undefined && turnOptions.answer.trim() ? { answer: turnOptions.answer.trim() } : {}),
+        ...(turnOptions.maxSteps !== undefined ? { maxSteps: turnOptions.maxSteps } : {}),
+        ...(turnOptions.maxSeconds !== undefined ? { maxSeconds: turnOptions.maxSeconds } : {}),
+        ...(turnOptions.timeoutMs !== undefined ? { timeoutMs: turnOptions.timeoutMs } : {}),
+        ...(turnOptions.signal ? { signal: turnOptions.signal } : {})
+      });
+      if (signupSession.closed) {
+        await close();
+      }
+      return formatEmbeddedDriveResult(sdk, result, capturedSecrets);
+    },
+    async click(ref) {
+      const summary = await signupSession.click(ref);
+      return sdk.redactUnknownSecrets(summary, capturedSecrets);
+    },
+    async observe(format) {
+      const summary = await signupSession.observe(format);
+      return sdk.redactUnknownSecrets(summary, capturedSecrets);
+    },
+    close
+  };
+}
+
+/**
+ * Runs one single-shot embedded provider signup directly in-process via
+ * `@trusty-squire/mcp/signup`, delivering captured API keys straight into
+ * Grunt's local vault and redacting all secrets from transcripts.
+ */
+export async function runEmbeddedSignup(
+  options: {
+    provider: string;
+    url: string;
+    goal: string;
+    facts?: Record<string, string>;
+    directory?: string;
+    session?: SignupSession;
+    registry?: Registry;
+    maxSteps?: number;
+    maxSeconds?: number;
+    signal?: AbortSignal;
+    storeInMemory?: (grant: InMemoryCapturedGrant) => void;
+    onCaptured?: (summary: PersistedCaptureSummary) => void;
+    onProgress?: (message: string, data?: Record<string, unknown>) => Promise<void> | void;
+  },
+  runtime: EmbeddedSignupRuntime = {}
+): Promise<EmbeddedDriveOutcome> {
+  if (runtime.runSignup) {
+    options.signal?.throwIfAborted();
+    const directory = options.directory ?? configRoot();
+    const sdk = await loadEmbeddedSignupSdk(directory);
+    const { profileDir, sessionPath } = await gruntSignupPaths(directory);
+    const releaseLease = await acquireProfileLease(profileDir, options.signal);
+    const capturedSecrets = new Set<string>();
+    try {
+      options.signal?.throwIfAborted();
+      const signupResult = await runtime.runSignup(
+        {
+          url: options.url,
+          goal: options.goal,
+          service: options.provider,
+          ...(options.facts && Object.keys(options.facts).length ? { facts: options.facts } : {}),
+          profileDir,
+          ...(options.session ? { session: options.session } : { sessionPath }),
+          agentIdentity: 'grunt',
+          ...(options.maxSteps !== undefined ? { maxSteps: options.maxSteps } : {}),
+          ...(options.maxSeconds !== undefined ? { maxSeconds: options.maxSeconds } : {}),
+          ...(options.signal ? { signal: options.signal } : {}),
+          ...(options.onProgress ? { onProgress: options.onProgress } : {}),
+          onCredentialCaptured: async credential => {
+            for (const value of Object.values(credential.fields)) {
+              if (typeof value === 'string' && value.trim().length > 0) {
+                capturedSecrets.add(value);
+              }
+            }
+            const summary = await persistCapturedCredential({
+              provider: options.provider,
+              credential,
+              directory,
+              ...(options.registry ? { registry: options.registry } : {}),
+              fallbackUrl: options.url,
+              ...(options.storeInMemory ? { storeInMemory: options.storeInMemory } : {})
+            });
+            if (summary) options.onCaptured?.(summary);
+          },
+          onLoginCreated: async credential => {
+            for (const value of Object.values(credential.fields)) {
+              if (typeof value === 'string' && value.trim().length > 0) {
+                capturedSecrets.add(value);
+              }
+            }
+          }
+        },
+        runtime.signupRuntime
+      );
+      return formatEmbeddedDriveResult(sdk, signupResult, capturedSecrets);
+    } finally {
+      releaseLease();
+    }
+  }
+
+  const managed = await openEmbeddedSignupSession(
+    {
+      provider: options.provider,
+      url: options.url,
+      ...(options.facts ? { facts: options.facts } : {}),
+      ...(options.directory ? { directory: options.directory } : {}),
+      ...(options.session ? { session: options.session } : {}),
+      ...(options.registry ? { registry: options.registry } : {}),
+      ...(options.signal ? { signal: options.signal } : {}),
+      ...(options.storeInMemory ? { storeInMemory: options.storeInMemory } : {}),
+      ...(options.onCaptured ? { onCaptured: options.onCaptured } : {}),
+      ...(options.onProgress ? { onProgress: options.onProgress } : {})
+    },
+    runtime
+  );
+  try {
+    return await managed.drive({
+      url: options.url,
+      goal: options.goal,
+      ...(options.facts ? { facts: options.facts } : {}),
+      ...(options.maxSteps !== undefined ? { maxSteps: options.maxSteps } : {}),
+      ...(options.maxSeconds !== undefined ? { maxSeconds: options.maxSeconds } : {}),
+      ...(options.signal ? { signal: options.signal } : {})
+    });
+  } finally {
+    await managed.close();
+  }
 }
 
 type Result = Record<string, unknown>;

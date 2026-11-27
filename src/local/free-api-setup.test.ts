@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { BrowserSquire, FreeLLMAdmin, setup, setupProviders } from './setup.js';
+import { BrowserSquire, setup, setupProviders } from './setup.js';
 import { setupFallbacks } from './fallback-setup.js';
 import { Runcrate, RUNCRATE_DEEPSEEK } from './runcrate.js';
 import { Zro, writeZroGrant } from './zro.js';
@@ -56,7 +56,6 @@ it.each(['runcrate'] as const)('uses a saved %s vault key that answers without a
   const probe = vi.spyOn(Runcrate.prototype, 'complete').mockResolvedValue({ text: 'ready' });
   const connect = vi.spyOn(BrowserSquire.prototype, 'connect').mockResolvedValue();
   vi.spyOn(BrowserSquire.prototype, 'close').mockResolvedValue();
-  const router = vi.spyOn(FreeLLMAdmin.prototype, 'login');
   const events: string[] = [];
   const call = squireCalls(provider, events);
   await expect(setup(() => {}, [provider], { directory })).resolves.toEqual({});
@@ -65,7 +64,6 @@ it.each(['runcrate'] as const)('uses a saved %s vault key that answers without a
   const file = join(directory, `${provider}.json`);
   expect((await stat(file)).mode & 0o777).toBe(0o600);
   expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({ free_account_verified: true });
-  expect(router).not.toHaveBeenCalled();
   call.mockClear();
   await setup(() => {}, [provider], { directory });
   expect(call).not.toHaveBeenCalled();
@@ -163,15 +161,13 @@ it('skips unapproved free API providers before any browser or setup work while a
   expect(squire.signup).not.toHaveBeenCalled();
 });
 
-it('delegates Mistral Vibe to native free onboarding without provisioning an API router', async () => {
+it('delegates Mistral Vibe to native free onboarding', async () => {
   await recordDataSharingConsent(directory, ['mistral-vibe']);
   const native = vi.spyOn(mistralSetup, 'setupMistralVibe').mockResolvedValue();
-  const router = vi.spyOn(FreeLLMAdmin.prototype, 'login');
   const squire = { signup: vi.fn(), credentials: { list: vi.fn(), grant: vi.fn() }, runs: { start: vi.fn(), get: vi.fn() } };
   const controller = new AbortController();
   await expect(setup(() => {}, ['mistral-vibe'], { directory, squire, signal: controller.signal })).resolves.toEqual({});
   expect(native).toHaveBeenCalledWith({ directory, squire, notify: expect.any(Function), signal: controller.signal });
-  expect(router).not.toHaveBeenCalled();
   expect(squire.runs.start).not.toHaveBeenCalled();
 });
 
@@ -206,7 +202,7 @@ it.each(['runcrate', 'zro', 'tokenharbor'] as const)('tries %s vault keys newest
     if (grant.token === 'captured' && captured || grant.token === 'working' && working) return;
     throw rejected();
   } };
-  const options = { providers: [provider], reuseSaved: false, notify: () => {} };
+  const options = { providers: [provider], notify: () => {} };
   await setupProviders(squire, router, options);
   expect(attempts).toEqual(['paused', 'working']);
   expect(squire.runs.start).not.toHaveBeenCalled();
@@ -314,7 +310,7 @@ it.each(['runcrate', 'zro', 'tokenharbor'] as const)('tries remaining %s credent
       attempts.push(grant.token);
       if (grant.token === 'limited') throw new SourceError('quota', 'HTTP 429');
     } };
-    const result = await setupProviders(squire, router, { providers: [provider], reuseSaved: false, notify: () => {} });
+    const result = await setupProviders(squire, router, { providers: [provider], notify: () => {} });
     expect(result.dropped).toEqual([]);
     expect(attempts).toEqual(['limited', 'working']);
     expect(squire.runs.start).toHaveBeenCalledTimes(afterCapture ? 1 : 0);
@@ -334,7 +330,7 @@ it.each(['runcrate', 'zro', 'tokenharbor'] as const)('does not provision %s afte
     attempts.push(grant.token);
     throw grant.token === 'limited' ? quota : rejected();
   } };
-  await expect(setupProviders(squire, router, { providers: [provider], reuseSaved: false, notify: () => {} })).rejects.toBe(quota);
+  await expect(setupProviders(squire, router, { providers: [provider], notify: () => {} })).rejects.toBe(quota);
   expect(attempts).toEqual(['limited', 'rejected']);
   expect(squire.runs.start).not.toHaveBeenCalled();
 });
@@ -371,7 +367,7 @@ it('stops credential selection immediately on cancellation', async () => {
     }, runs: { start: vi.fn(), get: vi.fn() }
   };
   const router = { addGrant: async () => { controller.abort(cancelled); throw new SourceError('quota', 'HTTP 429'); } };
-  await expect(setupProviders(squire, router, { providers: ['zro'], signal: controller.signal, reuseSaved: false, notify: () => {} })).rejects.toBe(cancelled);
+  await expect(setupProviders(squire, router, { providers: ['zro'], signal: controller.signal, notify: () => {} })).rejects.toBe(cancelled);
   expect(squire.credentials.grant).toHaveBeenCalledOnce();
   expect(squire.runs.start).not.toHaveBeenCalled();
 });

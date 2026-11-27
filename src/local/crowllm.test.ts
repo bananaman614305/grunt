@@ -69,7 +69,7 @@ it('fails over from CrowLLM rate limits to another free source', async () => {
   } finally { await sources.close(); }
 });
 
-it.each(['crowllm', 'freellmapi,crowllm'])('returns native calls through configured routing (%s)', async ids => {
+it.each(['crowllm', 'codex,crowllm'])('returns native calls through configured routing (%s)', async ids => {
   await recordDataSharingConsent(directory, ['crowllm']);
   const fetcher = replies();
   fetcher.mockImplementation(async url => {

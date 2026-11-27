@@ -1,7 +1,8 @@
+import { hasOwnerMode, openPrivateFile } from './private-file.js';
 import { configRoot, gruntEnv } from '../brand.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { constants, realpathSync } from 'node:fs';
-import { lstat, mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
@@ -250,7 +251,7 @@ export function validateProviderEndpoint(
 async function assertPrivateDirectory(directory: string, create = false): Promise<void> {
   if (create) await mkdir(directory, { recursive: true, mode: 0o700 });
   const stat = await lstat(directory);
-  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o700) {
+  if (!stat.isDirectory() || stat.isSymbolicLink() || !hasOwnerMode(stat, 0o700)) {
     throw new Error('Unsafe local vault directory');
   }
 }
@@ -273,7 +274,7 @@ function parseVaultEntry(provider: VaultProvider, value: unknown): VaultEntry {
 async function readVaultStore(directory = configRoot()): Promise<VaultStore | undefined> {
   let file;
   try {
-    file = await open(vaultPath(directory), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    file = await openPrivateFile(vaultPath(directory), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === 'ENOENT' || code === 'ENOTDIR') return undefined;
@@ -282,7 +283,7 @@ async function readVaultStore(directory = configRoot()): Promise<VaultStore | un
   try {
     await assertPrivateDirectory(directory, false);
     const stat = await file.stat();
-    if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.size > MAX_VAULT_BYTES) {
+    if (!stat.isFile() || !hasOwnerMode(stat, 0o600) || stat.size > MAX_VAULT_BYTES) {
       throw new Error('Unsafe local vault file');
     }
     const raw: unknown = JSON.parse(await file.readFile('utf8'));
@@ -336,7 +337,7 @@ function lockQueueKey(directory: string): string {
 
 async function ensurePrivateLockFile(lockPath: string): Promise<void> {
   try {
-    const created = await open(lockPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    const created = await openPrivateFile(lockPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     await created.close();
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
@@ -344,9 +345,9 @@ async function ensurePrivateLockFile(lockPath: string): Promise<void> {
   }
   let handle;
   try {
-    handle = await open(lockPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    handle = await openPrivateFile(lockPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const stat = await handle.stat();
-    if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600) {
+    if (!stat.isFile() || !hasOwnerMode(stat, 0o600)) {
       throw new Error('Unsafe local vault lockfile');
     }
   } catch (error) {

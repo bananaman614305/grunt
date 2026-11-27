@@ -13,7 +13,7 @@
   },
   "scripts": {
     "dev": "tsx src/server.ts",
-    "build": "rm -rf dist && tsc && mkdir -p dist/registry dist/admin-public && cp registry/adapters.json dist/registry/adapters.json && cp site/admin/index.html site/admin/admin.css site/admin/admin.js site/admin/adoption.* dist/admin-public/ && cp site/grunt.svg dist/grunt.svg && cp site/favicon.svg dist/favicon.svg",
+    "build": "node scripts/build.mjs",
     "start": "node dist/server.js",
     "test": "vitest run",
     "benchmark:efficiency": "tsx src/local/efficiency-benchmark.ts",
@@ -28,16 +28,16 @@
     "@hono/node-server": "^1.19.17",
     "@libsql/client": "^0.18.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
-    "@trusty-squire/mcp": "1.2.0-rc0",
+    "@trusty-squire/mcp": "1.2.0-rc1",
     "ajv": "^8.20.0",
     "chalk": "^6.0.1",
     "hono": "^4.13.8",
     "ipaddr.js": "^2.5.0",
-    "jsonc-parser": "3.3.1",
-    "standardwebhooks": "^1.1.1"
+    "jsonc-parser": "3.3.1"
   },
   "devDependencies": {
     "@types/node": "^22.20.3",
+    "esbuild": "^0.28.2",
     "eslint": "^9.39.5",
     "tsx": "^4.19.2",
     "typescript": "^5.9.3",
@@ -46,9 +46,7 @@
   },
   "bin": {
     "usegrunt": "dist/local/main.js",
-    "grunt-local": "dist/local/main.js",
-    "milo": "dist/local/main.js",
-    "milo-local": "dist/local/main.js"
+    "grunt-local": "dist/local/main.js"
   },
   "description": "One-command setup for grunt",
   "files": [

@@ -45,8 +45,9 @@ async function readJson(path: string, what: string) {
 export const PI_WORKING_CONTEXT_TOKENS = 65536;
 // The native output limit of Zro's DeepSeek model. Pi uses 16384 if omitted.
 const PI_MAX_OUTPUT_TOKENS = 65536;
+const PI_MODEL_INPUT = ['text', 'image'] as const;
 const piProvider = (port: number, contextWindow = PI_WORKING_CONTEXT_TOKENS) => ({ baseUrl: `http://127.0.0.1:${port}/v1`, api: 'openai-completions', apiKey: 'local',
-  models: [{ id: 'grunt', name: 'grunt', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow, maxTokens: PI_MAX_OUTPUT_TOKENS }] });
+  models: [{ id: 'grunt', name: 'grunt', reasoning: false, input: [...PI_MODEL_INPUT], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow, maxTokens: PI_MAX_OUTPUT_TOKENS }] });
 interface PiContextOptions { workingContextTokens?: number; fromContextWindows?: readonly number[] }
 interface PiConfigureOptions extends PiContextOptions { env?: NodeJS.ProcessEnv }
 const piFailure = (reason: string) => new SetupRefusal(reason, `Cannot safely update Pi models config: ${reason}. Repair it before retrying setup`);
@@ -136,10 +137,19 @@ function localPiProvider(value: unknown, port?: number) {
       && /^\/v1\/?$/.test(url.pathname) && /^\d+$/.test(url.port) && Number(url.port) >= 1 && Number(url.port) <= 65535 && (port === undefined || Number(url.port) === port);
   } catch { return false; }
 }
+function managedPiModelInput(input: unknown) {
+  return Array.isArray(input) && (
+    (input.length === 1 && input[0] === 'text')
+    || (input.length === 2 && input[0] === 'text' && input[1] === 'image')
+  );
+}
+function hasCurrentPiModelInput(input: unknown) {
+  return Array.isArray(input) && input.length === 2 && input[0] === 'text' && input[1] === 'image';
+}
 function managedPiModel(model: Record<string, unknown>) {
   const cost = model.cost && typeof model.cost === 'object' && !Array.isArray(model.cost) ? model.cost as Record<string, unknown> : {};
   return model.id === 'grunt' && model.name === 'grunt' && model.reasoning === false && (model.maxTokens === 4096 || model.maxTokens === PI_MAX_OUTPUT_TOKENS)
-    && Array.isArray(model.input) && model.input.length === 1 && model.input[0] === 'text'
+    && managedPiModelInput(model.input)
     && ['input', 'output', 'cacheRead', 'cacheWrite'].every(key => cost[key] === 0);
 }
 function piModels(provider: Record<string, unknown>) {
@@ -161,13 +171,13 @@ export async function configurePi(port = 8788, options: PiConfigureOptions = {})
   const merged = models.map(model => {
     if (model.id !== 'grunt') return model;
     const managed = managedPiModel(model);
-    return { ...model, ...(managed ? { maxTokens: PI_MAX_OUTPUT_TOKENS } : {}),
+    return { ...model, ...(managed ? { input: [...PI_MODEL_INPUT], maxTokens: PI_MAX_OUTPUT_TOKENS } : {}),
       ...(explicit || managed && model.contextWindow === 128000 ? { contextWindow } : {}) };
   });
   if (!primary.length) merged.push(generated.models[0]!);
   return writePiConfig(current, { ...current.saved, providers: { ...providers, grunt: { ...provider, ...generated, models: merged } } });
 }
-/** Update the output budget and legacy context of an existing managed profile on this daemon's endpoint. */
+/** Update the output budget, input modalities, and legacy context of an existing managed profile on this daemon's endpoint. */
 export async function migrateManagedPiWorkingContext(port: number, env: NodeJS.ProcessEnv = process.env, options: PiContextOptions = {}): Promise<Change & { contextChanged?: boolean }> {
   const target = piContext(env, options.workingContextTokens), current = await readPiConfig(env);
   if (current.text === undefined) return { changed: false };
@@ -178,9 +188,9 @@ export async function migrateManagedPiWorkingContext(port: number, env: NodeJS.P
   const model = primary[0]!, from = options.fromContextWindows ?? [128000];
   if (!managedPiModel(model)) return { changed: false };
   const contextWindow = typeof model.contextWindow === 'number' && from.includes(model.contextWindow) ? target : model.contextWindow;
-  if (model.maxTokens === PI_MAX_OUTPUT_TOKENS && model.contextWindow === contextWindow) return { changed: false };
+  if (model.maxTokens === PI_MAX_OUTPUT_TOKENS && model.contextWindow === contextWindow && hasCurrentPiModelInput(model.input)) return { changed: false };
   const change = await writePiConfig(current, { ...current.saved, providers: { ...providers, grunt: { ...selected,
-    models: models.map(item => item === model ? { ...item, contextWindow, maxTokens: PI_MAX_OUTPUT_TOKENS } : item) } } });
+    models: models.map(item => item === model ? { ...item, input: [...PI_MODEL_INPUT], contextWindow, maxTokens: PI_MAX_OUTPUT_TOKENS } : item) } } });
   return { ...change, contextChanged: contextWindow !== model.contextWindow };
 }
 // Codex layers $CODEX_HOME/<name>.config.toml over config.toml for `codex --profile <name>`,

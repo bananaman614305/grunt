@@ -459,7 +459,7 @@ export class DeclarativeApi implements Source {
   async complete(request: ModelRequest, caller: AbortSignal, progress?: () => void): Promise<Completion> {
     caller.throwIfAborted();
     if (this.shutdown.signal.aborted) throw new SourceError('cancelled', `${this.id} source closed`);
-    if (![this.id, 'grunt', 'milo'].includes(request.model)) {
+    if (![this.id, 'grunt'].includes(request.model)) {
       throw new SourceError('refused', `Unsupported declarative model request for ${this.id}`);
     }
     if (request.tools.some(tool => tool.type !== 'function')) {

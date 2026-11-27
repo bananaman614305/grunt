@@ -182,7 +182,7 @@ export class Sources {
     await writeFile(join(root, '.config', 'secret.json'), 'different secret must remain excluded');
     const second = JSON.parse((await invoke()).stdout);
     expect(second.identities.current.codeTreeDigest).toBe(first.identities.current.codeTreeDigest);
-    for (const name of ['grunt-runtime', 'milo-runtime']) {
+    for (const name of ['grunt-runtime']) {
       await writeFile(join(root, 'package.json'), JSON.stringify({ name, version: '0.0.0-fixture', type: 'module' }));
       const installed = JSON.parse((await invoke()).stdout);
       expect(installed.identities.current).toMatchObject({ version: '0.0.0-fixture', commit: null, runtimeFormat: 'built' });

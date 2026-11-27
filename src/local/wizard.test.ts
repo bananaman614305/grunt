@@ -104,10 +104,10 @@ it('stops before interactive embedded sign-in when GRUNT_SETUP_NO_HUMAN=1 and no
   await expect(connectSquire({ directory: consentDir, embeddedRuntime: { ensureSession } })).rejects.toThrow('needs human verification');
   expect(ensureSession).not.toHaveBeenCalled();
 });
-it('stops at a missing prerequisite with its fix before Squire or service changes', async () => {
-  const run = vi.fn(async (binary: string) => { if (binary === 'tar') throw new Error('missing'); });
-  await expect(preflight(run)).rejects.toThrow('Install tar');
-  expect(run.mock.calls.map(([binary]) => binary)).toEqual(['npm', 'tar']);
+it('checks the user service manager without looking for npm or tar', async () => {
+  const run = vi.fn(async (_binary: string) => { throw new Error('missing'); });
+  await expect(preflight(run)).rejects.toThrow('Sign in to a user session with a working service manager');
+  expect(run.mock.calls.map(([binary]) => binary)).toEqual([process.platform === 'darwin' ? 'launchctl' : 'systemctl']);
 });
 it('allows service onboarding before a coding harness such as Pi is installed', async () => {
   const run = vi.fn(async (binary: string) => { if (binary === 'pi') throw new Error('missing'); });
@@ -198,7 +198,7 @@ it('starts the service before connecting the free providers on default installs'
   expect(actions.setup).not.toHaveBeenCalled();
   expect(actions.setupFallbacks).toHaveBeenCalledWith(expect.objectContaining({ run: expect.any(Function), notify: expect.any(Function) }));
   actions.setupFallbacks.mockClear();
-  await wizard('groq', actions);
+  await wizard('zro', actions);
   expect(actions.setupFallbacks).not.toHaveBeenCalled();
 });
 
@@ -228,7 +228,6 @@ it('smoke-tests a real completion through model grunt and names a failure withou
   } finally { await failing.close(); }
 });
 it('fails an adapter check when another source answered for it', async () => {
-  // Owner drop-in MILO_SOURCES=freellmapi,opencode,dots maps freebuff to milo, so FreeLLMAPI answers.
   const live = await service(new Sources([fake('freellmapi'), fake('opencode')]));
   const lines: string[] = [], unavailable: string[] = [];
   try { await checkFallbackServices(unavailable, live.port, line => lines.push(line), ['freebuff', 'opencode']); }
@@ -272,25 +271,25 @@ it('stops waiting at the limit and fails without retrying an adapter that is not
   expect(lines).toEqual(['opencode: grunt is still preparing this adapter; waiting', 'opencode: FAIL — grunt returned HTTP 503', 'freebuff: FAIL — grunt returned HTTP 503']);
   expect(calls).toBeGreaterThan(1);
 });
-it('names a unit override whose MILO_SOURCES lacks an adapter and leaves it unchanged', async () => {
+it('names a unit override whose GRUNT_SOURCES lacks an adapter and leaves it unchanged', async () => {
   dir = await mkdtemp(join(tmpdir(), 'grunt-unit-test-'));
-  const dropIn = join(dir, '20-dots.conf'), other = join(dir, '10-other.conf');
-  const content = '[Service]\nEnvironment="MILO_SOURCES=freellmapi,opencode,dots"\n';
-  await writeFile(dropIn, content); await writeFile(other, '[Service]\nEnvironment="MILO_PORT=8788"\n');
+  const dropIn = join(dir, '20-sources.conf'), other = join(dir, '10-other.conf');
+  const content = '[Service]\nEnvironment="GRUNT_SOURCES=codex,opencode,kilo"\n';
+  await writeFile(dropIn, content); await writeFile(other, '[Service]\nEnvironment="GRUNT_PORT=8788"\n');
   const run = vi.fn(async (args: string[]) => args.includes('Environment')
-    ? 'GRUNT_DAEMON=1 MILO_PORT=8788 MILO_SOURCES=freellmapi,opencode,dots PATH=/usr/bin\n'
+    ? 'GRUNT_DAEMON=1 GRUNT_PORT=8788 GRUNT_SOURCES=codex,opencode,kilo PATH=/usr/bin\n'
     : `${other} ${dropIn}\n`);
   const lines: string[] = [], unavailable: string[] = [];
-  await checkServiceSources(unavailable, line => lines.push(line), ['freebuff', 'opencode'], () => serviceSources(run, 'milo'));
-  expect(lines).toEqual([`freebuff: FAIL — ${dropIn} sets MILO_SOURCES=freellmapi,opencode,dots, which lacks freebuff. Setup does not edit it; add freebuff there or remove that setting.`]);
+  await checkServiceSources(unavailable, line => lines.push(line), ['freebuff', 'opencode'], () => serviceSources(run));
+  expect(lines).toEqual([`freebuff: FAIL — ${dropIn} sets GRUNT_SOURCES=codex,opencode,kilo, which lacks freebuff. Setup does not edit it; add freebuff there or remove that setting.`]);
   expect(unavailable).toEqual(['freebuff']);
   expect(await readFile(dropIn, 'utf8')).toBe(content);
-  expect(run.mock.calls.map(c => c[0])).toEqual([['show', 'milo.service', '-p', 'Environment', '--value'], ['show', 'milo.service', '-p', 'DropInPaths', '--value']]);
+  expect(run.mock.calls.map(c => c[0])).toEqual([['show', 'grunt.service', '-p', 'Environment', '--value'], ['show', 'grunt.service', '-p', 'DropInPaths', '--value']]);
   await checkServiceSources(unavailable, line => lines.push(line), ['opencode'], async () => undefined);
   expect(lines).toHaveLength(1);
   // An adapter that setup already marked unavailable still gets the override named.
-  await checkServiceSources(unavailable, line => lines.push(line), ['freebuff'], () => serviceSources(run, 'milo'));
-  expect(lines[1]).toContain(`${dropIn} sets MILO_SOURCES=freellmapi,opencode,dots, which lacks freebuff`);
+  await checkServiceSources(unavailable, line => lines.push(line), ['freebuff'], () => serviceSources(run));
+  expect(lines[1]).toContain(`${dropIn} sets GRUNT_SOURCES=codex,opencode,kilo, which lacks freebuff`);
   expect(unavailable).toEqual(['freebuff']);
 });
 
@@ -299,17 +298,12 @@ it('uses the primary Grunt source setting and names its overriding file', async 
   const dropIn = join(dir, '20-grunt.conf');
   const content = '[Service]\nEnvironment="GRUNT_SOURCES=kilo"\n'; await writeFile(dropIn, content);
   const run = vi.fn(async (args: string[]) => args.includes('Environment')
-    ? 'MILO_SOURCES=opencode GRUNT_SOURCES=kilo "OTHER=GRUNT_SOURCES=misleading"\n' : dropIn);
+    ? 'GRUNT_SOURCES=kilo "OTHER=GRUNT_SOURCES=misleading"\n' : dropIn);
   const lines: string[] = [];
   await checkServiceSources([], line => lines.push(line), ['opencode'], () => serviceSources(run));
   expect(lines).toEqual([`opencode: FAIL — ${dropIn} sets GRUNT_SOURCES=kilo, which lacks opencode. Setup does not edit it; add opencode there or remove that setting.`]);
   expect(run.mock.calls.every(([args]) => args.includes('grunt.service'))).toBe(true);
   expect(await readFile(dropIn, 'utf8')).toBe(content);
-});
-
-it('discovers the legacy source configuration when no primary unit is configured', async () => {
-  const run = vi.fn(async (args: string[]) => args.includes('grunt.service') ? '' : args.includes('Environment') ? 'MILO_SOURCES=opencode,kilo' : '');
-  expect(await serviceSources(run)).toEqual({ sources: ['opencode', 'kilo'], origin: 'milo.service', variable: 'MILO_SOURCES' });
 });
 
 it('passes the live check when the model list takes longer than one second', async () => {
@@ -403,7 +397,7 @@ it('connects Kilo and restarts the daemon before reporting success', async () =>
   actions.setup.mockImplementation(async () => { order.push('grant'); return { key: 'synthetic' }; });
   actions.checkService.mockImplementation(async () => { order.push('ready'); });
   await wizard('kilo', actions);
-  expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), ['kilo'], { dataSharingApproved: sharingIds() });
+  expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), ['kilo'], expect.objectContaining({ dataSharingApproved: sharingIds() }));
   expect(order).toEqual(['banner', 'registry', 'squire', 'grant', 'service', 'ready', 'check:kilo']);
   expect(actions.setupFallbacks).not.toHaveBeenCalled();
   expect(actions.connectHarnesses).not.toHaveBeenCalled();
@@ -412,14 +406,14 @@ it('adds the anonymous Reflection route without asking for a Squire login', asyn
   const actions = stubActions([]);
   await wizard('reflection-beam', actions);
   expect(actions.connectSquire).not.toHaveBeenCalled();
-  expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), ['reflection-beam'], { dataSharingApproved: sharingIds() });
+  expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), ['reflection-beam'], expect.objectContaining({ dataSharingApproved: sharingIds() }));
   expect(actions.checkFallbackServices).toHaveBeenCalledWith(expect.any(Array), expect.any(Number), expect.any(Function), ['reflection-beam']);
 });
 it('adds the portable Antseed source without an unrelated browser sign-in', async () => {
   const actions = stubActions([]);
   await wizard('antseed-vikey', actions);
   expect(actions.connectSquire).not.toHaveBeenCalled();
-  expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), ['antseed-vikey'], { dataSharingApproved: expect.arrayContaining([...sharingIds(), 'antseed-vikey']) });
+  expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), ['antseed-vikey'], expect.objectContaining({ dataSharingApproved: expect.arrayContaining([...sharingIds(), 'antseed-vikey']) }));
   expect(actions.checkFallbackServices).toHaveBeenCalledWith(expect.any(Array), expect.any(Number), expect.any(Function), ['antseed-vikey']);
 });
 it('does not restart the daemon or report success when Kilo setup fails', async () => {
@@ -443,19 +437,13 @@ it.each([
   await writeFile(join(dir, 'installed-sources.json'), JSON.stringify(previous), { mode: 0o600 });
   const actions = stubActions([], { installedSources: () => installedSources(dir) });
   await wizard('nvidia', actions);
-  expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), ['nvidia'], { dataSharingApproved: dataSharingPolicies(previous.filter(id => !['freebuff', 'apinex'].includes(id))).map(policy => policy.provider) });
-  expect(actions.installService).toHaveBeenCalledWith([...previous.filter(id => !['freebuff', 'apinex'].includes(id)), 'nvidia']);
+  expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), ['nvidia'], expect.objectContaining({ dataSharingApproved: dataSharingPolicies(previous.filter(id => !['freebuff', 'apinex', 'freellmapi'].includes(id))).map(policy => policy.provider) }));
+  expect(actions.installService).toHaveBeenCalledWith([...previous.filter(id => !['freebuff', 'apinex', 'freellmapi'].includes(id)), 'nvidia']);
 });
 it('does not add unselected adapters when explicitly adding Kilo', async () => {
   const actions = stubActions([], { installedSources: async () => 'opencode' });
   await wizard('kilo', actions);
   expect(actions.installService).toHaveBeenCalledWith(['opencode', 'kilo']);
-});
-it('keeps registered API sources enabled across repeat service installs', async () => {
-  dir = await mkdtemp(join(tmpdir(), 'grunt-sources-test-'));
-  expect(await installedSources(dir)).toBe('opencode,kilo,zro');
-  await writeFile(join(dir, 'router-admin.json'), '{}', { mode: 0o600 });
-  expect(await installedSources(dir)).toBe('freellmapi,kilo,opencode,zro');
 });
 it('pulls the registry from the RegistrySync URL and silently falls back to the bundled list', async () => {
   dir = await mkdtemp(join(tmpdir(), 'grunt-registry-test-'));
@@ -483,14 +471,8 @@ it('keeps newly bundled onboarding sources when both cached and remote registrie
   for (const [, options] of fetcher.mock.calls) expect(options?.headers).toEqual({});
 });
 
-it('preserves legacy API routing when default setup adds Kilo', async () => {
-  const actions = stubActions([], { installedSources: async () => 'freellmapi,kilo,freebuff,opencode' });
-  await wizard(undefined, actions);
-  expect(actions.installService).toHaveBeenCalledWith(['freellmapi', ...defaultIds()], expect.objectContaining({ signal: expect.any(AbortSignal) }));
-});
-it('keeps a vetted-only install across repeated setup even after Kilo creates a router login', async () => {
+it('keeps a vetted-only install across repeated setup when a retired provider was previously saved', async () => {
   dir = await mkdtemp(join(tmpdir(), 'grunt-vetted-repeat-'));
-  await writeFile(join(dir, 'router-admin.json'), '{}', { mode: 0o600 });
   await writeFile(join(dir, 'installed-sources.json'), JSON.stringify(['freebuff', 'opencode', 'kilo']), { mode: 0o600 });
   expect(await installedSources(dir)).toBe('opencode,kilo');
   const actions = stubActions([], { installedSources: () => installedSources(dir) });
@@ -516,13 +498,13 @@ it.each(['freebuff', 'apinex'])('rejects explicitly adding retired %s before any
   expect(actions.installService).not.toHaveBeenCalled();
 });
 
-it('removes both retired source IDs from an older saved selection while preserving custom routing', async () => {
+it('removes retired sources from an older saved selection and preserves user state', async () => {
   await writeFile(join(consentDir, 'installed-sources.json'), JSON.stringify(['freellmapi', 'freebuff', 'apinex', 'opencode']), { mode: 0o600 });
   await writeFile(join(consentDir, 'native-user-state'), 'preserved', { mode: 0o600 });
-  expect(await installedSources(consentDir)).toBe('freellmapi,opencode');
+  expect(await installedSources(consentDir)).toBe('opencode');
   const actions = stubActions([], { installedSources: () => installedSources(consentDir) });
   await wizard(undefined, actions);
-  expect(actions.installService).toHaveBeenCalledExactlyOnceWith(['freellmapi', ...defaultIds()], expect.objectContaining({ signal: expect.any(AbortSignal) }));
+  expect(actions.installService).toHaveBeenCalledExactlyOnceWith(defaultIds(), expect.objectContaining({ signal: expect.any(AbortSignal) }));
   expect(await readFile(join(consentDir, 'native-user-state'), 'utf8')).toBe('preserved');
 });
 
@@ -536,21 +518,14 @@ it('rejects unknown service selections before installing or touching saved state
 
 it.each([[], ['freebuff', 'apinex']])('keeps an explicitly empty or retired-only saved selection empty (%j)', async (...ids) => {
   await writeFile(join(consentDir, 'installed-sources.json'), JSON.stringify(ids), { mode: 0o600 });
-  await writeFile(join(consentDir, 'router-admin.json'), '{}', { mode: 0o600 });
   expect(await installedSources(consentDir)).toBe('');
 });
 
-it('enables the API source when adding a custom provider after a vetted install', async () => {
-  const actions = stubActions([], { installedSources: async () => 'freebuff,opencode,kilo' });
-  await wizard('groq', actions);
-  expect(actions.installService).toHaveBeenCalledWith([...new Set(['freellmapi', 'opencode', 'kilo', ...defaultIds()])]);
-});
-
-it('adds Zro while preserving saved custom API routing and without enabling optional NVIDIA', async () => {
-  const actions = stubActions([], { installedSources: async () => 'freellmapi,opencode' });
+it('adds Zro while preserving saved OpenCode routing', async () => {
+  const actions = stubActions([], { installedSources: async () => 'opencode' });
   await wizard('zro', actions);
-  expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), ['zro'], { dataSharingApproved: ['opencode'] });
-  expect(actions.installService).toHaveBeenCalledWith(['freellmapi', 'opencode', 'zro']);
+  expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), ['zro'], expect.objectContaining({ dataSharingApproved: ['opencode'] }));
+  expect(actions.installService).toHaveBeenCalledWith(['opencode', 'zro']);
 });
 
 it('gives add the live registry hints, as setup has', async () => {
@@ -565,14 +540,14 @@ it('gives add the live registry hints, as setup has', async () => {
   expect(useRegistry.mock.calls[0]![0]()).toBe(registry);
 });
 
-it('keeps an already approved sharing source when adding a custom API provider', async () => {
+it('keeps an already approved sharing source when adding a supported provider', async () => {
   await recordDataSharingConsent(consentDir, sharingIds());
   const actions = stubActions([], {
     installedSources: async () => 'freebuff,opencode,kilo,tokenharbor',
     approveDataSharing
   });
-  await wizard('groq', actions);
-  expect(actions.installService).toHaveBeenCalledWith([...new Set(['freellmapi', 'opencode', 'kilo', 'tokenharbor', ...defaultIds()])]);
+  await wizard('zro', actions);
+  expect(actions.installService).toHaveBeenCalledWith(['opencode', 'kilo', 'tokenharbor', 'zro']);
 });
 
 it.each(['refused', 'quota'] as const)('does not retry a settled %s provider while its verification header still says preparing', async code => {
@@ -588,14 +563,11 @@ it.each(['refused', 'quota'] as const)('does not retry a settled %s provider whi
   expect(unavailable).toEqual(['opencode']);
 });
 
-it.each(['https://example.test/v1', 'groq', 'cerebras'])('adds a provider from %j without running the default setup', async input => {
+it.each(['https://example.test/v1', 'groq', 'cerebras', 'unknown'])('rejects an unsupported provider before setup (%s)', async input => {
   const actions = stubActions([]);
-  await wizard(input, actions);
-  expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), [input || 'https://example.test/v1'], expect.any(Object));
-  expect(actions.setupFallbacks).not.toHaveBeenCalled();
-});
-it('explains how to add an unknown provider by URL', async () => {
-  await expect(wizard('unknown', stubActions([]))).rejects.toThrow('or paste an OpenAI-compatible base URL');
+  await expect(wizard(input, actions)).rejects.toThrow('Choose a supported provider');
+  expect(actions.preflight).not.toHaveBeenCalled();
+  expect(actions.setup).not.toHaveBeenCalled();
 });
 
 it('marks only the fixed Free-Pi setup probes as public context', async () => {

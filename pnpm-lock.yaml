@@ -21,8 +21,8 @@ importers:
         specifier: ^1.32.2
         version: 1.32.2(zod@4.6.7)
       '@trusty-squire/mcp':
-        specifier: 1.2.0-rc0
-        version: 1.2.0-rc0
+        specifier: 1.2.0-rc1
+        version: 1.2.0-rc1
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
@@ -38,13 +38,13 @@ importers:
       jsonc-parser:
         specifier: 3.3.1
         version: 3.3.1
-      standardwebhooks:
-        specifier: ^1.1.1
-        version: 1.1.1
     devDependencies:
       '@types/node':
         specifier: ^22.20.3
         version: 22.20.5
+      esbuild:
+        specifier: ^0.28.2
+        version: 0.28.2
       eslint:
         specifier: ^9.39.5
         version: 9.39.5
@@ -680,11 +680,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@stablelib/base64@1.0.1':
-    resolution: {integrity: sha512-1bnPQqSxSuc3Ii6MhBysoWCg58j97aUjuCSZrGSmDxNqtytIi0k8utUenAwTZN4V5mXXYGsVUI9zeBqy+jBOSQ==}
-
-  '@trusty-squire/mcp@1.2.0-rc0':
-    resolution: {integrity: sha512-C0rRGYZKscVq786Ie0XMN2NkiBC0uKk92NJ75J2+HCfjV7KHOlbbdm1XDQLUNBUDuvQjndSmNw0HRWkwwUawRg==}
+  '@trusty-squire/mcp@1.2.0-rc1':
+    resolution: {integrity: sha512-gG1AbsDpAr8OjubEfG8twREjYse3C1MRSeqDWIkJT4NmwZpjdrYd5jmS+qtetw/E3zd0a/4kNolGy6Go189uQA==}
     engines: {node: '>=20'}
     hasBin: true
 
@@ -1221,9 +1218,6 @@ packages:
 
   fast-levenshtein@2.0.6:
     resolution: {integrity: sha512-DCXu6Ifhqcks7TZKY3Hxp3y6qphY5SJZmrWMDrKcERSOXWQdMhU9Ig/PYrzyw/ul9jOIyh0N4M0tbC5hodg8dw==}
-
-  fast-sha256@1.3.0:
-    resolution: {integrity: sha512-n11RGP/lrWEFI/bWdygLxhI+pVeo1ZYIVwvvPkW7azl/rOy+F3HYRZ2K5zeE9mmkhQppyv9sQFx0JM9UabnpPQ==}
 
   fast-string-truncated-width@3.0.3:
     resolution: {integrity: sha512-0jjjIEL6+0jag3l2XWWizO64/aZVtpiGE3t0Zgqxv0DPuxiMjvB3M24fCyhZUO4KomJQPj3LTSUnDP3GpdwC0g==}
@@ -1824,9 +1818,6 @@ packages:
 
   stackback@0.0.2:
     resolution: {integrity: sha512-1XMJE5fQo1jGH6Y/7ebnwPOBEkIEnT4QF32d5R1+VXdXveM0IBMJt8zfaxX1P3QhVwrYe+576+jkANtSS2mBbw==}
-
-  standardwebhooks@1.1.1:
-    resolution: {integrity: sha512-bCbX9ZEyFkWPsRz7Bl3NuQUJohmwGSev/yhr7vhaGPlc4AfIrspIRa6cPTBuI1ItmrTDJ4d/S2hCsfe4+vQGnQ==}
 
   statuses@2.0.2:
     resolution: {integrity: sha512-DvEy55V3DB7uknRo+4iOGT5fP1slR8wQohVdknigZPMpMstaKJQWhwiYBACJE3Ul2pTnATihhBYnRhZQHGBiRw==}
@@ -2595,9 +2586,7 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.68.0':
     optional: true
 
-  '@stablelib/base64@1.0.1': {}
-
-  '@trusty-squire/mcp@1.2.0-rc0':
+  '@trusty-squire/mcp@1.2.0-rc1':
     dependencies:
       '@anthropic-ai/sdk': 0.32.1
       '@clack/prompts': 0.11.0
@@ -3240,8 +3229,6 @@ snapshots:
 
   fast-levenshtein@2.0.6: {}
 
-  fast-sha256@1.3.0: {}
-
   fast-string-truncated-width@3.0.3: {}
 
   fast-string-width@3.0.2:
@@ -3861,11 +3848,6 @@ snapshots:
   source-map-js@1.2.2: {}
 
   stackback@0.0.2: {}
-
-  standardwebhooks@1.1.1:
-    dependencies:
-      '@stablelib/base64': 1.0.1
-      fast-sha256: 1.3.0
 
   statuses@2.0.2: {}
 

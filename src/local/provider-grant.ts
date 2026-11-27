@@ -1,6 +1,7 @@
+import { hasOwnerMode, openPrivateFile } from './private-file.js';
 import { configRoot } from '../brand.js';
 import { constants } from 'node:fs';
-import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { ID_PATTERN, disabledAdapters, knownAdapters, safePublicHttpsOrigin } from '../registry.js';
@@ -190,10 +191,10 @@ export async function firstWorkingGrant<T extends FreeApiGrant = FreeApiGrant>(
   return undefined;
 }
 export async function readPrivateProviderGrantFile(provider: Provider, location: string): Promise<unknown> {
-  const file = await open(join(location, `${name(provider)}.json`), constants.O_RDONLY | constants.O_NOFOLLOW);
+  const file = await openPrivateFile(join(location, `${name(provider)}.json`), constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = await file.stat();
-    if (!stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.uid !== process.getuid?.()) throw new Error('Unsafe private provider grant file');
+    if (!stat.isFile() || !hasOwnerMode(stat, 0o600)) throw new Error('Unsafe private provider grant file');
     return JSON.parse(await file.readFile('utf8'));
   } finally { await file.close(); }
 }
@@ -256,10 +257,10 @@ export function declarativeGrantAllowed(grant: FreeApiGrant, baseUrl: string): b
 
 export async function readDeclarativeProviderGrant(id: string, location: string): Promise<unknown> {
   const valid = declarativeProviderName(id);
-  const file = await open(join(location, `${valid}.json`), constants.O_RDONLY | constants.O_NOFOLLOW);
+  const file = await openPrivateFile(join(location, `${valid}.json`), constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = await file.stat();
-    if (!stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.uid !== process.getuid?.()) throw new Error('Unsafe declarative provider grant file');
+    if (!stat.isFile() || !hasOwnerMode(stat, 0o600)) throw new Error('Unsafe declarative provider grant file');
     return JSON.parse(await file.readFile('utf8'));
   } finally { await file.close(); }
 }

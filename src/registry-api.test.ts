@@ -3,7 +3,7 @@ import { createClient } from '@libsql/client';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ADAPTER_FIELDS, CANDIDATE_FIELDS, DECLARATIVE_FIELDS, HINTS_MAX, TIER_TOTALS, bundledRegistry, installers, validateRegistry } from './registry.js';
+import { ADAPTER_FIELDS, CANDIDATE_FIELDS, DECLARATIVE_FIELDS, HINTS_MAX, TIER_TOTALS, bundledRegistry, imageAdapters, installers, validateRegistry } from './registry.js';
 import type { Registry } from './registry.js';
 import { registryRoutes } from './registry-routes.js';
 import { RegistryStore } from './registry-store.js';
@@ -170,14 +170,20 @@ it('rejects a written signup without hints, and names the failing field', async 
   expect(await api.store.writes()).toEqual([]);
 });
 
-it('serves a document that usegrunt 0.9.7 validates and accepts as newer than its bundle', async () => {
+const compat097 = (doc: Registry): Registry => ({
+  ...doc,
+  adapters: doc.adapters.map(adapter => imageAdapters.has(adapter.id) ? { ...adapter, modalities: ['text'] } : adapter)
+});
+
+it('serves a document that validates and remains compatible with usegrunt 0.9.7 aside from image-capable shipped adapters', async () => {
   const api = await server();
   expect((await api.app.request('/v1/registry')).status).toBe(503);
   expect((await api.request('PUT', '/v1/registry/entries/newco', { signup: 'https://newco.example/signup', hints: "Press 'Sign up'." }, tokens.owner)).status).toBe(200);
   expect((await api.request('PUT', '/v1/registry/entries/zro', entry('zro'), tokens.owner)).status).toBe(200);
   const served = await api.registry();
   expect(served.candidates!.map(candidate => candidate.id)).toEqual(['newco']);
-  expect(validate097(served)).toEqual(served);
+  expect(validateRegistry(served)).toEqual(served);
+  expect(validate097(compat097(served))).toEqual(compat097(served));
   expect(Date.parse(served.published)).toBeGreaterThan(Date.parse(BUNDLED_PUBLISHED));
   expect(Date.parse(served.published)).toBeGreaterThan(Date.parse(bundledRegistry.published));
 });
@@ -353,7 +359,8 @@ it('seeds a missing registry once through audited publication and preserves late
   const seeded = await api.registry();
   expect(seeded.adapters).toEqual(bundledRegistry.adapters);
   expect(Date.parse(seeded.published)).toBeGreaterThan(Date.parse(bundledRegistry.published));
-  expect(validate097(seeded)).toEqual(seeded);
+  expect(validateRegistry(seeded)).toEqual(seeded);
+  expect(validate097(compat097(seeded))).toEqual(compat097(seeded));
   expect((await stat(api.path)).mode & 0o777).toBe(0o600);
   const writes = await api.store.writes();
   expect(writes).toHaveLength(1);

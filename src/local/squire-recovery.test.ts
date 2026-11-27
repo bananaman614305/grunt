@@ -295,7 +295,7 @@ it.each([true, false])('Reproduction zro: lets a harness recover Jev and require
     ? [{ service: 'zro', reference: 'synthetic', field_names: ['api_key'] }] : []);
   const grant = vi.spyOn(squire.credentials, 'grant').mockResolvedValue({ base_url: 'https://squire.test', token: 'synthetic' });
   const addGrant = vi.fn(async () => {});
-  const result = await setupProviders(squire, { addGrant }, { providers: ['zro'], reuseSaved: false, notify: () => {} });
+  const result = await setupProviders(squire, { addGrant }, { providers: ['zro'], notify: () => {} });
   expect(agent).toHaveBeenCalledOnce();
   expect(result.dropped).toEqual(captured ? [] : ['zro']);
   expect(grant).toHaveBeenCalledTimes(Number(captured));
@@ -443,7 +443,7 @@ it('never hands a blocked batch signup to the person, even on a terminal', async
       expect(await agent.call('operate_share', {})).toMatchObject({ status: 'stopped', reason: 'Tool unavailable for this signup' });
     });
     vi.spyOn(squire.credentials, 'list').mockResolvedValue([]);
-    const result = await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], reuseSaved: false, notify: () => {} });
+    const result = await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], notify: () => {} });
     expect(result.dropped).toEqual(['zro']);
     expect(call.mock.calls.some(([name]) => name === 'operate_share')).toBe(false);
     await squire.close();
@@ -488,7 +488,7 @@ it('forwards an explicit Squire capture for this provider and keeps its write_id
   });
   vi.spyOn(squire.credentials, 'list').mockImplementation(async () => stored ? [{ service: 'zro', reference: 'synthetic', field_names: ['api_key'] }] : []);
   vi.spyOn(squire.credentials, 'grant').mockResolvedValue({ base_url: 'https://squire.test', token: 'synthetic' });
-  await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], reuseSaved: false, notify: () => {} });
+  await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], notify: () => {} });
   expect(extracts).toEqual([
     { capture: { store: { service: 'zro', label: 'grunt-free-zro' }, source }, session_id: 'zro-tab' },
     { capture: { store: { service: 'zro', label: 'grunt-free-zro' }, source, write_id: '3f2b8c1e-9d4a-4e6f-a1b2-c3d4e5f60718' }, session_id: 'zro-tab' }
@@ -525,7 +525,7 @@ it('lets the operator type into observed fields except passwords', async () => {
     filled = true;
   });
   vi.spyOn(squire.credentials, 'list').mockResolvedValue([]);
-  await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], reuseSaved: false, notify: () => {} });
+  await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], notify: () => {} });
   expect(typed).toEqual([
     { ref: 'key-name', text: 'grunt', session_id: 'zro-tab' },
     { ref: 'email', text: 'person@example.test', session_id: 'zro-tab' },
@@ -547,7 +547,7 @@ it('passes the operator facts through operate_drive except passwords, and Grunt 
     await agent.call('operate_drive', { facts: { 'Key Name': 'grunt-squire', 'Card Number': '4242424242424242', Password: 'Synthetic!Pass42', plan: 'pro' } });
   });
   vi.spyOn(squire.credentials, 'list').mockResolvedValue([]);
-  await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], reuseSaved: false, notify: () => {} });
+  await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], notify: () => {} });
   const facts = object(object(drives.at(-1)).facts);
   expect(facts).toEqual({ 'Key Name': 'grunt-squire', 'Card Number': '4242424242424242', key_name: expect.stringMatching(/^grunt-\d{8}-\d{4}$/), plan: 'free', project_name: facts.key_name });
   await squire.close();
@@ -586,7 +586,7 @@ it('runs parallel operator calls in turn without a call cap and widens tools wit
     expect(await agent.call('operate_upload', { target: 'file', path: '/etc/hosts' })).toMatchObject({ status: 'stopped', reason: 'Tool unavailable for this signup' });
   });
   vi.spyOn(squire.credentials, 'list').mockResolvedValue([]);
-  await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], reuseSaved: false, notify: () => {} });
+  await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], notify: () => {} });
   expect(peak).toBe(1);
   expect(call).toHaveBeenCalledWith('operate_click', { ref: 'late', session_id: 'zro-tab' });
   expect(call).toHaveBeenCalledWith('operate_drive', expect.objectContaining({ session_id: 'zro-tab', answer: 'DONE' }));
@@ -630,7 +630,7 @@ it('answers every call after a complete drive with a final stop, not the stale p
     after.push(await agent.call('operate_extract', { store: { service: 'zro' } }), await agent.call('operate_observe', {}));
   });
   vi.spyOn(squire.credentials, 'list').mockResolvedValue([]);
-  await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], reuseSaved: false, notify: () => {} });
+  await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], notify: () => {} });
   expect(after).toEqual([0, 1].map(() => expect.objectContaining({ status: 'complete', reason: expect.stringMatching(/stored any requested key.*stop calling tools/) })));
   expect(after[0]).not.toHaveProperty('observation');
   expect(call.mock.calls.filter(([name]) => name !== 'operate_drive' && name !== 'operate_finish').map(([name]) => name)).not.toContain('operate_extract');
@@ -659,7 +659,7 @@ it.each(['acted', 'timeout'] as const)('a failed driver hands its Squire session
     throw new Error(kind === 'acted' ? 'quota exhausted: free usage limit reached' : 'opencode did not answer within 240 seconds');
   }, next));
   vi.spyOn(squire.credentials, 'list').mockResolvedValue([]);
-  const result = await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], reuseSaved: false, notify: () => {} });
+  const result = await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], notify: () => {} });
   const startedDrives = drives;
   if (kind === 'acted') {
     // The next driver continues the same browser session; it is told not to start over.

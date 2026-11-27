@@ -5,7 +5,7 @@ import { beforeEach, afterEach, expect, it, vi } from 'vitest';
 import { setupLiveKit, installLiveKit } from './livekit-setup.js';
 import { livekitPaths, readLiveKitFreeBuildReceipt, writeLiveKitFreeBuildReceipt } from './livekit.js';
 import * as livekitSetup from './livekit-setup.js';
-import { setup, FreeLLMAdmin } from './setup.js';
+import { setup } from './setup.js';
 import { setupFallbacks } from './fallback-setup.js';
 import { planSteps } from './fixtures/key-only-goal.js';
 
@@ -218,12 +218,10 @@ it('rejects unsupported platforms and corrupted official release archives before
 
 it('routes LiveKit setup to native signup without creating an API key or local aggregator', async () => {
   const native = vi.spyOn(livekitSetup, 'setupLiveKit').mockResolvedValue();
-  const router = vi.spyOn(FreeLLMAdmin.prototype, 'login');
   const squire = { signup: vi.fn(), credentials: { list: vi.fn(), grant: vi.fn() }, runs: { start: vi.fn(), get: vi.fn() } };
   const controller = new AbortController();
   await expect(setup(() => {}, ['livekit'], { directory, squire, signal: controller.signal })).resolves.toEqual({});
   expect(native).toHaveBeenCalledWith({ directory, squire, notify: expect.any(Function), signal: controller.signal });
-  expect(router).not.toHaveBeenCalled();
   expect(squire.credentials.grant).not.toHaveBeenCalled();
   expect(squire.runs.start).not.toHaveBeenCalled();
 });

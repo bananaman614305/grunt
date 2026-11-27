@@ -1,7 +1,8 @@
+import { hasOwnerMode, openPrivateFile } from './private-file.js';
 import { observeAttemptDispatch } from './diagnostics.js';
 import { configRoot } from '../brand.js';
 import { constants } from 'node:fs';
-import { access, lstat, mkdir, mkdtemp, open, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, mkdtemp, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -82,13 +83,13 @@ function installation(value: unknown): PerchInstallReceipt {
 export async function perchPrivateDirectory(path: string, create = false) {
   if (create) await mkdir(path, { recursive: true, mode: 0o700 });
   const st = await lstat(path);
-  if (!st.isDirectory() || st.isSymbolicLink() || st.uid !== process.getuid?.() || (st.mode & 0o077)) throw eligibilityError();
+  if (!st.isDirectory() || st.isSymbolicLink() || !hasOwnerMode(st, 0, 0o077)) throw eligibilityError();
 }
 async function privateJSON(path: string, limit = 4096): Promise<unknown> {
-  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  const file = await openPrivateFile(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const st = await file.stat();
-    if (!st.isFile() || st.uid !== process.getuid?.() || (st.mode & 0o777) !== 0o600 || st.size > limit) throw eligibilityError();
+    if (!st.isFile() || !hasOwnerMode(st, 0o600) || st.size > limit) throw eligibilityError();
     return JSON.parse(await file.readFile('utf8'));
   } finally { await file.close(); }
 }
@@ -116,7 +117,7 @@ export async function verifyPerchCore(directory: string, signal = AbortSignal.ti
   const p = perchPaths(directory);
   for (const path of [p.home, p.binRoot, p.versionHome]) await perchPrivateDirectory(path);
   const pkg = await lstat(p.package);
-  if (!pkg.isDirectory() || pkg.isSymbolicLink() || pkg.uid !== process.getuid?.() || (pkg.mode & 0o022)) throw new SourceError('not_installed', 'Perch package directory is unsafe');
+  if (!pkg.isDirectory() || pkg.isSymbolicLink() || !hasOwnerMode(pkg, 0, 0o022)) throw new SourceError('not_installed', 'Perch package directory is unsafe');
   await verifyPerchCoreFiles(p.package, PERCH_CORE_SHA256, signal);
   await access(p.binary, constants.X_OK);
 }
@@ -126,7 +127,7 @@ export async function verifyPerchInstallation(directory: string, signal = AbortS
 export async function assertPerchPrivateAuth(directory: string) {
   const p = perchPaths(directory); await perchPrivateDirectory(p.auth);
   const st = await lstat(p.authFile);
-  if (!st.isFile() || st.isSymbolicLink() || st.uid !== process.getuid?.() || (st.mode & 0o777) !== 0o600 || st.size < 1 || st.size > 65536) throw eligibilityError();
+  if (!st.isFile() || st.isSymbolicLink() || !hasOwnerMode(st, 0o600) || st.size < 1 || st.size > 65536) throw eligibilityError();
 }
 
 /** No global instructions may make the native empty-workspace metadata nonempty. Never modify those files. */

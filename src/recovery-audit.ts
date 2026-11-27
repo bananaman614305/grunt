@@ -1,3 +1,4 @@
+import type { Adapter } from './registry.js';
 import type { DiagnosticEvent, DiagnosticMetrics } from './local/diagnostics.js';
 
 type Window = { since: number; until: number };
@@ -148,7 +149,58 @@ export function measureBeatAPI(events: Event[], exposure: BeatAPIExposure, cover
   };
 }
 
-export function buildRecoveryAudit(events: Event[], window: Window, metrics?: Coverage, beatEvidence?: ReturnType<typeof measureBeatAPI>) {
+const tierPolicy = { minimumAttempts: 20, minimumPassRate: 0.95, minimumFreeToolReplies: 3,
+  maxP90DurationMs: 30_000, maxP90FirstOutputMs: 8_000, demoteBelowPassRate: 0.85 };
+
+function p90(values: number[]) {
+  if (!values.length) return null;
+  return values.sort((a, b) => a - b)[Math.ceil(values.length * 0.9) - 1]!;
+}
+
+type AuditAdapter = Pick<Adapter, 'id' | 'tier' | 'status' | 'expires'>;
+
+function auditToolTiers(events: Event[], until: number, complete: boolean, registry: readonly AuditAdapter[]) {
+  const finishes = events.filter(e => e.kind === 'user' && e.type === 'attempt.finish'
+    && (e.outcome === 'passed' || e.outcome === 'failed'));
+  const adapters = registry.map(adapter => {
+    const observed = finishes.filter(e => e.source === adapter.id);
+    const unclassified = observed.filter(e => e.codingToolTurn === undefined).length;
+    const turns = observed.filter(e => e.codingToolTurn);
+    const passed = turns.filter(e => e.outcome === 'passed' && !incomplete(e));
+    const passRate = turns.length ? passed.length / turns.length : null;
+    const failureRate = turns.length ? (turns.length - passed.length) / turns.length : null;
+    const durations = passed.flatMap(e => e.durationMs ?? []);
+    const firstOutput = passed.flatMap(e => e.firstOutputMs ?? []);
+    const p90DurationMs = p90(durations), p90FirstOutputMs = p90(firstOutput);
+    const expectedCalls = turns.filter(e => e.dispatchedToolCallPassed !== undefined).length;
+    const correctCalls = passed.filter(e => e.dispatchedToolCallPassed);
+    const toolCallPassRate = expectedCalls ? correctCalls.length / expectedCalls : null;
+    const freeToolReplies = correctCalls.filter(e => e.free).length;
+    const last = turns.reduce<Event | undefined>((latest, e) => !latest || latest.at < e.at ? e : latest, undefined);
+    let recommendation = 'insufficient evidence';
+    if (complete && !unclassified && turns.length >= tierPolicy.minimumAttempts && passRate !== null) {
+      recommendation = 'hold';
+      const timed = durations.length === passed.length && p90DurationMs !== null;
+      const outputTimed = firstOutput.length === passed.length && p90FirstOutputMs !== null;
+      const slow = timed && p90DurationMs > tierPolicy.maxP90DurationMs
+        || outputTimed && p90FirstOutputMs > tierPolicy.maxP90FirstOutputMs;
+      const callsMeasured = expectedCalls >= tierPolicy.minimumAttempts && toolCallPassRate !== null;
+      if (adapter.tier === 'stable' && (passRate < tierPolicy.demoteBelowPassRate || slow
+        || callsMeasured && toolCallPassRate < tierPolicy.demoteBelowPassRate)) recommendation = 'demotion candidate';
+      if (adapter.tier === 'experimental' && passRate >= tierPolicy.minimumPassRate
+        && callsMeasured && toolCallPassRate >= tierPolicy.minimumPassRate && timed && outputTimed && !slow
+        && freeToolReplies >= tierPolicy.minimumFreeToolReplies && last?.free && last.outcome === 'passed' && !incomplete(last)
+        && (!adapter.status || adapter.status === 'active') && (!adapter.expires || Date.parse(adapter.expires) + 24 * hour >= until)) {
+        recommendation = 'promotion candidate';
+      }
+    }
+    return { source: adapter.id, tier: adapter.tier, attempts: turns.length, unclassified, passRate, failureRate,
+      expectedCalls, toolCallPassRate, freeToolReplies, p90DurationMs, p90FirstOutputMs, firstOutputSamples: firstOutput.length, recommendation };
+  });
+  return { policy: tierPolicy, complete, adapters };
+}
+
+export function buildRecoveryAudit(events: Event[], window: Window, metrics?: Coverage, beatEvidence?: ReturnType<typeof measureBeatAPI>, adapters: readonly AuditAdapter[] = []) {
   const byRequest = new Map<string, Event[]>();
   for (const event of events) {
     if (event.kind !== 'user') continue;
@@ -171,6 +223,8 @@ export function buildRecoveryAudit(events: Event[], window: Window, metrics?: Co
   const checks = windowEvents.filter(accountCheck);
   return {
     ...window,
+    toolTiers: auditToolTiers(windowEvents, window.until,
+      matchingCounts(events, metrics, window, d => d.kind === 'user' && d.type === 'attempt.finish'), adapters),
     passed: successes.length, classified: classified.length, recovered: recovered.length,
     failedMs: recovered.reduce((sum, item) => sum + item.failedMs, 0),
     failed: failures.length, classifiedFailures: classifiedFailures.length,

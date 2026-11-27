@@ -1,5 +1,5 @@
+import { installedConfigRoot } from './service-migration.js';
 import { isCancel, password } from '@clack/prompts';
-import { configRoot } from '../brand.js';
 import { BrowserSquire } from './setup.js';
 import {
   PROVIDER_DIRECT_ORIGINS,
@@ -68,7 +68,7 @@ async function promptSecret(provider: VaultProvider): Promise<string> {
 export async function vaultCommand(args: string[], io: VaultCommandIO = {}): Promise<void> {
   const log = io.log ?? console.log;
   const env = io.env ?? process.env;
-  const directory = io.directory ?? configRoot(env);
+  const directory = io.directory ?? installedConfigRoot(env);
   const subcommand = args[0];
 
   if (!subcommand || subcommand === '--help' || subcommand === '-h') {

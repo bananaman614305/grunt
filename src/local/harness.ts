@@ -1,3 +1,4 @@
+import { messageText } from './source.js';
 import type { ModelRequest } from './source.js';
 
 // Remove known harness context envelopes only; never rewrite the person's text.
@@ -11,7 +12,7 @@ export function userText(value: string): string {
 }
 export function userTurns(request: ModelRequest): string[] {
   if (request.userMessages) return request.userMessages;
-  return request.messages.filter(m => m.role === 'user').map(m => userText(m.content)).filter(s => s.length > 0);
+  return request.messages.filter(m => m.role === 'user').map(m => userText(messageText(m.content))).filter(s => s.length > 0);
 }
 // Harnesses report finished subagents as new user-role messages: Codex wraps
 // them in <subagent_notification>, Claude Code in <task-notification>. They
@@ -29,7 +30,7 @@ export function taskTurns(request: ModelRequest): string[] {
   return userTurns(request).map(taskText).filter(s => s.length > 0);
 }
 export function housekeeping(request: ModelRequest): string | undefined {
-  const instructions = request.messages.filter(m => m.role === 'system' || m.role === 'developer').map(m => m.content).join('\n').replace(/^x-anthropic-billing-header:[^\n]*\n?/gm, '').replace(/^You are Claude Code, Anthropic's official CLI for Claude\.\n?/gm, '').trimStart();
+  const instructions = request.messages.filter(m => m.role === 'system' || m.role === 'developer').map(m => messageText(m.content)).join('\n').replace(/^x-anthropic-billing-header:[^\n]*\n?/gm, '').replace(/^You are Claude Code, Anthropic's official CLI for Claude\.\n?/gm, '').trimStart();
   const side = /^(?:generate|create|write|provide|return)[\s\S]{0,100}(?:session title|conversation title|chat title|short title|concise title|topic|summary)|^(?:quota|warm[- ]?up) (?:probe|check)|^title for (?:this|the) (?:session|conversation)/i;
   const claudeTitle = /^You are naming a coding session so the user can pick it out of a long list of sessions\./.test(instructions);
   if (!claudeTitle && !side.test(instructions)) return;

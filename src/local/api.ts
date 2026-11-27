@@ -1,4 +1,3 @@
-import { pairDots } from './dots-link.js';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { streamSSE } from 'hono/streaming';
@@ -7,8 +6,8 @@ import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { housekeeping, userText } from './harness.js';
-import { RequestError, SourceError, answeredBy, currentStreamReplyId, needsFunctionTools, observeRequestInput } from './source.js';
-import type { Completion, Message, ModelRequest, Tool, ToolCall, Sources, StreamTextObserver } from './source.js';
+import { RequestError, SourceError, answeredBy, currentStreamReplyId, messageText, needsFunctionTools, observeRequestInput } from './source.js';
+import type { Completion, ContentPart, ImageContentPart, Message, MessageContent, ModelRequest, Tool, ToolCall, Sources, StreamTextObserver } from './source.js';
 import { currentDiagnosticContext, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticContext } from './diagnostics.js';
 import { OBSERVATION_PATH, observationLimit, observeDaemon } from './observe.js';
@@ -33,13 +32,55 @@ function historicalCalls(calls: unknown): ToolCall[] | undefined {
     return fn && typeof fn === 'object' && !Array.isArray(fn) ? { ...call, function: { ...fn, arguments: historicalArguments((fn as Obj).arguments) } } : call;
   });
 }
-// Image blocks of the three wire formats. Grunt forwards no image data to any source, so a conversation that holds an
-// image is only routable to a source that lists image input. When none does (the free registry today), each block is
-// replaced by a short, deterministic note instead of killing the whole conversation: the same bytes always give the
-// same note, and the note never carries data, a URL or a path.
+// Image blocks of the three wire formats. A conversation that holds an image is preserved as structured
+// OpenAI-style content parts when an image-capable route can serve it. When no source on the route accepts
+// images, each image block is replaced by a short, deterministic note instead of failing the conversation:
+// the same bytes always give the same note, and the note never carries data, a URL or a path.
 const IMAGE_BLOCKS = new Set(['image', 'input_image', 'image_url']);
+const IMAGE_DATA_URL = /^data:image\/[a-z0-9.+-]{1,40}(?:;[^,;]*)*;base64,[A-Za-z0-9+/=\s]+$/i;
+const IMAGE_MEDIA_TYPE = /^image\/[a-z0-9.+-]{1,40}$/i;
+const IMAGE_DETAILS = new Set(['auto', 'low', 'high']);
 const isImage = (block: unknown) => IMAGE_BLOCKS.has(String(object(block).type));
 const hasImage = (content: unknown): boolean => Array.isArray(content) && content.some(block => isImage(block) || object(block).type === 'tool_result' && hasImage(object(block).content));
+function bodyHasImage(body: Obj, api: string): boolean {
+  const turns = api === 'responses' ? body.input : body.messages;
+  return Array.isArray(turns) && turns.some(value => {
+    const m = object(value);
+    return hasImage(m.content) || hasImage(m.output);
+  });
+}
+function supportedImageUrl(url: string): boolean {
+  if (IMAGE_DATA_URL.test(url)) return true;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'https:' && !parsed.username && !parsed.password;
+  } catch { return false; }
+}
+function imagePart(block: unknown): ImageContentPart | undefined {
+  const b = object(block);
+  if (b.type === 'image') {
+    const source = object(b.source);
+    if (source.type === 'base64') {
+      const mediaType = typeof source.media_type === 'string' && IMAGE_MEDIA_TYPE.test(source.media_type) ? source.media_type.toLowerCase() : undefined;
+      const data = typeof source.data === 'string' ? source.data.trim() : '';
+      if (!mediaType || !data || !/^[A-Za-z0-9+/=\s]+$/.test(data)) return undefined;
+      return { type: 'image_url', image_url: { url: `data:${mediaType};base64,${data}` } };
+    }
+    if (source.type === 'url' && typeof source.url === 'string' && supportedImageUrl(source.url)) {
+      return { type: 'image_url', image_url: { url: source.url } };
+    }
+    return undefined;
+  }
+  if (b.type === 'image_url' || b.type === 'input_image') {
+    const ref = object(b.image_url);
+    const url = typeof b.image_url === 'string' ? b.image_url : typeof ref.url === 'string' ? ref.url : undefined;
+    if (!url || !supportedImageUrl(url)) return undefined;
+    const rawDetail = typeof b.detail === 'string' ? b.detail : typeof ref.detail === 'string' ? ref.detail : undefined;
+    const detail = rawDetail && IMAGE_DETAILS.has(rawDetail) ? rawDetail as 'auto' | 'low' | 'high' : undefined;
+    return { type: 'image_url', image_url: { url, ...(detail ? { detail } : {}) } };
+  }
+  return undefined;
+}
 function imageNote(block: unknown): string {
   const b = object(block), source = object(b.source), ref = object(b.image_url);
   const url = typeof b.image_url === 'string' ? b.image_url : typeof ref.url === 'string' ? ref.url : undefined;
@@ -76,6 +117,28 @@ function text(v: unknown): string {
     return [];
   }).join('\n');
 }
+function decodeContent(v: unknown): MessageContent {
+  if (typeof v === 'string' || !hasImage(v)) return text(v);
+  const parts: ContentPart[] = [];
+  let hasValidImage = false;
+  for (const block of array(v)) {
+    const p = object(block);
+    if (p.type === 'text' || p.type === 'input_text' || p.type === 'output_text') {
+      const value = String(p.text ?? '');
+      if (value) parts.push({ type: 'text', text: value });
+    } else if (isImage(p)) {
+      const part = imagePart(p);
+      if (part) { parts.push(part); hasValidImage = true; }
+    } else if (p.type === 'tool_result') {
+      const nested = decodeContent(p.content);
+      if (typeof nested === 'string') { if (nested) parts.push({ type: 'text', text: nested }); }
+      else { parts.push(...nested); if (nested.some(part => part.type === 'image_url')) hasValidImage = true; }
+    } else if (p.type === 'tool_use') {
+      parts.push({ type: 'text', text: `[tool ${p.name}] ${JSON.stringify(p.input)}` });
+    }
+  }
+  return hasValidImage ? parts : text(v);
+}
 // Responses input is a flat item list. Parallel function_call items form one assistant turn, and message
 // items that arrive while calls are unanswered wait until the matching outputs, so results stay adjacent.
 function responsesMessages(items: unknown[]): Message[] {
@@ -85,7 +148,8 @@ function responsesMessages(items: unknown[]): Message[] {
     const m = object(v);
     if (m.type === 'function_call_output') {
       pending.delete(String(m.call_id));
-      out.push({ role: 'tool', content: typeof m.output === 'string' ? m.output : JSON.stringify(m.output) ?? '', tool_call_id: String(m.call_id) });
+      const content = typeof m.output === 'string' ? m.output : hasImage(m.output) ? decodeContent(m.output) : JSON.stringify(m.output) ?? '';
+      out.push({ role: 'tool', content, tool_call_id: String(m.call_id) });
       flush();
     } else if (m.type === 'function_call') {
       const call: ToolCall = { id: String(m.call_id), type: 'function', function: { name: typeof m.namespace === 'string' ? `${m.namespace}__${String(m.name)}` : String(m.name), arguments: historicalArguments(m.arguments) } };
@@ -94,7 +158,7 @@ function responsesMessages(items: unknown[]): Message[] {
       else out.push({ role: 'assistant', content: '', tool_calls: [call] });
       pending.add(call.id);
     } else if (!m.type || m.type === 'message') {
-      const message = { role: String(m.role ?? 'user'), content: text(m.content) };
+      const message: Message = { role: String(m.role ?? 'user'), content: decodeContent(m.content) };
       if (pending.size) held.push(message); else out.push(message);
     }
   }
@@ -115,14 +179,15 @@ export function decode(original: Obj, api: string, fallback?: string, options: {
   } else {
     messages = array(body.messages).flatMap(v => {
       const m = object(v);
-      if (api !== 'messages' || typeof m.content === 'string') return [{ role: String(m.role), content: text(m.content), ...(m.tool_calls ? { tool_calls: historicalCalls(m.tool_calls)! } : {}), ...(m.tool_call_id ? { tool_call_id: String(m.tool_call_id) } : {}) }];
+      if (api !== 'messages' || typeof m.content === 'string') return [{ role: String(m.role), content: decodeContent(m.content), ...(m.tool_calls ? { tool_calls: historicalCalls(m.tool_calls)! } : {}), ...(m.tool_call_id ? { tool_call_id: String(m.tool_call_id) } : {}) }];
       const blocks = array(m.content).map(object);
       const calls: ToolCall[] = blocks.filter(b => b.type === 'tool_use').map(b => ({ id: String(b.id), type: 'function', function: { name: String(b.name), arguments: historicalArguments(b.input) } }));
-      const content = text(blocks.filter(b => b.type !== 'tool_use' && b.type !== 'tool_result'));
-      const turn: Message[] = content || calls.length ? [{ role: String(m.role), content, ...(calls.length ? { tool_calls: calls } : {}) }] : [];
+      const content = decodeContent(blocks.filter(b => b.type !== 'tool_use' && b.type !== 'tool_result'));
+      const hasContent = typeof content === 'string' ? content.length > 0 : content.length > 0;
+      const turn: Message[] = hasContent || calls.length ? [{ role: String(m.role), content, ...(calls.length ? { tool_calls: calls } : {}) }] : [];
       // Results answer the assistant's tool calls, so they must directly follow them. Claude Code adds
       // reminders and queued commands as text blocks beside the results; that text comes after them.
-      return [...blocks.filter(b => b.type === 'tool_result').map(b => ({ role: 'tool', content: text(b.content), tool_call_id: String(b.tool_use_id) })), ...turn];
+      return [...blocks.filter(b => b.type === 'tool_result').map(b => ({ role: 'tool', content: decodeContent(b.content), tool_call_id: String(b.tool_use_id) })), ...turn];
     });
     if (body.system) messages.unshift({ role: 'system', content: text(body.system) });
   }
@@ -143,7 +208,7 @@ export function decode(original: Obj, api: string, fallback?: string, options: {
     if (t.type && t.type !== 'function' && !t.input_schema) return [t as Tool];
     return [{ type: 'function', function: { name: String(f.name), parameters: f.parameters ?? f.input_schema ?? {}, ...(typeof f.description === 'string' ? { description: f.description } : {}) } }];
   });
-  const context = messages.filter(m => ['system', 'developer'].includes(m.role) || /<environment_context>|# Environment/.test(m.content)).map(m => m.content).join('\n');
+  const context = messages.filter(m => ['system', 'developer'].includes(m.role) || /<environment_context>|# Environment/.test(messageText(m.content))).map(m => messageText(m.content)).join('\n');
   const matches = [...context.matchAll(/(?:<cwd>\s*([^<\n]+)\s*<\/cwd>|(?:Working directory|Current working directory|Primary working directory|cwd):\s*([^\n<]+))/gi)];
   const absolute = matches.filter(m => isAbsolute((m[1] ?? m[2] ?? '').trim()));
   const inferred = absolute.find(m => /^Primary working directory:/i.test(m[0])) ?? absolute[0];
@@ -154,10 +219,16 @@ export function decode(original: Obj, api: string, fallback?: string, options: {
   const cwd = namedCwd ?? fallback ?? join(process.env.XDG_STATE_HOME || join(homedir(), '.local/state'), 'grunt/scratch', createHash('sha256').update(userMessages[0] ?? '').digest('hex').slice(0, 24));
   if (!isAbsolute(cwd)) throw new Error('Working directory must be an absolute path');
   const tokens = body.max_tokens ?? body.max_output_tokens ?? body.max_completion_tokens;
-  const imageInput = !options.omitImages && /"type"\s*:\s*"(?:image|input_image|image_url)"/.test(JSON.stringify(body.input ?? body.messages));
-  const rawModel = String(body.model ?? 'grunt');
-  const model = rawModel === 'milo' ? 'grunt' : rawModel;
-  return { model, messages, userMessages, tools, cwd, cwdSource, ...(responseNamespaces.size ? { responseNamespaces } : {}), stream: body.stream === true, ...(imageInput ? { imageInput: true } : {}), ...(typeof tokens === 'number' ? { maxTokens: tokens } : {}) };
+  const imageInput = !options.omitImages && messages.some(message => Array.isArray(message.content) && message.content.some(part => part.type === 'image_url'));
+  const model = String(body.model ?? 'grunt');
+  const choice = object(body.tool_choice);
+  const anyFunction = (body.tool_choice === 'required' || api === 'messages' && choice.type === 'any')
+    && tools.length > 0 && tools.every(tool => tool.type === 'function');
+  const selectedName = choice.type === 'function' ? object(choice.function).name ?? choice.name
+    : api === 'messages' && choice.type === 'tool' ? choice.name : undefined;
+  const namedFunction = typeof selectedName === 'string' && tools.some(tool => tool.type === 'function' && object(tool.function).name === selectedName);
+  const expectedFunctionCall = namedFunction ? { name: selectedName } : anyFunction ? {} : undefined;
+  return { model, messages, userMessages, tools, cwd, cwdSource, ...(expectedFunctionCall ? { expectedFunctionCall } : {}), ...(responseNamespaces.size ? { responseNamespaces } : {}), stream: body.stream === true, ...(imageInput ? { imageInput: true } : {}), ...(typeof tokens === 'number' ? { maxTokens: tokens } : {}) };
 }
 function toolInput(arguments_: string): unknown {
   try { return JSON.parse(arguments_ || '{}'); } catch { return arguments_; }
@@ -243,13 +314,13 @@ const inferenceEndpoints = new Map<string, 'chat' | 'messages' | 'responses'>([
 const callerAgents = [['claude-code', /\bclaude-cli\b|\bclaude-code\b/i], ['codex', /\bcodex(?:[-_][\w-]+)?\b/i],
   ['opencode', /\bopencode\b/i], ['beeline', /\bbeeline\b/i], ['pi', /\bpi-coding-agent\b/i]] as const;
 
-export function createLocalApp(sources: Sources, options: { cwd?: string; port?: number; log?: (cwd: string) => void; dotsEnv?: NodeJS.ProcessEnv; observation?: () => ObservationRuntime } = {}) {
+export function createLocalApp(sources: Sources, options: { cwd?: string; port?: number; log?: (cwd: string) => void; observation?: () => ObservationRuntime } = {}) {
   const app = new Hono<{ Variables: { streamFinished?: Promise<boolean> } }>();
   const startedAt = Date.now();
   app.use('*', async (c, next) => {
     const port = options.port ?? 8788;
     const host = c.req.header('host') ?? new URL(c.req.url).host;
-    if (![ `127.0.0.1:${port}`, `localhost:${port}` ].includes(host) || (c.req.raw.headers.has('origin') && c.req.path !== '/dots/pair')) return c.json({ error: { message: 'Forbidden local request' } }, 403);
+    if (![ `127.0.0.1:${port}`, `localhost:${port}` ].includes(host) || c.req.raw.headers.has('origin')) return c.json({ error: { message: 'Forbidden local request' } }, 403);
     const endpoint = c.req.method === 'POST' ? inferenceEndpoints.get(c.req.path) : undefined;
     const tracked = endpoint !== undefined;
     const store = sources.diagnosticStore(), requestId = randomUUID(), started = Date.now(), startedMono = performance.now();
@@ -285,7 +356,6 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
     };
     return tracked ? withDiagnosticContext(context, run) : run();
   });
-  app.get('/dots/pair', c => pairDots(c.req.raw, options.dotsEnv ?? process.env));
   app.get('/v1/status', c => {
     c.header('Cache-Control', 'no-store');
     return c.json(sources.status());
@@ -322,7 +392,7 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
     try {
       const since = c.req.query('since'), until = c.req.query('until');
       const result = await store.metrics({ ...(since === undefined ? {} : { since: Number(since) }), ...(until === undefined ? {} : { until: Number(until) }) });
-      return c.json(result, result.coverage.available ? 200 : 503);
+      return c.json({ ...result, adapters: sources.auditAdapters() }, result.coverage.available ? 200 : 503);
     } catch { return c.json({ error: 'Invalid diagnostic metrics window' }, 400); }
   });
   app.get('/v1/diagnostics/traces/:id', async c => {
@@ -339,8 +409,10 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
       try {
         const body = object(await c.req.json());
         request = decode(body, api, options.cwd);
-        // Same conversation as text when no source could take the image. Otherwise it is routed as sent.
-        if (request.imageInput && !sources.acceptsImages(request)) request = decode(body, api, options.cwd, { omitImages: true });
+        // Same conversation as text when no source could take the image, or when an image block carried no forwardable data/URL.
+        if (request.imageInput && !sources.acceptsImages(request) || !request.imageInput && bodyHasImage(body, api)) {
+          request = decode(body, api, options.cwd, { omitImages: true });
+        }
         includeUsage = api === 'chat' && object(body.stream_options).include_usage === true;
       }
       catch (e) { return c.json({ ...(api === 'messages' ? { type: 'error' } : {}), error: { type: 'invalid_request_error', message: e instanceof Error ? e.message : 'Invalid request' } }, 400); }

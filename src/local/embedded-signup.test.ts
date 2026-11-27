@@ -7,14 +7,12 @@ import {
   SignupProfileIsolationError,
   SignupSessionIsolationError
 } from '@trusty-squire/mcp/signup';
-import type { RunSignupOptions, SignupResult, SignupSession } from '@trusty-squire/mcp/signup';
+import type { SignupRunRuntime, SignupSession } from '@trusty-squire/mcp/signup';
 import { recordDataSharingConsent } from './data-sharing.js';
 import { BrowserSquire, setup } from './setup.js';
 import {
-  EMBEDDED_DRIVE_GOAL_LIMIT,
   GRUNT_BROWSER_PROFILE_DIR,
   GRUNT_SIGNUP_SESSION_FILE,
-  applyEmbeddedContinuation,
   gruntSignupPaths,
   runEmbeddedSignup
 } from './signup-mcp.js';
@@ -39,28 +37,107 @@ const embeddedSession: SignupSession = {
   consentOperatorInboxOtp: true
 };
 
-function makeSuccessResult(options: RunSignupOptions, captured: boolean, extra: Partial<SignupResult> = {}): SignupResult {
-  return {
-    status: 'completed',
-    service: options.service ?? 'unknown',
-    url: options.url,
-    captured,
-    credentials: captured ? [{
-      kind: 'api_key',
-      service: options.service ?? 'unknown',
-      url: options.url,
-      captured: true,
-      fieldNames: ['api_key'],
-      source: 'extract',
-      observedHosts: [new URL(options.url).hostname]
-    }] : [],
-    steps: 3,
-    seconds: 1.2,
-    jevCalls: 2,
-    driveStatus: 'complete',
-    trajectory: [],
-    ...extra
+type RuntimeDriveFn = NonNullable<SignupRunRuntime['runDrive']>;
+type RuntimeCreateBrowserFn = NonNullable<SignupRunRuntime['createBrowser']>;
+type RuntimeCreateApiClientFn = NonNullable<SignupRunRuntime['createApiClient']>;
+type RuntimeStartHarnessFn = NonNullable<SignupRunRuntime['startHarnessSession']>;
+type RuntimeFinishSessionFn = NonNullable<SignupRunRuntime['finishSession']>;
+type RuntimeForceFinishSessionFn = NonNullable<SignupRunRuntime['forceFinishSession']>;
+type RuntimeActFn = NonNullable<SignupRunRuntime['act']>;
+type RuntimeObserveFn = NonNullable<SignupRunRuntime['observe']>;
+
+function createRealSessionRuntime(input: {
+  onDrive: (
+    args: Parameters<RuntimeDriveFn>[0],
+    context: NonNullable<Parameters<RuntimeDriveFn>[2]>,
+    deps: NonNullable<Parameters<RuntimeDriveFn>[3]>,
+    state: {
+      browserStarts: number;
+      browserCloses: number;
+      harnessStarts: number;
+      finishCalls: number;
+      forceFinishCalls: number;
+      activeSessionId?: string;
+      profileDirs: string[];
+    }
+  ) => ReturnType<RuntimeDriveFn>;
+  onAct?: RuntimeActFn;
+  onObserve?: RuntimeObserveFn;
+  onStartHarness?: (opts: Parameters<RuntimeStartHarnessFn>[0], sessionId: string) => void;
+  onBrowserClose?: () => void;
+  onFinish?: (sessionId: string) => void;
+}) {
+  let seq = 0;
+  const state: {
+    browserStarts: number;
+    browserCloses: number;
+    harnessStarts: number;
+    finishCalls: number;
+    forceFinishCalls: number;
+    activeSessionId?: string;
+    profileDirs: string[];
+    currentUrls: Map<string, string>;
+  } = {
+    browserStarts: 0,
+    browserCloses: 0,
+    harnessStarts: 0,
+    finishCalls: 0,
+    forceFinishCalls: 0,
+    profileDirs: [],
+    currentUrls: new Map()
   };
+
+  const signupRuntime: SignupRunRuntime = {
+    createBrowser: ((opts => {
+      if (opts.profileDir) state.profileDirs.push(opts.profileDir);
+      return {
+        start: vi.fn(async () => { state.browserStarts += 1; }),
+        goto: vi.fn(async () => {}),
+        close: vi.fn(async () => {
+          state.browserCloses += 1;
+          input.onBrowserClose?.();
+        })
+      };
+    }) as unknown) as RuntimeCreateBrowserFn,
+    createApiClient: (() => ({
+      setRequestingAgent: vi.fn()
+    })) as unknown as RuntimeCreateApiClientFn,
+    startHarnessSession: (async opts => {
+      state.harnessStarts += 1;
+      const sessionId = `prov-session-${++seq}`;
+      state.activeSessionId = sessionId;
+      state.currentUrls.set(sessionId, opts.serviceUrl);
+      input.onStartHarness?.(opts, sessionId);
+      return {
+        session_id: sessionId,
+        url: opts.serviceUrl,
+        safe_table: []
+      };
+    }) as RuntimeStartHarnessFn,
+    finishSession: (async sessionId => {
+      state.finishCalls += 1;
+      if (state.activeSessionId === sessionId) delete state.activeSessionId;
+      input.onFinish?.(sessionId);
+      return { closed: true, session_id: sessionId };
+    }) as unknown as RuntimeFinishSessionFn,
+    forceFinishSession: (async sessionId => {
+      state.forceFinishCalls += 1;
+      if (state.activeSessionId === sessionId) delete state.activeSessionId;
+      return { closed: true, session_id: sessionId };
+    }) as unknown as RuntimeForceFinishSessionFn,
+    observedHostsForSession: sessionId => {
+      const href = state.currentUrls.get(sessionId);
+      return href ? [new URL(href).hostname] : [];
+    },
+    currentProvisionUrl: sessionId => state.currentUrls.get(sessionId) ?? 'https://example.invalid',
+    ...(input.onAct ? { act: input.onAct } : {}),
+    ...(input.onObserve ? { observe: input.onObserve } : {}),
+    runDrive: (async (args, _api, context, deps) => {
+      return await input.onDrive(args, context!, deps!, state);
+    }) as RuntimeDriveFn
+  };
+
+  return { signupRuntime, state };
 }
 
 beforeEach(async () => {
@@ -78,7 +155,7 @@ afterEach(async () => {
 
 it('uses Grunt-owned isolated browser-profile and signup-session.json paths and blocks Squire personal paths', async () => {
   const canonicalDir = realpathSync(directory);
-  const paths = gruntSignupPaths(directory);
+  const paths = await gruntSignupPaths(directory);
   expect(paths.profileDir).toBe(join(canonicalDir, GRUNT_BROWSER_PROFILE_DIR));
   expect(paths.sessionPath).toBe(join(canonicalDir, GRUNT_SIGNUP_SESSION_FILE));
   expect(paths.profileDir).not.toContain('.trusty-squire');
@@ -86,13 +163,13 @@ it('uses Grunt-owned isolated browser-profile and signup-session.json paths and 
 
   // Personal Trusty Squire session store directory is rejected.
   const squireConfig = join(homedir(), '.config', 'trusty-squire');
-  expect(() => gruntSignupPaths(squireConfig)).toThrow(SignupSessionIsolationError);
+  await expect(gruntSignupPaths(squireConfig)).rejects.toThrow(SignupSessionIsolationError);
 
   // Symlink aliasing Trusty Squire's personal Chrome profile is rejected.
   const aliasDir = await mkdtemp(join(tmpdir(), 'grunt-alias-profile-'));
   try {
     await symlink(join(homedir(), '.trusty-squire', 'chrome-profile'), join(aliasDir, GRUNT_BROWSER_PROFILE_DIR));
-    expect(() => gruntSignupPaths(aliasDir)).toThrow(SignupProfileIsolationError);
+    await expect(gruntSignupPaths(aliasDir)).rejects.toThrow(SignupProfileIsolationError);
   } finally {
     await rm(aliasDir, { recursive: true, force: true });
   }
@@ -120,24 +197,27 @@ it('captures a Zro API key via onCredentialCaptured into vault.json and dispatch
     };
   });
 
-  const runSignup = vi.fn(async (options: RunSignupOptions) => {
-    expect(options.profileDir).toBe(join(canonicalDir, 'browser-profile'));
-    expect(options.session).toEqual(embeddedSession);
-    expect(options.agentIdentity).toBe('grunt');
-    await options.onCredentialCaptured({
-      kind: 'api_key',
-      service: 'zro',
-      url: 'https://zro.moonmath.ai/overview',
-      fields: { api_key: secret },
-      fieldNames: ['api_key'],
-      source: 'extract',
-      observedHosts: ['zro.moonmath.ai'],
-      capturedAt: new Date().toISOString()
-    });
-    return makeSuccessResult(options, true, {
-      done: `Captured key ${secret}`,
-      reason: `Stored ${secret}`
-    });
+  const { signupRuntime, state } = createRealSessionRuntime({
+    onDrive: async (args, context, deps) => {
+      const obs = await deps.startSession({ serviceUrl: args.url! });
+      await context.persistCredentials!({
+        url: 'https://zro.moonmath.ai/overview',
+        credentials: { api_key: secret },
+        sources: []
+      } as Parameters<NonNullable<typeof context.persistCredentials>>[0]);
+      return {
+        status: 'complete',
+        session_id: obs.session_id,
+        done: `Captured key ${secret}`,
+        remaining: '',
+        reason: `Stored ${secret}`,
+        steps: 3,
+        seconds: 1.2,
+        jev_calls: 2,
+        trajectory: [],
+        observation: { session_id: obs.session_id, url: 'https://zro.moonmath.ai/overview', safe_table: [] }
+      };
+    }
   });
 
   vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (url, init) => {
@@ -152,7 +232,7 @@ it('captures a Zro API key via onCredentialCaptured into vault.json and dispatch
     });
   }));
 
-  const squire = new BrowserSquire({ directory, embeddedRuntime: { ensureSession, runSignup } });
+  const squire = new BrowserSquire({ directory, embeddedRuntime: { ensureSession, signupRuntime } });
   const notes: string[] = [];
   try {
     await squire.connect();
@@ -162,7 +242,11 @@ it('captures a Zro API key via onCredentialCaptured into vault.json and dispatch
   }
 
   expect(ensureSession).toHaveBeenCalledOnce();
-  expect(runSignup).toHaveBeenCalledOnce();
+  expect(state.profileDirs).toEqual([join(canonicalDir, 'browser-profile')]);
+  expect(state.browserStarts).toBe(1);
+  expect(state.browserCloses).toBe(1);
+  expect(state.finishCalls).toBe(1);
+
   expect(await readVaultEntry('zro', directory)).toMatchObject({
     api_key: secret,
     origin: 'https://zro.moonmath.ai',
@@ -213,18 +297,26 @@ it('verifies Runcrate billing invariants on embedded capture and deletes unsafe 
   let autoRechargeEnabled = true;
   const seenUrls: string[] = [];
 
-  const runSignup = vi.fn(async (options: RunSignupOptions) => {
-    await options.onCredentialCaptured({
-      kind: 'api_key',
-      service: 'runcrate',
-      url: 'https://www.runcrate.ai/dashboard/api-keys',
-      fields: { api_key: activeKey },
-      fieldNames: ['api_key'],
-      source: 'extract',
-      observedHosts: ['api.runcrate.ai', 'www.runcrate.ai'],
-      capturedAt: new Date().toISOString()
-    });
-    return makeSuccessResult(options, true);
+  const { signupRuntime } = createRealSessionRuntime({
+    onDrive: async (args, context, deps) => {
+      const obs = await deps.startSession({ serviceUrl: args.url! });
+      await context.persistCredentials!({
+        url: 'https://www.runcrate.ai/dashboard/api-keys',
+        credentials: { api_key: activeKey },
+        sources: []
+      } as Parameters<NonNullable<typeof context.persistCredentials>>[0]);
+      return {
+        status: 'complete',
+        session_id: obs.session_id,
+        done: 'captured',
+        remaining: '',
+        steps: 2,
+        seconds: 1,
+        jev_calls: 1,
+        trajectory: [],
+        observation: { session_id: obs.session_id, url: 'https://www.runcrate.ai/dashboard/api-keys', safe_table: [] }
+      };
+    }
   });
 
   const ensureSession = vi.fn(async () => ({
@@ -261,7 +353,7 @@ it('verifies Runcrate billing invariants on embedded capture and deletes unsafe 
   }));
 
   // 1. Unsafe captured key (auto-recharge enabled) is rejected and deleted from vault.json.
-  const unsafeSquire = new BrowserSquire({ directory, embeddedRuntime: { ensureSession, runSignup } });
+  const unsafeSquire = new BrowserSquire({ directory, embeddedRuntime: { ensureSession, signupRuntime } });
   try {
     await unsafeSquire.connect();
     await expect(setup(() => {}, ['runcrate'], { squire: unsafeSquire, directory, dataSharingApproved: ['runcrate'] }))
@@ -276,7 +368,7 @@ it('verifies Runcrate billing invariants on embedded capture and deletes unsafe 
   activeKey = safeKey;
   autoRechargeEnabled = false;
   seenUrls.length = 0;
-  const safeSquire = new BrowserSquire({ directory, embeddedRuntime: { ensureSession, runSignup } });
+  const safeSquire = new BrowserSquire({ directory, embeddedRuntime: { ensureSession, signupRuntime } });
   try {
     await safeSquire.connect();
     await setup(() => {}, ['runcrate'], { squire: safeSquire, directory, dataSharingApproved: ['runcrate'] });
@@ -323,22 +415,30 @@ it('wires embedded capture into local Grunt vault for BeatAPI, Pollinations, and
     browserLocation: { kind: 'none' as const }
   }));
 
-  const runSignup = vi.fn(async (options: RunSignupOptions) => {
-    const service = options.service as keyof typeof keys;
-    await options.onCredentialCaptured({
-      kind: 'api_key',
-      service,
-      url: options.url,
-      fields: { api_key: keys[service] },
-      fieldNames: ['api_key'],
-      source: 'extract',
-      observedHosts: [new URL(options.url).hostname],
-      capturedAt: new Date().toISOString()
-    });
-    return makeSuccessResult(options, true);
+  const { signupRuntime } = createRealSessionRuntime({
+    onDrive: async (args, context, deps) => {
+      const obs = await deps.startSession({ serviceUrl: args.url! });
+      const service = args.url!.includes('beatapi') ? 'beatapi' : args.url!.includes('pollinations') ? 'pollinations' : 'goedel';
+      await context.persistCredentials!({
+        url: args.url!,
+        credentials: { api_key: keys[service] },
+        sources: []
+      } as Parameters<NonNullable<typeof context.persistCredentials>>[0]);
+      return {
+        status: 'complete',
+        session_id: obs.session_id,
+        done: 'captured',
+        remaining: '',
+        steps: 2,
+        seconds: 1,
+        jev_calls: 1,
+        trajectory: [],
+        observation: { session_id: obs.session_id, url: args.url!, safe_table: [] }
+      };
+    }
   });
 
-  const squire = new BrowserSquire({ directory, embeddedRuntime: { ensureSession, runSignup } });
+  const squire = new BrowserSquire({ directory, embeddedRuntime: { ensureSession, signupRuntime } });
   try {
     await squire.connect();
 
@@ -389,6 +489,34 @@ it('wires embedded capture into local Grunt vault for BeatAPI, Pollinations, and
 
 it('redacts captured secrets from embedded signup transcripts and failure reasons', async () => {
   const leaked = 'sk-super-secret-transcript-token-987654321';
+  const { signupRuntime, state } = createRealSessionRuntime({
+    onDrive: async (args, context, deps) => {
+      const obs = await deps.startSession({ serviceUrl: args.url! });
+      await context.persistCredentials!({
+        url: args.url!,
+        credentials: { api_key: leaked },
+        sources: []
+      } as Parameters<NonNullable<typeof context.persistCredentials>>[0]);
+      return {
+        status: 'stuck',
+        session_id: obs.session_id,
+        done: '',
+        remaining: `Check ${leaked}`,
+        reason: `Upstream echoed ${leaked} in error`,
+        question: `Did you save ${leaked}?`,
+        steps: 2,
+        seconds: 1,
+        jev_calls: 1,
+        trajectory: [],
+        observation: {
+          session_id: obs.session_id,
+          url: args.url!,
+          safe_table: [['e1', 't', `Revealed ${leaked}`]]
+        }
+      };
+    }
+  });
+
   const { driveResult, signupResult } = await runEmbeddedSignup(
     {
       provider: 'groq',
@@ -397,29 +525,12 @@ it('redacts captured secrets from embedded signup transcripts and failure reason
       directory,
       session: embeddedSession
     },
-    {
-      runSignup: async options => {
-        await options.onCredentialCaptured({
-          kind: 'api_key',
-          service: 'groq',
-          url: options.url,
-          fields: { api_key: leaked },
-          fieldNames: ['api_key'],
-          source: 'extract',
-          observedHosts: ['api.groq.com'],
-          capturedAt: new Date().toISOString()
-        });
-        return makeSuccessResult(options, true, {
-          status: 'failed',
-          driveStatus: 'stuck',
-          reason: `Upstream echoed ${leaked} in error`,
-          remaining: `Check ${leaked}`,
-          question: `Did you save ${leaked}?`
-        });
-      }
-    }
+    { signupRuntime }
   );
 
+  expect(state.browserStarts).toBe(1);
+  expect(state.browserCloses).toBe(1);
+  expect(state.finishCalls).toBe(1);
   expect(JSON.stringify(driveResult)).not.toContain(leaked);
   expect(JSON.stringify(signupResult)).not.toContain(leaked);
   expect(await readVaultEntry('groq', directory)).toMatchObject({
@@ -431,18 +542,26 @@ it('redacts captured secrets from embedded signup transcripts and failure reason
 
 it('captures OpenCode API keys in-process without Squire cloud vault and clears in-memory secrets on close', async () => {
   const opencodeSecret = 'sk-opencode-embedded-secret-445566';
-  const runSignup = vi.fn(async (options: RunSignupOptions) => {
-    await options.onCredentialCaptured({
-      kind: 'api_key',
-      service: 'opencode',
-      url: 'https://opencode.ai/auth',
-      fields: { api_key: opencodeSecret },
-      fieldNames: ['api_key'],
-      source: 'extract',
-      observedHosts: ['opencode.ai'],
-      capturedAt: new Date().toISOString()
-    });
-    return makeSuccessResult(options, true);
+  const { signupRuntime } = createRealSessionRuntime({
+    onDrive: async (args, context, deps) => {
+      const obs = await deps.startSession({ serviceUrl: args.url! });
+      await context.persistCredentials!({
+        url: 'https://opencode.ai/auth',
+        credentials: { api_key: opencodeSecret },
+        sources: []
+      } as Parameters<NonNullable<typeof context.persistCredentials>>[0]);
+      return {
+        status: 'complete',
+        session_id: obs.session_id,
+        done: 'captured',
+        remaining: '',
+        steps: 2,
+        seconds: 1,
+        jev_calls: 1,
+        trajectory: [],
+        observation: { session_id: obs.session_id, url: 'https://opencode.ai/auth', safe_table: [] }
+      };
+    }
   });
   const ensureSession = vi.fn(async () => ({
     status: 'already_connected' as const,
@@ -451,7 +570,7 @@ it('captures OpenCode API keys in-process without Squire cloud vault and clears 
     browserLocation: { kind: 'none' as const }
   }));
 
-  const squire = new BrowserSquire({ directory, embeddedRuntime: { ensureSession, runSignup } });
+  const squire = new BrowserSquire({ directory, embeddedRuntime: { ensureSession, signupRuntime } });
   await squire.connect();
   await squire.signup('opencode', 'https://opencode.ai/auth', 'Capture OpenCode Zen API key');
   const listed = await squire.credentials.list();
@@ -465,9 +584,12 @@ it('captures OpenCode API keys in-process without Squire cloud vault and clears 
   await squire.close();
 });
 
-it('resumes embedded signup after needs_value for a key name and captures the API key into vault.json', async () => {
-  const secret = 'sk-zro-embedded-resumed-keyname-554433';
-  const seenCalls: { url: string; goal: string; facts?: Record<string, string> }[] = [];
+it('answers a key-name needs_value prompt inside the same open dialog and live browser session before writing to vault.json', async () => {
+  const secret = 'sk-zro-same-dialog-live-key-991122';
+  let dialogSeq = 0;
+  let openDialog: { id: string; sessionId: string; submittedKeyName?: string } | undefined;
+  let turnCount = 0;
+  const seenDriveArgs: Parameters<RuntimeDriveFn>[0][] = [];
 
   const ensureSession = vi.fn(async () => ({
     status: 'already_connected' as const,
@@ -476,54 +598,101 @@ it('resumes embedded signup after needs_value for a key name and captures the AP
     browserLocation: { kind: 'none' as const }
   }));
 
-  const runSignup = vi.fn(async (options: RunSignupOptions): Promise<SignupResult> => {
-    seenCalls.push({
-      url: options.url,
-      goal: options.goal,
-      ...(options.facts ? { facts: { ...options.facts } } : {})
-    });
-    if (seenCalls.length === 1) {
-      return {
-        status: 'needs_input',
-        service: 'zro',
+  const { signupRuntime, state } = createRealSessionRuntime({
+    onStartHarness: (_opts, sessionId) => {
+      // Transient modal dialog state that only exists on this live page instance.
+      openDialog = { id: `key-dialog-${++dialogSeq}`, sessionId };
+    },
+    onBrowserClose: () => {
+      // Closing Chrome destroys transient open dialog state.
+      openDialog = undefined;
+    },
+    onFinish: () => {
+      // Finishing the provision session closes the tab and destroys transient dialog state.
+      openDialog = undefined;
+    },
+    onDrive: async (args, context, deps, runtimeState) => {
+      turnCount += 1;
+      seenDriveArgs.push({ ...args, ...(args.facts ? { facts: { ...args.facts } } : {}) });
+
+      if (turnCount === 1) {
+        expect(args.url).toBe('https://zro.moonmath.ai/overview');
+        expect(args.session_id).toBeUndefined();
+        const obs = await deps.startSession({ serviceUrl: args.url! });
+        expect(openDialog).toEqual({ id: 'key-dialog-1', sessionId: obs.session_id });
+        return {
+          status: 'needs_value',
+          session_id: obs.session_id,
+          field: 'Alias',
+          question: 'Enter a name for the new API key',
+          options: { key_name: 'key_name' },
+          done: 'Opened Create API Key dialog',
+          remaining: 'Fill Alias field and submit dialog',
+          reason: 'Missing value for Alias field',
+          steps: 4,
+          seconds: 1.5,
+          jev_calls: 2,
+          trajectory: [],
+          observation: {
+            session_id: obs.session_id,
+            url: 'https://zro.moonmath.ai/api-keys',
+            safe_table: [['e1', 't', 'Alias|in=Create API Key dialog']]
+          }
+        };
+      }
+
+      // Turn 2 must arrive on the EXACT SAME live browser, provision session, and open dialog.
+      expect(runtimeState.browserStarts).toBe(1);
+      expect(runtimeState.browserCloses).toBe(0);
+      expect(runtimeState.harnessStarts).toBe(1);
+      expect(runtimeState.finishCalls).toBe(0);
+      expect(runtimeState.forceFinishCalls).toBe(0);
+      expect(args.url).toBeUndefined();
+      expect(args.session_id).toBe(runtimeState.activeSessionId);
+      expect(openDialog).toBeDefined();
+      expect(openDialog!.id).toBe('key-dialog-1');
+      expect(openDialog!.sessionId).toBe(args.session_id);
+      expect(args.answer).toBe('key_name');
+      expect(args.facts?.Alias).toBe(args.facts?.key_name);
+
+      // Submit the answered key name directly into the same open dialog and mint the key.
+      openDialog!.submittedKeyName = args.facts!.Alias;
+      await context.persistCredentials!({
         url: 'https://zro.moonmath.ai/api-keys',
-        captured: false,
-        credentials: [],
-        steps: 4,
-        seconds: 1.5,
-        jevCalls: 2,
-        driveStatus: 'needs_value',
-        field: 'Alias',
-        question: 'Enter a name for the new API key',
-        reason: 'Missing value for Alias field',
-        trajectory: []
+        credentials: { api_key: secret },
+        sources: []
+      } as Parameters<NonNullable<typeof context.persistCredentials>>[0]);
+
+      return {
+        status: 'complete',
+        session_id: args.session_id!,
+        done: `Created key ${openDialog!.submittedKeyName} in ${openDialog!.id}`,
+        remaining: '',
+        steps: 2,
+        seconds: 0.8,
+        jev_calls: 1,
+        trajectory: [],
+        observation: {
+          session_id: args.session_id!,
+          url: 'https://zro.moonmath.ai/api-keys',
+          safe_table: []
+        }
       };
     }
-    await options.onCredentialCaptured({
-      kind: 'api_key',
-      service: 'zro',
-      url: 'https://zro.moonmath.ai/api-keys',
-      fields: { api_key: secret },
-      fieldNames: ['api_key'],
-      source: 'extract',
-      observedHosts: ['zro.moonmath.ai'],
-      capturedAt: new Date().toISOString()
-    });
-    return makeSuccessResult(options, true);
   });
 
   vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (url, init) => {
     expect(String(url)).toBe('https://zro.moonmath.ai/v1/chat/completions');
     expect(new Headers(init?.headers).get('Authorization')).toBe(`Bearer ${secret}`);
     return Response.json({
-      id: 'chatcmpl-zro-resumed',
+      id: 'chatcmpl-zro-same-dialog',
       model: ZRO_DEEPSEEK,
       choices: [{ message: { role: 'assistant', content: 'ready' }, finish_reason: 'stop' }],
       usage: { prompt_tokens: 4, completion_tokens: 1 }
     });
   }));
 
-  const squire = new BrowserSquire({ directory, embeddedRuntime: { ensureSession, runSignup } });
+  const squire = new BrowserSquire({ directory, embeddedRuntime: { ensureSession, signupRuntime } });
   try {
     await squire.connect();
     await setup(() => {}, ['zro'], { squire, directory });
@@ -531,13 +700,18 @@ it('resumes embedded signup after needs_value for a key name and captures the AP
     await squire.close();
   }
 
-  expect(seenCalls).toHaveLength(2);
-  expect(seenCalls[0]!.url).toBe('https://zro.moonmath.ai/overview');
-  expect(seenCalls[0]!.facts?.Alias).toBeUndefined();
-  expect(seenCalls[1]!.url).toBe('https://zro.moonmath.ai/api-keys');
-  expect(seenCalls[1]!.facts?.Alias).toBe(seenCalls[0]!.facts?.key_name);
-  expect(seenCalls[1]!.goal).toContain('For the "Alias" field, use the supplied "Alias" fact.');
-  expect(seenCalls[1]!.goal.length).toBeLessThanOrEqual(EMBEDDED_DRIVE_GOAL_LIMIT);
+  expect(seenDriveArgs).toHaveLength(2);
+  expect(seenDriveArgs[0]!.facts?.Alias).toBeUndefined();
+  expect(seenDriveArgs[1]!.facts?.Alias).toBe(seenDriveArgs[0]!.facts?.key_name);
+  expect(seenDriveArgs[1]!.answer).toBe('key_name');
+  expect(seenDriveArgs[1]!.session_id).toBe('prov-session-1');
+
+  // Browser and provision session were started once and torn down once at operate_finish.
+  expect(state.browserStarts).toBe(1);
+  expect(state.harnessStarts).toBe(1);
+  expect(state.finishCalls).toBe(1);
+  expect(state.forceFinishCalls).toBe(0);
+  expect(state.browserCloses).toBe(1);
 
   expect(await readVaultEntry('zro', directory)).toMatchObject({
     api_key: secret,
@@ -549,9 +723,11 @@ it('resumes embedded signup after needs_value for a key name and captures the AP
   expect(await readZroGrant(directory, {})).toMatchObject({ base_url: 'https://zro.moonmath.ai', token: secret });
 });
 
-it('forwards OAuth choice answers across embedded resume turns and captures the key into vault.json', async () => {
-  const secret = 'sk-zro-embedded-oauth-resumed-776655';
-  const seenCalls: { url: string; goal: string; facts?: Record<string, string> }[] = [];
+it('keeps the same live browser session across OAuth choice, operate_click terms acceptance, and key-name resume turns', async () => {
+  const secret = 'sk-zro-embedded-multiturn-live-776655';
+  const clickedRefs: { sessionId: string; ref: string }[] = [];
+  const driveAnswers: (string | undefined)[] = [];
+  let turn = 0;
 
   const ensureSession = vi.fn(async () => ({
     status: 'already_connected' as const,
@@ -560,73 +736,106 @@ it('forwards OAuth choice answers across embedded resume turns and captures the 
     browserLocation: { kind: 'none' as const }
   }));
 
-  const runSignup = vi.fn(async (options: RunSignupOptions): Promise<SignupResult> => {
-    seenCalls.push({
-      url: options.url,
-      goal: options.goal,
-      ...(options.facts ? { facts: { ...options.facts } } : {})
-    });
-    if (seenCalls.length === 1) {
+  const { signupRuntime, state } = createRealSessionRuntime({
+    onAct: (async (sessionId, action) => {
+      expect(action.kind).toBe('click');
+      clickedRefs.push({ sessionId, ref: 'target' in action ? action.target : '' });
       return {
-        status: 'low_confidence',
-        service: 'zro',
-        url: 'https://zro.moonmath.ai/sign-in',
-        captured: false,
-        credentials: [],
-        steps: 2,
-        seconds: 1.0,
-        jevCalls: 1,
-        driveStatus: 'low_confidence',
-        question: 'Choose a sign-in option',
-        options: {
-          google_oauth: 'Sign in with Google',
-          email_login: 'Continue with Email'
-        },
-        reason: 'model confidence is below the drive threshold',
-        trajectory: []
-      };
-    }
-    if (seenCalls.length === 2) {
-      return {
-        status: 'low_confidence',
-        service: 'zro',
+        session_id: sessionId,
         url: 'https://zro.moonmath.ai/api-keys',
-        captured: false,
-        credentials: [],
-        steps: 3,
-        seconds: 1.1,
-        jevCalls: 2,
-        driveStatus: 'low_confidence',
-        question: 'Choose one current target key',
-        options: {
-          kcancel: 'Cancel',
-          kalias: 'Alias'
-        },
-        reason: 'model confidence is below the drive threshold',
-        trajectory: []
+        safe_table: [['k1', 't', 'Alias']]
+      };
+    }) as RuntimeActFn,
+    onDrive: async (args, context, deps, runtimeState) => {
+      turn += 1;
+      driveAnswers.push(args.answer);
+
+      if (turn === 1) {
+        const obs = await deps.startSession({ serviceUrl: args.url! });
+        return {
+          status: 'low_confidence',
+          session_id: obs.session_id,
+          question: 'Choose a sign-in option',
+          options: {
+            google_oauth: 'Sign in with Google',
+            email_login: 'Continue with Email'
+          },
+          done: '',
+          remaining: 'Choose OAuth provider',
+          reason: 'model confidence is below the drive threshold',
+          steps: 2,
+          seconds: 1.0,
+          jev_calls: 1,
+          trajectory: [],
+          observation: {
+            session_id: obs.session_id,
+            url: 'https://zro.moonmath.ai/sign-in',
+            safe_table: []
+          }
+        };
+      }
+
+      // Every resumed turn must run on the exact same browser and provision session.
+      expect(runtimeState.browserStarts).toBe(1);
+      expect(runtimeState.browserCloses).toBe(0);
+      expect(runtimeState.harnessStarts).toBe(1);
+      expect(runtimeState.finishCalls).toBe(0);
+      expect(args.session_id).toBe('prov-session-1');
+
+      if (turn === 2) {
+        expect(args.answer).toBe('google_oauth');
+        return {
+          status: 'low_confidence',
+          session_id: args.session_id!,
+          question: 'Review Terms of Service',
+          options: {},
+          done: '',
+          remaining: 'Accept required Terms of Service',
+          reason: 'model confidence is below the drive threshold',
+          steps: 2,
+          seconds: 0.9,
+          jev_calls: 1,
+          trajectory: [],
+          observation: {
+            session_id: args.session_id!,
+            url: 'https://zro.moonmath.ai/terms',
+            safe_table: [['terms_btn', 'b', 'Accept Terms of Service']]
+          }
+        };
+      }
+
+      expect(clickedRefs).toEqual([{ sessionId: 'prov-session-1', ref: 'terms_btn' }]);
+      await context.persistCredentials!({
+        url: 'https://zro.moonmath.ai/api-keys',
+        credentials: { api_key: secret },
+        sources: []
+      } as Parameters<NonNullable<typeof context.persistCredentials>>[0]);
+      return {
+        status: 'complete',
+        session_id: args.session_id!,
+        done: 'Captured API key after OAuth and Terms acceptance',
+        remaining: '',
+        steps: 2,
+        seconds: 0.7,
+        jev_calls: 1,
+        trajectory: [],
+        observation: {
+          session_id: args.session_id!,
+          url: 'https://zro.moonmath.ai/api-keys',
+          safe_table: []
+        }
       };
     }
-    await options.onCredentialCaptured({
-      kind: 'api_key',
-      service: 'zro',
-      url: 'https://zro.moonmath.ai/api-keys',
-      fields: { api_key: secret },
-      fieldNames: ['api_key'],
-      source: 'extract',
-      observedHosts: ['zro.moonmath.ai'],
-      capturedAt: new Date().toISOString()
-    });
-    return makeSuccessResult(options, true);
   });
 
   vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => Response.json({
-    id: 'chatcmpl-zro-oauth-resumed',
+    id: 'chatcmpl-zro-multiturn',
     model: ZRO_DEEPSEEK,
     choices: [{ message: { role: 'assistant', content: 'ready' }, finish_reason: 'stop' }],
     usage: { prompt_tokens: 4, completion_tokens: 1 }
   })));
 
-  const squire = new BrowserSquire({ directory, embeddedRuntime: { ensureSession, runSignup } });
+  const squire = new BrowserSquire({ directory, embeddedRuntime: { ensureSession, signupRuntime } });
   squire.useBatchSignup();
   try {
     await squire.connect();
@@ -635,14 +844,12 @@ it('forwards OAuth choice answers across embedded resume turns and captures the 
     await squire.close();
   }
 
-  expect(seenCalls).toHaveLength(3);
-  expect(seenCalls[1]!.url).toBe('https://zro.moonmath.ai/sign-in');
-  expect(seenCalls[1]!.goal).toContain('Select "Sign in with Google" (option "google_oauth") and continue.');
-  expect(seenCalls[2]!.url).toBe('https://zro.moonmath.ai/api-keys');
-  expect(seenCalls[2]!.goal).toContain('Select "Sign in with Google" (option "google_oauth") and continue.');
-  expect(seenCalls[2]!.goal).toContain('Select "Alias" (option "kalias") and continue.');
-  expect(seenCalls[2]!.facts?.Alias).toBe(seenCalls[0]!.facts?.key_name);
-
+  expect(driveAnswers).toEqual([undefined, 'google_oauth', undefined]);
+  expect(clickedRefs).toEqual([{ sessionId: 'prov-session-1', ref: 'terms_btn' }]);
+  expect(state.browserStarts).toBe(1);
+  expect(state.harnessStarts).toBe(1);
+  expect(state.finishCalls).toBe(1);
+  expect(state.browserCloses).toBe(1);
   expect(await readVaultEntry('zro', directory)).toMatchObject({
     api_key: secret,
     origin: 'https://zro.moonmath.ai',
@@ -650,20 +857,91 @@ it('forwards OAuth choice answers across embedded resume turns and captures the 
   });
 });
 
-it('keeps embedded continuation goals within limit and redacts secrets from answers', () => {
-  const longGoal = 'A'.repeat(EMBEDDED_DRIVE_GOAL_LIMIT - 10);
-  const secretLike = 'sk-should-never-enter-goal-prose-123456';
-  const fieldResume = applyEmbeddedContinuation({
-    goal: longGoal,
-    facts: { plan: 'free' },
-    continuation: {
-      answer: secretLike,
-      previousField: 'API Key Name',
-      previousDecisions: ['Select "Sign in with Google" (option "google_oauth") and continue.']
+it('tears down an open embedded session and releases the profile lease on cancel so a subsequent signup succeeds', async () => {
+  const secret = 'sk-zro-after-cancel-recovery-332211';
+  let firstStarted!: () => void;
+  const firstInFlight = new Promise<void>(resolve => { firstStarted = resolve; });
+  let callIndex = 0;
+
+  const ensureSession = vi.fn(async () => ({
+    status: 'already_connected' as const,
+    session: embeddedSession,
+    providers: ['google' as const],
+    browserLocation: { kind: 'none' as const }
+  }));
+
+  const { signupRuntime, state } = createRealSessionRuntime({
+    onDrive: async (args, context, deps) => {
+      callIndex += 1;
+      const obs = await deps.startSession({ serviceUrl: args.url! });
+      if (callIndex === 1) {
+        firstStarted();
+        await new Promise<void>(resolve => {
+          if (context.signal?.aborted) { resolve(); return; }
+          context.signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+        return {
+          status: 'stuck',
+          session_id: obs.session_id,
+          done: '',
+          remaining: 'cancelled',
+          reason: 'cancelled',
+          steps: 1,
+          seconds: 0.2,
+          jev_calls: 1,
+          trajectory: []
+        };
+      }
+      await context.persistCredentials!({
+        url: 'https://zro.moonmath.ai/overview',
+        credentials: { api_key: secret },
+        sources: []
+      } as Parameters<NonNullable<typeof context.persistCredentials>>[0]);
+      return {
+        status: 'complete',
+        session_id: obs.session_id,
+        done: 'captured',
+        remaining: '',
+        steps: 2,
+        seconds: 0.5,
+        jev_calls: 1,
+        trajectory: [],
+        observation: { session_id: obs.session_id, url: 'https://zro.moonmath.ai/overview', safe_table: [] }
+      };
     }
   });
-  expect(fieldResume.facts['API Key Name']).toBe(secretLike);
-  expect(fieldResume.goal.length).toBeLessThanOrEqual(EMBEDDED_DRIVE_GOAL_LIMIT);
-  expect(fieldResume.goal).toContain('For the "API Key Name" field, use the supplied "API Key Name" fact.');
-  expect(fieldResume.goal).not.toContain(secretLike);
+
+  vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => Response.json({
+    id: 'chatcmpl-zro-after-cancel',
+    model: ZRO_DEEPSEEK,
+    choices: [{ message: { role: 'assistant', content: 'ready' }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 4, completion_tokens: 1 }
+  })));
+
+  const squire = new BrowserSquire({ directory, embeddedRuntime: { ensureSession, signupRuntime } });
+  try {
+    await squire.connect();
+    const cancelledSignup = squire.signup('groq', 'https://console.groq.com/keys', 'Capture Groq key');
+    await firstInFlight;
+    await squire.cancelSignup('groq');
+    await expect(cancelledSignup).rejects.toThrow(/cancelled/i);
+
+    // First browser and provision session tore down cleanly and released the profile lease.
+    expect(state.browserStarts).toBe(1);
+    expect(state.finishCalls).toBe(1);
+    expect(state.browserCloses).toBe(1);
+
+    // Subsequent signup on the same profile directory acquires the lease cleanly and succeeds.
+    await setup(() => {}, ['zro'], { squire, directory });
+    expect(state.browserStarts).toBe(2);
+    expect(state.finishCalls).toBe(2);
+    expect(state.browserCloses).toBe(2);
+    expect(await readVaultEntry('zro', directory)).toMatchObject({
+      api_key: secret,
+      origin: 'https://zro.moonmath.ai',
+      source: 'squire'
+    });
+  } finally {
+    await squire.close();
+  }
 });

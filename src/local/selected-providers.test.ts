@@ -24,13 +24,13 @@ const signal = new AbortController().signal;
 
 it('reconciles a matching setup-managed source list with curated additions while preserving manual overrides', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'grunt-managed-pool-'));
-  await writeAutomaticPool(directory, ['kilo'], ['kilo', 'antseed-vikey', 'freellmapi']);
+  await writeAutomaticPool(directory, ['kilo'], ['kilo', 'antseed-vikey']);
   const managed = configure({ GRUNT_DAEMON: '1', GRUNT_CONFIG_DIR: directory, GRUNT_SOURCES: 'kilo' });
   const manual = configure({ GRUNT_CONFIG_DIR: directory, GRUNT_SOURCES: 'kilo' });
   const overridden = configure({ GRUNT_DAEMON: '1', GRUNT_CONFIG_DIR: directory, GRUNT_SOURCES: 'opencode' });
   try {
     expect(managed.sources.map(source => source.id)).toEqual(expect.arrayContaining(bundledRegistry.adapters.map(adapter => adapter.id)));
-    expect(managed.sources.map(source => source.id)).toEqual(expect.arrayContaining(['antseed-vikey', 'freellmapi']));
+    expect(managed.sources.map(source => source.id)).toEqual(expect.arrayContaining(['antseed-vikey']));
     expect(manual.sources.map(source => source.id)).toEqual(['kilo']);
     expect(overridden.sources.map(source => source.id)).toEqual(['opencode']);
   } finally { await managed.close(); await manual.close(); await overridden.close(); await rm(directory, { recursive: true, force: true }); }
@@ -38,12 +38,12 @@ it('reconciles a matching setup-managed source list with curated additions while
 
 it('offers curated Beam by default while keeping unqualified Vikey explicitly selected', async () => {
   const explicit = configure({ GRUNT_SOURCES: 'antseed-vikey,reflection-beam' }), normal = configure({});
-  const optedIn = configure({ GRUNT_SOURCES: 'freellmapi,kilo', GRUNT_OPT_IN_SOURCES: 'antseed-vikey,reflection-beam,unknown,antseed-vikey' });
+  const optedIn = configure({ GRUNT_SOURCES: 'kilo', GRUNT_OPT_IN_SOURCES: 'antseed-vikey,reflection-beam,unknown,antseed-vikey' });
   try {
     expect(explicit.sources.map(source => source.id)).toEqual(['antseed-vikey', 'reflection-beam']);
     expect(normal.sources.map(source => source.id)).not.toContain('antseed-vikey');
     expect(normal.sources.map(source => source.id)).toContain('reflection-beam');
-    expect(optedIn.sources.map(source => source.id)).toEqual(['freellmapi', 'kilo', 'antseed-vikey', 'reflection-beam']);
+    expect(optedIn.sources.map(source => source.id)).toEqual(['kilo', 'antseed-vikey', 'reflection-beam']);
   } finally { await explicit.close(); await normal.close(); await optedIn.close(); }
 });
 

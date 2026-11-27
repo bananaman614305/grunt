@@ -1,8 +1,7 @@
+import { Hono } from 'hono';
 import { gruntEnv } from './brand.js';
 import { serve } from "@hono/node-server";
 import { defaultGatewayDb, openGatewayDb } from './gateway-db.js';
-import { DotsStore } from "./dots-store.js";
-import { dotsRelay } from "./dots-relay.js";
 import { registryRoutes } from './registry-routes.js';
 import { AdminStore } from './admin/store.js';
 import { adminRoutes, type AdminAsset } from './admin/routes.js';
@@ -12,10 +11,6 @@ import { readFile } from 'node:fs/promises';
 const port = Number(process.env.PORT ?? 8787);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("PORT must be an integer between 1 and 65535.");
 const db = await openGatewayDb(gruntEnv('DB') ?? defaultGatewayDb());
-const dotsStore = new DotsStore(db);
-await dotsStore.init();
-const relay = dotsRelay(dotsStore, { origin: gruntEnv('PUBLIC_URL') ?? 'https://api.grunt.run' });
-const stopRelay = relay.start();
 const adminStore = new AdminStore(db);
 let adminReady = true;
 try { await adminStore.init(); }
@@ -37,7 +32,7 @@ if (registryStore) {
   try { await registry.initialize(); }
   catch { console.error('grunt registry initialization is unavailable.'); }
 }
-const app = relay.app.route('/', adminRoutes(adminStore, { ready: adminReady, registry: registry.published, assets: adminAssets })).route('/', registry);
+const app = new Hono().route('/', adminRoutes(adminStore, { ready: adminReady, registry: registry.published, assets: adminAssets })).route('/', registry);
 app.get('/health', c => c.json({ status: 'ok' }));
 // Keep both OAuth and the owner cookie on the dashboard's own HTTPS origin.
 const dashboardOrigin = 'https://dashboard.grunt.run';
@@ -57,7 +52,6 @@ async function stop() {
   stopping = true;
   if ("closeAllConnections" in server) server.closeAllConnections();
   server.close();
-  stopRelay();
   db.close();
 }
 process.on("SIGTERM", () => { void stop(); });

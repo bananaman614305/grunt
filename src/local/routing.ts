@@ -5,10 +5,10 @@ import { promisify } from 'node:util';
 import { realpath } from 'node:fs/promises';
 import { setImmediate as metadataTurn } from 'node:timers/promises';
 import { taskTurns } from './harness.js';
-import { Sources, RequestError, SourceError, answeredBy, bridgedTools, canReplay, needsFunctionTools, toolCapable, withAttemptStream, NO_TOOL_SOURCE } from './source.js';
+import { Sources, RequestError, SourceError, answeredBy, bridgedTools, canReplay, hasImageInput, needsFunctionTools, toolCapable, withAttemptStream, NO_TOOL_SOURCE } from './source.js';
 import type { Completion, ErrorCode, ModelRequest, SlowUpstreamPolicy, Source } from './source.js';
 import type { Adapter, Registry } from '../registry.js';
-import { knownAdapters } from '../registry.js';
+import { knownAdapters, TIER_TOTALS } from '../registry.js';
 import { SourceStatus } from './source-status.js';
 import { SourceAvailability } from './source-availability.js';
 import { currentDiagnosticContext, observeRequestPhase, withDiagnosticContext } from './diagnostics.js';
@@ -65,7 +65,7 @@ interface Task {
   reassessment?: { from: string; source: string; samples: number; at: number };
   lastPerformanceSwitchAt?: number;
 }
-interface Candidate { source: Source; weight: number }
+interface Candidate { source: Source; adapter: Adapter; weight: number }
 export class StickyRouter {
   private tasks = new Map<string, Task>();
   private barFailures = new Map<string, ErrorCode>();
@@ -197,6 +197,9 @@ export class StickyRouter {
     if (!wasBenched && this.benched(id)) try { this.options.dropped?.(id); } catch { /* Signup triggers cannot change routing. */ }
   }
 
+  auditAdapters() {
+    return this.options.registry().adapters.map(({ id, tier, status, expires }) => ({ id, tier, status, expires }));
+  }
   registered(id: string) {
     if (knownAdapters.has(id) || this.options.localOptIns?.has(id)) return true;
     const adapter = this.options.registry().adapters.find(item => item.id === id);
@@ -383,7 +386,9 @@ export class StickyRouter {
     // A turn bound to a source without function-tool support switches (with handoff)
     // when the client attaches tools, unless the caller named that source explicitly.
     const toolsRequired = needsFunctionTools(request) && !explicit;
+    const imageRequest = hasImageInput(request);
     const attempted = new Set<string>(), refused = new Set<string>();
+    let imageRefusal: SourceError | undefined;
     const observedEligible = new Set<string>();
     const checking = new Map<string, Source>();
     const context = currentDiagnosticContext(), observeEligible = this.options.observeEligible;
@@ -405,7 +410,7 @@ export class StickyRouter {
       const adapter = this.options.registry().adapters.find(a => a.id === id
         && this.registered(a.id));
       if (!adapter) return 'not_listed';
-      if (!adapter.modalities.includes('text') || request.imageInput && !adapter.modalities.includes('image')) return 'input_unsupported';
+      if (!adapter.modalities.includes('text') || imageRequest && !adapter.modalities.includes('image')) return 'input_unsupported';
       if (scoutRetired(adapter, this.now()) || this.retired(id)) return 'retired';
       if (this.trialBusy(id)) return 'trial_in_progress';
       if (this.options.disabled?.has(id)) return 'disabled';
@@ -423,7 +428,7 @@ export class StickyRouter {
       for (;;) {
         signal.throwIfAborted();
         const registered = this.options.registry().adapters.filter(a => this.registered(a.id));
-        const adapters = registered.filter(a => a.modalities.includes('text') && (!request.imageInput || a.modalities.includes('image')));
+        const adapters = registered.filter(a => a.modalities.includes('text') && (!imageRequest || a.modalities.includes('image')));
         let eligible: Candidate[] = [];
         const unknown: Source[] = [];
         const retryTimes: number[] = [];
@@ -463,7 +468,7 @@ export class StickyRouter {
           }
           const available = this.availability.peek(source.id);
           if (source.id === task.source || available === true) {
-            eligible.push({ source, weight: adapter.weight * observation.routingWeight(source.id, false, workload) * registryScoreFactor(this.registryScore?.(source.id)) });
+            eligible.push({ source, adapter, weight: adapter.weight * observation.routingWeight(source.id, false, workload) * registryScoreFactor(this.registryScore?.(source.id)) });
             if (available === true) reportEligible(source.id, this.now());
           }
           else if (available === undefined) unknown.push(source);
@@ -496,8 +501,9 @@ export class StickyRouter {
         if (!eligible.length) {
           if (unknown.length && this.availability.hasPending()) { observeRequestPhase('checking_routes'); await this.availability.changed(signal); continue; }
           // No source lists image input at all: that is the request's shape, not quota, so say so as an invalid request.
-          const imageRefused = request.imageInput === true && !this.sources.some(source => (!explicit || source.id === request.model) && !this.options.unrouted?.has(source.id) && this.imageListed(source.id));
+          const imageRefused = imageRequest && !this.sources.some(source => (!explicit || source.id === request.model) && !this.options.unrouted?.has(source.id) && this.imageListed(source.id));
           const failure = imageRefused ? new RequestError('This conversation contains an image, but no source on this route accepts image input; remove the image or continue in text')
+            : imageRefusal && !transient ? new SourceError('refused', imageRefusal.message, undefined, undefined, imageRefusal.diagnostics)
             : this.exhausted(toolsRequired, retryTimes, refused.size, transient);
           // Keep the task reserved until its fallback has settled.
           if (!explicit && fallback) return await fallback(failure, signal);
@@ -547,6 +553,16 @@ export class StickyRouter {
         // A first request has no bound source; its draw is weighted, not sticky.
         const bound = selected !== undefined && selected.source.id === task.source;
         if (!selected) {
+          if (toolsRequired) {
+            // Redistribute each tier's base share across the eligible tool routes.
+            // Performance and registry scores still scale each route's resulting share.
+            const totals = { stable: 0, experimental: 0 };
+            for (const { adapter } of ready) totals[adapter.tier] += adapter.weight;
+            for (const candidate of ready) {
+              const tier = candidate.adapter.tier;
+              candidate.weight *= TIER_TOTALS[tier] / totals[tier];
+            }
+          }
           let draw = (this.options.random ?? Math.random)() * ready.reduce((total, a) => total + a.weight, 0);
           selected = ready.find(a => (draw -= a.weight) < 0) ?? ready.at(-1)!;
         }
@@ -604,7 +620,12 @@ export class StickyRouter {
             if (failure.code === 'cancelled') return;
             if (localRequestRefusal(failure)) {
               refused.add(source.id);
-              skipped.set(source.id, 'rejected the tool definitions or tool history');
+              if (imageRequest && failure.diagnostics?.failureReason === 'request_body') {
+                imageRefusal ??= failure;
+                skipped.set(source.id, 'no free vision model is currently available');
+              } else {
+                skipped.set(source.id, 'rejected the tool definitions or tool history');
+              }
             } else skipped.set(source.id, observation.routeFailure(source.id, failure.code) ?? 'request failed');
             await this.recordFailure(source.id, failure);
           };
