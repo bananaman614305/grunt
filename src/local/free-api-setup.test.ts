@@ -9,6 +9,7 @@ import { Zro, readZroGrant, writeZroGrant } from './zro.js';
 import { TokenHarbor } from './tokenharbor.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 import { SourceError } from './source.js';
+import { writeVaultEntry } from './vault.js';
 import * as mistralSetup from './mistral-vibe-setup.js';
 
 let directory: string;
@@ -410,5 +411,27 @@ it('stops credential selection immediately on cancellation', async () => {
   const router = { addGrant: async () => { controller.abort(cancelled); throw new SourceError('quota', 'HTTP 429'); } };
   await expect(setupProviders(squire, router, { providers: ['zro'], signal: controller.signal, notify: () => {} })).rejects.toBe(cancelled);
   expect(squire.credentials.grant).toHaveBeenCalledOnce();
+  expect(squire.runs.start).not.toHaveBeenCalled();
+});
+
+it('replaces a quota-limited Zro vault key so the daemon loads the verified replacement', async () => {
+  const origin = 'https://zro.moonmath.ai';
+  await writeVaultEntry('zro', { api_key: 'vault-limited', origin, source: 'local' }, directory);
+  await writeZroGrant({ base_url: origin, token: 'vault-limited' }, directory);
+  await expect(readZroGrant(directory)).resolves.toMatchObject({ token: 'vault-limited' });
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) =>
+    new Headers(init!.headers).get('authorization') === 'Bearer working'
+      ? Response.json({ model: 'deepseek-v4.1-flash', choices: [{ message: { content: 'ready' } }] })
+      : new Response(null, { status: 402 }));
+  const squire = {
+    credentials: {
+      list: async () => [{ service: 'zro', reference: 'vault://working', field_names: ['api_key'] }],
+      grant: async () => ({ base_url: origin, token: 'working' })
+    }, runs: { start: vi.fn(), get: vi.fn() }
+  };
+  await expect(setup(() => {}, ['zro'], { directory, squire })).resolves.toEqual({});
+  // The daemon's own loader accepts the new receipt because the vault now holds the same key.
+  await expect(readZroGrant(directory)).resolves.toMatchObject({ token: 'working' });
+  await expect(new Zro({ directory }).available()).resolves.toBe(true);
   expect(squire.runs.start).not.toHaveBeenCalled();
 });

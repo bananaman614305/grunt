@@ -19,7 +19,7 @@ import { bundledRegistry, disabledAdapters, isDeclarativeAdapter, knownAdapters,
 import type { Registry } from '../registry.js';
 import { BROWSER_CONCURRENCY } from './parallel.js';
 import { Nvidia, writeNvidiaGrant } from './nvidia.js';
-import { Zro, writeZroGrant } from './zro.js';
+import { Zro, readZroGrant, writeZroGrant } from './zro.js';
 import { TokenHarbor, writeTokenHarborGrant } from './tokenharbor.js';
 import { Runcrate, RuncrateVerificationError, readRuncrateGrant, validateRuncrateVerification, verifyRuncrateDirectGrant, verifyRuncrateSquireGrant, writeRuncrateGrant } from './runcrate.js';
 import type { RuncrateGrantContext, RuncrateGrantVerifier } from './runcrate.js';
@@ -1534,6 +1534,21 @@ export async function setup(notify = console.log, providers: string[] = [], opti
       // quota still works after reset; it stays installed until a candidate passes.
       let limited = false, stale = false;
       const isQuota = (error: unknown) => error instanceof SourceError && error.code === 'quota';
+      // The daemon accepts zro.json only when it matches the local vault key, so
+      // replace a different vault key first, then confirm the daemon can load it.
+      const install = async (grant: { base_url: string; token: string }) => {
+        const vaulted = await readVaultGrant('zro', location).catch(() => undefined);
+        if (vaulted && credentialFingerprint(vaulted) !== credentialFingerprint(grant)) {
+          let origin: string | undefined;
+          try { origin = validateDirectOrigin('zro', grant.base_url); } catch { /* Egress grant: cannot live in the vault. */ }
+          if (origin) await writeVaultEntry('zro', { api_key: grant.token, origin, source: 'squire' }, location);
+        }
+        await writeZroGrant(grant, location);
+        const loaded = await readZroGrant(location).catch(() => undefined);
+        if (!loaded || credentialFingerprint(loaded) !== credentialFingerprint(grant)) {
+          throw new Error('Zro key verified but could not be installed beside the local vault key; run usegrunt vault to review the zro entry');
+        }
+      };
       try {
         const result = await setupProviders(squire, {
           hasKey: async provider => {
@@ -1551,12 +1566,12 @@ export async function setup(notify = console.log, providers: string[] = [], opti
               signal.throwIfAborted();
             } catch (error) {
               signal.throwIfAborted();
-              if (isQuota(error) && !limited) { await writeZroGrant(grant, location); limited = true; }
+              if (isQuota(error) && !limited) { await install(grant); limited = true; }
               // A local key that already failed its health check is removed, never a limited one.
               else if (!isQuota(error) && stale && !limited) await rm(join(location, 'zro.json'), { force: true });
               throw error;
             } finally { await candidate.close(); }
-            await writeZroGrant(grant, location);
+            await install(grant);
           }
         }, { providers: ['zro'], notify, signal: options.signal, directory: location, ...(options.background !== undefined ? { background: options.background } : {}) });
         if (result.dropped.length) throw new Error('Zro setup incomplete; rerun usegrunt setup');
