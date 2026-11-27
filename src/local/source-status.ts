@@ -24,8 +24,8 @@ export interface SourceSnapshot {
   active: number;
   lastReplyMs?: number;
   lastSuccessAt?: number;
-  // Age in whole seconds of the last admission or reply evidence, and whether it is fresh enough for routing to admit
-  // the source without a new check. Content-free; `state` keeps its meaning and neither is a dispatch guarantee.
+  // Age in whole seconds of the last admission or reply evidence, and whether routing would currently consider the
+  // source: open state and no fresh negative check. Content-free; neither is a dispatch guarantee.
   checkedAgoSeconds?: number;
   routable?: boolean;
   retryAt?: number;
@@ -512,7 +512,9 @@ export class SourceStatus {
       if (row.state !== 'disabled' && options.retired?.(id)) row.state = 'unavailable';
       if (entry.needsHumanVerification && (row.state === 'unknown' || row.state === 'unavailable')) row.state = 'approval';
       if (entry.availabilityCheckedAt !== undefined) row.checkedAgoSeconds = Math.max(0, Math.floor((now - entry.availabilityCheckedAt) / 1000));
-      row.routable = (row.state === 'available' || row.state === 'ready' || row.state === 'answering') && this.routingAvailability(id, AVAILABILITY_POSITIVE_MS, AVAILABILITY_NEGATIVE_MS) === true;
+      // Routing eligibility: the source is open and no fresh negative check bars it.
+      // Stale positive evidence still routes; the request re-checks access first.
+      row.routable = (row.state === 'available' || row.state === 'ready' || row.state === 'answering') && this.routingAvailability(id, AVAILABILITY_POSITIVE_MS, AVAILABILITY_NEGATIVE_MS) !== false;
       const problem = row.state === 'unavailable' || row.state === 'error' || row.state === 'approval' ? this.routeProblem(id, row.errorCode) : undefined;
       row.detail = `${problem ?? detail[row.state]}${model ? '; model label comes from the registry, not response attestation' : ''}`;
       return row;

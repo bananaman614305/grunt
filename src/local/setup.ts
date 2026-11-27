@@ -19,7 +19,7 @@ import { bundledRegistry, disabledAdapters, isDeclarativeAdapter, knownAdapters,
 import type { Registry } from '../registry.js';
 import { BROWSER_CONCURRENCY } from './parallel.js';
 import { Nvidia, writeNvidiaGrant } from './nvidia.js';
-import { Zro, writeZroGrant } from './zro.js';
+import { Zro, readZroGrant, writeZroGrant } from './zro.js';
 import { TokenHarbor, writeTokenHarborGrant } from './tokenharbor.js';
 import { Runcrate, RuncrateVerificationError, readRuncrateGrant, validateRuncrateVerification, verifyRuncrateDirectGrant, verifyRuncrateSquireGrant, writeRuncrateGrant } from './runcrate.js';
 import type { RuncrateGrantContext, RuncrateGrantVerifier } from './runcrate.js';
@@ -1529,13 +1529,29 @@ export async function setup(notify = console.log, providers: string[] = [], opti
     if (!providers.length) return {};
     if (providers.includes('zro')) {
       const source = new Zro({ directory: location });
+      // A key that only reports quota still works after reset. Keep it installed
+      // until another candidate passes, so a later rejected key cannot erase it.
+      let limited: { base_url: string; token: string } | undefined;
+      const isQuota = (error: unknown) => error instanceof SourceError && error.code === 'quota';
       try {
         const result = await setupProviders(squire, {
-          hasKey: async provider => provider === 'zro' && await source.healthCheck(options.signal),
+          hasKey: async provider => {
+            if (provider !== 'zro') return false;
+            try { return await source.healthCheck(options.signal); }
+            catch (error) {
+              if (isQuota(error)) limited ??= await readZroGrant(location).then(({ base_url, token }) => ({ base_url, token }), () => undefined);
+              throw error;
+            }
+          },
           addGrant: async (provider, grant) => {
             if (provider !== 'zro') throw new Error('Unexpected Zro credential');
             await writeZroGrant(grant, location);
-            await probeGrant(source, location, options.signal);
+            try { await probeGrant(source, location, options.signal); }
+            catch (error) {
+              if (isQuota(error)) limited ??= { base_url: grant.base_url, token: grant.token };
+              else if (limited) await writeZroGrant(limited, location);
+              throw error;
+            }
           }
         }, { providers: ['zro'], notify, signal: options.signal, directory: location, ...(options.background !== undefined ? { background: options.background } : {}) });
         if (result.dropped.length) throw new Error('Zro setup incomplete; rerun usegrunt setup');

@@ -368,10 +368,31 @@ it('removes a Zro key the provider rejects, but not one that is only over quota'
   });
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) =>
     new Response(null, { status: new Headers(init!.headers).get('authorization') === 'Bearer limited' ? 402 : 401 }));
-  await expect(setup(() => {}, ['zro'], { directory, squire: squire('limited') })).rejects.toMatchObject({ code: 'quota' });
-  await expect(readZroGrant(directory)).resolves.toMatchObject({ token: 'limited' });
   await setup(() => {}, ['zro'], { directory, squire: squire('revoked') }).catch(() => {});
   await expect(readZroGrant(directory)).rejects.toThrow();
+  await expect(setup(() => {}, ['zro'], { directory, squire: squire('limited') })).rejects.toMatchObject({ code: 'quota' });
+  await expect(readZroGrant(directory)).resolves.toMatchObject({ token: 'limited' });
+});
+
+it.each([false, true])('keeps a quota-limited Zro key when a later candidate is rejected in the same setup (limited key already local: %s)', async local => {
+  if (local) await writeZroGrant({ base_url: 'https://grant.test', token: 'limited' }, directory);
+  const tokens = local ? ['revoked'] : ['limited', 'revoked'];
+  const squire = {
+    credentials: {
+      list: async () => tokens.map(token => ({ service: 'zro', reference: `vault://${token}`, field_names: ['api_key'] })),
+      grant: async (reference: string) => ({ base_url: 'https://grant.test', token: reference.slice('vault://'.length) })
+    }, runs: { start: vi.fn(), get: vi.fn() }
+  };
+  const requests: string[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+    const authorization = new Headers(init!.headers).get('authorization')!;
+    requests.push(authorization);
+    return new Response(null, { status: authorization === 'Bearer limited' ? 402 : 401 });
+  });
+  await expect(setup(() => {}, ['zro'], { directory, squire })).rejects.toMatchObject({ code: 'quota' });
+  expect(requests).toEqual(['Bearer limited', 'Bearer revoked']);
+  await expect(readZroGrant(directory)).resolves.toMatchObject({ token: 'limited' });
+  expect(squire.runs.start).not.toHaveBeenCalled();
 });
 
 it('stops credential selection immediately on cancellation', async () => {

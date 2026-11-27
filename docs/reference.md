@@ -341,10 +341,11 @@ completion pauses unfinished signups; verified daemon routes remain usable.
 `Cache-Control: no-store`. Its version-1 JSON contains the snapshot timestamp,
 active call count and per-source observations, including safe failure codes,
 last success/timing and finite retry timestamps when known. `checkedAgoSeconds`
-is the age of the last admission or reply evidence and `routable` is true only
-when that evidence is a fresh (30 s) positive and the state is open; `state`
-alone can read `available` for a source routing would first have to re-check, and
-neither field guarantees dispatch. Observations reset
+is the age of the last admission or reply evidence. `routable` is true when the
+state is open (`available`, `ready` or `answering`) and no fresh (30 s) negative
+check bars the source, so routing would consider it now. A source with older
+positive evidence stays routable; routing re-checks its access before dispatch.
+Neither field guarantees dispatch. Observations reset
 when the daemon restarts, then rebuild from normal runtime activity.
 
 ### Persistent local diagnostics
