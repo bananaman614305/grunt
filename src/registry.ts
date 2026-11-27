@@ -310,7 +310,7 @@ export function validateRegistry(value: unknown): Registry {
 const packaged = new URL('./registry/adapters.json', import.meta.url);
 export const bundledRegistry = validateRegistry(JSON.parse(readFileSync(existsSync(packaged) ? packaged : new URL('../registry/adapters.json', import.meta.url), 'utf8')));
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (typeof GRUNT_DAEMON_BUNDLE === 'undefined' && process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   validateRegistry(JSON.parse(readFileSync(process.argv[2] ?? 'registry/adapters.json', 'utf8')));
   console.log('Adapter registry is valid');
 }

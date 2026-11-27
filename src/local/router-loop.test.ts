@@ -186,7 +186,7 @@ it('lets a background signup use the driver instead of dropping for a foreground
     : ++drives === 1 ? { status: 'low_confidence', session_id: 'zro-tab', options: {} } : { status: 'complete', session_id: 'zro-tab' });
   vi.spyOn(squire.credentials, 'list').mockImplementation(async () => drives > 1 ? [{ service: 'zro', reference: 'synthetic', field_names: ['api_key'] }] : []);
   vi.spyOn(squire.credentials, 'grant').mockResolvedValue({ base_url: 'https://squire.test', token: 'synthetic' });
-  const result = await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], reuseSaved: false, notify: () => {} });
+  const result = await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], notify: () => {} });
   expect(agent).toHaveBeenCalledOnce();
   expect(result.dropped).toEqual([]);
   await squire.close();
@@ -317,8 +317,8 @@ it.each(['automatic', 'managed custom', 'manual'] as const)('matches restart enr
   const { writeAutomaticPool } = await import('./automatic-pool.js');
   const dir = await directory();
   let current: Registry = { ...bundledRegistry, adapters: bundledRegistry.adapters.filter(adapter => ['opencode', 'kilo'].includes(adapter.id)) };
-  const configured = mode === 'managed custom' ? ['opencode', 'kilo', 'freellmapi'] : ['opencode', 'kilo'];
-  if (mode === 'managed custom') await writeAutomaticPool(dir, configured);
+  const configured = mode === 'managed custom' ? ['opencode', 'kilo', 'codex'] : ['opencode', 'kilo'];
+  if (mode === 'managed custom') await writeAutomaticPool(dir, configured, ['opencode', 'kilo']);
   const env = { GRUNT_CONFIG_DIR: dir,
     ...(mode !== 'automatic' ? { GRUNT_SOURCES: configured.join(',') } : {}),
     ...(mode === 'managed custom' ? { GRUNT_DAEMON: '1' } : {}) };
@@ -363,19 +363,19 @@ it('shares retirement from main failures across mixed-pool request paths', async
   let now = Date.parse('2026-11-20T00:00:00Z');
   vi.spyOn(Date, 'now').mockImplementation(() => now);
   const failing = source('kilo', () => new SourceError('upstream', 'Synthetic outage'));
-  const custom = source('freellmapi');
+  const custom = source('codex');
   const listed: Registry = { ...bundledRegistry, adapters: [bundledRegistry.adapters.find(adapter => adapter.id === 'kilo')!] };
   const sources = new Sources([failing, custom]);
   sources.setChainRegistry(() => listed);
   try {
     for (let i = 0; i < RETIRE_AFTER_FAILURES; i++) {
       const request = ask(`failure ${i}`, true);
-      await expect(sources.complete(request, AbortSignal.timeout(1000))).resolves.toEqual({ text: 'freellmapi done' });
+      await expect(sources.complete(request, AbortSignal.timeout(1000))).resolves.toEqual({ text: 'codex done' });
       if (i < RETIRE_AFTER_FAILURES - 1) now += 2 * 60 * 60 * 1000 + 1;
     }
     expect(failing.complete).toHaveBeenCalledTimes(RETIRE_AFTER_FAILURES);
     expect(sources.retired('kilo')).toBe(true);
-    await expect(sources.complete(ask('automatic after retirement'), AbortSignal.timeout(1000))).resolves.toEqual({ text: 'freellmapi done' });
+    await expect(sources.complete(ask('automatic after retirement'), AbortSignal.timeout(1000))).resolves.toEqual({ text: 'codex done' });
     await expect(sources.complete({ ...ask('explicit after retirement'), model: 'kilo' }, AbortSignal.timeout(1000))).rejects.toThrow();
     expect(failing.complete).toHaveBeenCalledTimes(RETIRE_AFTER_FAILURES);
     sources.unretire(['kilo']);
@@ -391,13 +391,13 @@ it.each(['boot', 'hot-add', 'explicit', 'receipt'] as const)('distinguishes %s e
     const base: Registry = { ...bundledRegistry, adapters: [bundledRegistry.adapters.find(adapter => adapter.id === 'opencode')!] };
     let current = enrollment === 'hot-add' ? base : { ...base, adapters: [...base.adapters, adapter] };
     const managed = mixed || enrollment === 'receipt';
-    const configured = ['opencode', ...(mixed ? ['freellmapi'] : [])];
+    const configured = ['opencode', ...(mixed ? ['codex'] : [])];
     const env = { GRUNT_CONFIG_DIR: dir,
       ...(managed ? { GRUNT_SOURCES: configured.join(','), GRUNT_DAEMON: '1' } : {}),
       ...(enrollment === 'explicit' ? { GRUNT_OPT_IN_SOURCES: adapter.id } : {}) };
     if (managed) {
       const { writeAutomaticPool } = await import('./automatic-pool.js');
-      await writeAutomaticPool(dir, configured, [...configured, ...(enrollment === 'receipt' ? [adapter.id] : [])]);
+      await writeAutomaticPool(dir, configured, ['opencode', ...(enrollment === 'receipt' ? [adapter.id] : [])]);
     }
     const sources = configure(env, () => current);
     try {
@@ -420,4 +420,17 @@ it.each(['boot', 'hot-add', 'explicit', 'receipt'] as const)('distinguishes %s e
       }
     } finally { await sources.close(); }
   }
+});
+
+it('preserves the stable share for tool requests when a stable text route is unavailable to them', async () => {
+  const adapters = [['opencode', 0.6], ['kilo', 0.2], ['runcrate', 0.2]] as const;
+  const registry = { ...bundledRegistry, adapters: adapters.map(([id, weight]) => ({
+    ...bundledRegistry.adapters.find(adapter => adapter.id === id)!, weight
+  })) };
+  const pool = adapters.map(([id]) => ({ ...source(id), supportsFunctionTools: id !== 'opencode' }));
+  let draw = 0.79;
+  const sources = new Sources(pool, { registry: () => registry, random: () => draw });
+  await expect(sources.complete(ask('inside stable', true), AbortSignal.timeout(2000))).resolves.toMatchObject({ text: 'kilo done' });
+  draw = 0.81;
+  await expect(sources.complete(ask('outside stable', true), AbortSignal.timeout(2000))).resolves.toMatchObject({ text: 'runcrate done' });
 });

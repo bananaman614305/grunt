@@ -1,9 +1,10 @@
+import { hasOwnerMode, openPrivateFile } from './private-file.js';
 import { compileToolSchemas } from './tool-schema.js';
 import type { ValidateFunction } from 'ajv';
 import { JsonToolBridge } from './json-tool-bridge.js';
 import { configRoot } from '../brand.js';
 import { constants } from 'node:fs';
-import { open } from 'node:fs/promises';
+
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -41,10 +42,10 @@ export function assertFreePiAccount(account: Record<string, unknown>, now = Date
 }
 
 export async function readFreePiToken(directory: string): Promise<string> {
-  const file = await open(join(directory, 'freepi', 'credentials.json'), constants.O_RDONLY | constants.O_NOFOLLOW);
+  const file = await openPrivateFile(join(directory, 'freepi', 'credentials.json'), constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = await file.stat();
-    if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.size > 4096) throw new Error('Unsafe Free-Pi credential');
+    if (!stat.isFile() || !hasOwnerMode(stat, 0o600) || stat.size > 4096) throw new Error('Unsafe Free-Pi credential');
     const credential = object(JSON.parse(await file.readFile('utf8')));
     if (credential.issuer !== FREEPI_BASE || typeof credential.token !== 'string' || !credential.token) throw new Error('Invalid Free-Pi credential');
     return credential.token;

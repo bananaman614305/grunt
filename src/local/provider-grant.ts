@@ -1,6 +1,7 @@
+import { hasOwnerMode, openPrivateFile } from './private-file.js';
 import { configRoot } from '../brand.js';
 import { constants } from 'node:fs';
-import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { ID_PATTERN, disabledAdapters, knownAdapters, safePublicHttpsOrigin } from '../registry.js';
@@ -19,6 +20,18 @@ import {
 import type { VaultEntrySource, VaultProvider } from './vault.js';
 
 export const providerGrantDirectory = () => configRoot();
+export const LOCAL_VAULT_REFERENCE_PREFIX = 'vault://grunt-local/';
+export function localVaultReference(provider: string): string {
+  return `${LOCAL_VAULT_REFERENCE_PREFIX}${provider}`;
+}
+export function isLocalVaultReference(reference: string): boolean {
+  return reference.startsWith(LOCAL_VAULT_REFERENCE_PREFIX);
+}
+export function parseLocalVaultReference(reference: string): string | undefined {
+  if (!isLocalVaultReference(reference)) return undefined;
+  const id = reference.slice(LOCAL_VAULT_REFERENCE_PREFIX.length);
+  return id.length > 0 && !id.includes('/') ? id : undefined;
+}
 type Provider = 'runcrate' | 'kilo' | 'goedel' | 'crowllm' | 'fikra' | 'openference' | 'darus' | 'aperture-ai' | 'millionseek' | 'ifm';
 const RECEIPT_PROVIDERS = new Set<Provider>(['runcrate']);
 export interface SquireGrantSource {
@@ -88,11 +101,9 @@ function isDirectOrigin(provider: string, baseUrl: string): boolean {
   }
 }
 /**
- * Resolves a Squire credential reference into a Squire egress grant by default
- * (never stalling silent setup on passkey prompts). When `exportToVault: true`
- * is explicitly requested, attempts passkey-approved export into the local
- * Grunt vault and falls back cleanly to a Squire egress grant if unavailable or
- * declined.
+ * Resolves a captured provider credential reference into a direct local Grunt
+ * vault grant when captured in-process via embedded signup, or into a legacy
+ * Squire egress grant / opt-in passkey export for backwards compatibility.
  */
 export async function resolveSquireGrant(
   provider: string,
@@ -108,6 +119,19 @@ export async function resolveSquireGrant(
   } = {}
 ): Promise<ResolvedSquireGrant> {
   options.signal?.throwIfAborted();
+  if (isLocalVaultReference(reference)) {
+    if (isVaultProvider(provider)) {
+      const vaulted = await readVaultGrant(provider, options.directory ?? configRoot());
+      if (!vaulted) throw new Error(`No stored local Grunt vault key for ${provider}`);
+      return { base_url: vaulted.base_url, token: vaulted.token, transport: 'direct', storedInVault: true };
+    }
+    const grant = validateProviderGrant(await squire.credentials.grant(reference));
+    return {
+      ...grant,
+      transport: 'direct',
+      storedInVault: false
+    };
+  }
   if (options.exportToVault === true && isVaultProvider(provider) && typeof squire.materializeDirectVaultGrant === 'function') {
     try {
       const direct = await squire.materializeDirectVaultGrant(provider, reference, {
@@ -167,10 +191,10 @@ export async function firstWorkingGrant<T extends FreeApiGrant = FreeApiGrant>(
   return undefined;
 }
 export async function readPrivateProviderGrantFile(provider: Provider, location: string): Promise<unknown> {
-  const file = await open(join(location, `${name(provider)}.json`), constants.O_RDONLY | constants.O_NOFOLLOW);
+  const file = await openPrivateFile(join(location, `${name(provider)}.json`), constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = await file.stat();
-    if (!stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.uid !== process.getuid?.()) throw new Error('Unsafe private provider grant file');
+    if (!stat.isFile() || !hasOwnerMode(stat, 0o600)) throw new Error('Unsafe private provider grant file');
     return JSON.parse(await file.readFile('utf8'));
   } finally { await file.close(); }
 }
@@ -233,10 +257,10 @@ export function declarativeGrantAllowed(grant: FreeApiGrant, baseUrl: string): b
 
 export async function readDeclarativeProviderGrant(id: string, location: string): Promise<unknown> {
   const valid = declarativeProviderName(id);
-  const file = await open(join(location, `${valid}.json`), constants.O_RDONLY | constants.O_NOFOLLOW);
+  const file = await openPrivateFile(join(location, `${valid}.json`), constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = await file.stat();
-    if (!stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.uid !== process.getuid?.()) throw new Error('Unsafe declarative provider grant file');
+    if (!stat.isFile() || !hasOwnerMode(stat, 0o600)) throw new Error('Unsafe declarative provider grant file');
     return JSON.parse(await file.readFile('utf8'));
   } finally { await file.close(); }
 }

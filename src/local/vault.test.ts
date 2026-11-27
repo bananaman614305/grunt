@@ -958,7 +958,7 @@ it('keeps default silent setupProviders non-blocking (never calling fetch_creden
   const notifications: string[] = [];
   await setupProviders(squire, {
     addGrant: async (platform, grant) => { added.push({ platform, grant }); }
-  }, { providers: ['groq'], notify: line => notifications.push(line), reuseSaved: false, directory });
+  }, { providers: ['groq'], notify: line => notifications.push(line), directory });
 
   expect(added).toEqual([{ platform: 'groq', grant: { base_url: egressUrl, token: 'synthetic-egress-default' } }]);
   expect(callSpy.mock.calls.some(([name]) => name === 'fetch_credential')).toBe(false);
@@ -986,7 +986,7 @@ it('keeps default silent setupProviders non-blocking (never calling fetch_creden
 
   await setupProviders(squire, {
     addGrant: async (platform, grant) => { added.push({ platform, grant }); }
-  }, { providers: ['groq'], notify: line => notifications.push(line), reuseSaved: false, directory, exportToVault: true });
+  }, { providers: ['groq'], notify: line => notifications.push(line), directory, exportToVault: true });
 
   expect(added).toEqual([{ platform: 'groq', grant: { base_url: 'https://api.groq.com', token: secret } }]);
   expect(await readVaultEntry('groq', directory)).toMatchObject({ api_key: secret, origin: 'https://api.groq.com', source: 'squire' });
@@ -1008,7 +1008,7 @@ it('keeps default silent setupProviders non-blocking (never calling fetch_creden
   });
   await setupProviders(declinedSquire, {
     addGrant: async (platform, grant) => { added.push({ platform, grant }); }
-  }, { providers: ['groq'], notify: line => notifications.push(line), reuseSaved: false, directory, exportToVault: true });
+  }, { providers: ['groq'], notify: line => notifications.push(line), directory, exportToVault: true });
 
   expect(added).toEqual([{ platform: 'groq', grant: { base_url: egressUrl, token: 'synthetic-egress-fallback' } }]);
   expect(notifications.join('\n')).toContain('connected through Squire grant');

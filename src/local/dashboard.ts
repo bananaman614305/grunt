@@ -1,9 +1,11 @@
-import { gruntEnv, configRoot } from '../brand.js';
+import { installedConfigRoot } from './service-migration.js';
+import { hasOwnerMode, openPrivateFile } from './private-file.js';
+import { gruntEnv } from '../brand.js';
 import { providerQuotaPolicy, scheduledQuotaRefill, sellerQuota } from './quota-policy.js';
 import { Chalk } from 'chalk';
 import { stripVTControlCharacters } from 'node:util';
 import { constants } from 'node:fs';
-import { open } from 'node:fs/promises';
+
 import { join } from 'node:path';
 import type { PoolSnapshot, SourceSnapshot } from './source-status.js';
 import type { MaintenanceEntry } from './maintenance.js';
@@ -342,13 +344,13 @@ export function startDashboard(options: DashboardOptions): DashboardHandle {
 }
 
 export async function installedPort(env: NodeJS.ProcessEnv): Promise<number> {
-  const directory = configRoot(env);
+  const directory = installedConfigRoot(env);
   let file;
-  try { file = await open(join(directory, 'installed-port.json'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+  try { file = await openPrivateFile(join(directory, 'installed-port.json'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 8788; throw new Error('Cannot read installed Grunt port; use --port explicitly'); }
   try {
     const stat = await file.stat();
-    if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.size > 32) throw new Error('Invalid installed Grunt port');
+    if (!stat.isFile() || !hasOwnerMode(stat, 0o600) || stat.size > 32) throw new Error('Invalid installed Grunt port');
     const raw = await file.readFile('utf8');
     if (raw.length > 32) throw new Error('Invalid installed Grunt port');
     const port: unknown = JSON.parse(raw);

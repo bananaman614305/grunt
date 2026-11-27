@@ -1,4 +1,3 @@
-import { pairDots } from './dots-link.js';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { streamSSE } from 'hono/streaming';
@@ -221,9 +220,15 @@ export function decode(original: Obj, api: string, fallback?: string, options: {
   if (!isAbsolute(cwd)) throw new Error('Working directory must be an absolute path');
   const tokens = body.max_tokens ?? body.max_output_tokens ?? body.max_completion_tokens;
   const imageInput = !options.omitImages && messages.some(message => Array.isArray(message.content) && message.content.some(part => part.type === 'image_url'));
-  const rawModel = String(body.model ?? 'grunt');
-  const model = rawModel === 'milo' ? 'grunt' : rawModel;
-  return { model, messages, userMessages, tools, cwd, cwdSource, ...(responseNamespaces.size ? { responseNamespaces } : {}), stream: body.stream === true, ...(imageInput ? { imageInput: true } : {}), ...(typeof tokens === 'number' ? { maxTokens: tokens } : {}) };
+  const model = String(body.model ?? 'grunt');
+  const choice = object(body.tool_choice);
+  const anyFunction = (body.tool_choice === 'required' || api === 'messages' && choice.type === 'any')
+    && tools.length > 0 && tools.every(tool => tool.type === 'function');
+  const selectedName = choice.type === 'function' ? object(choice.function).name ?? choice.name
+    : api === 'messages' && choice.type === 'tool' ? choice.name : undefined;
+  const namedFunction = typeof selectedName === 'string' && tools.some(tool => tool.type === 'function' && object(tool.function).name === selectedName);
+  const expectedFunctionCall = namedFunction ? { name: selectedName } : anyFunction ? {} : undefined;
+  return { model, messages, userMessages, tools, cwd, cwdSource, ...(expectedFunctionCall ? { expectedFunctionCall } : {}), ...(responseNamespaces.size ? { responseNamespaces } : {}), stream: body.stream === true, ...(imageInput ? { imageInput: true } : {}), ...(typeof tokens === 'number' ? { maxTokens: tokens } : {}) };
 }
 function toolInput(arguments_: string): unknown {
   try { return JSON.parse(arguments_ || '{}'); } catch { return arguments_; }
@@ -309,13 +314,13 @@ const inferenceEndpoints = new Map<string, 'chat' | 'messages' | 'responses'>([
 const callerAgents = [['claude-code', /\bclaude-cli\b|\bclaude-code\b/i], ['codex', /\bcodex(?:[-_][\w-]+)?\b/i],
   ['opencode', /\bopencode\b/i], ['beeline', /\bbeeline\b/i], ['pi', /\bpi-coding-agent\b/i]] as const;
 
-export function createLocalApp(sources: Sources, options: { cwd?: string; port?: number; log?: (cwd: string) => void; dotsEnv?: NodeJS.ProcessEnv; observation?: () => ObservationRuntime } = {}) {
+export function createLocalApp(sources: Sources, options: { cwd?: string; port?: number; log?: (cwd: string) => void; observation?: () => ObservationRuntime } = {}) {
   const app = new Hono<{ Variables: { streamFinished?: Promise<boolean> } }>();
   const startedAt = Date.now();
   app.use('*', async (c, next) => {
     const port = options.port ?? 8788;
     const host = c.req.header('host') ?? new URL(c.req.url).host;
-    if (![ `127.0.0.1:${port}`, `localhost:${port}` ].includes(host) || (c.req.raw.headers.has('origin') && c.req.path !== '/dots/pair')) return c.json({ error: { message: 'Forbidden local request' } }, 403);
+    if (![ `127.0.0.1:${port}`, `localhost:${port}` ].includes(host) || c.req.raw.headers.has('origin')) return c.json({ error: { message: 'Forbidden local request' } }, 403);
     const endpoint = c.req.method === 'POST' ? inferenceEndpoints.get(c.req.path) : undefined;
     const tracked = endpoint !== undefined;
     const store = sources.diagnosticStore(), requestId = randomUUID(), started = Date.now(), startedMono = performance.now();
@@ -351,7 +356,6 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
     };
     return tracked ? withDiagnosticContext(context, run) : run();
   });
-  app.get('/dots/pair', c => pairDots(c.req.raw, options.dotsEnv ?? process.env));
   app.get('/v1/status', c => {
     c.header('Cache-Control', 'no-store');
     return c.json(sources.status());
@@ -388,7 +392,7 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
     try {
       const since = c.req.query('since'), until = c.req.query('until');
       const result = await store.metrics({ ...(since === undefined ? {} : { since: Number(since) }), ...(until === undefined ? {} : { until: Number(until) }) });
-      return c.json(result, result.coverage.available ? 200 : 503);
+      return c.json({ ...result, adapters: sources.auditAdapters() }, result.coverage.available ? 200 : 503);
     } catch { return c.json({ error: 'Invalid diagnostic metrics window' }, 400); }
   });
   app.get('/v1/diagnostics/traces/:id', async c => {

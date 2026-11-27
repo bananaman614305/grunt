@@ -4,6 +4,7 @@ RUN corepack enable
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY tsconfig.json ./
+COPY scripts/build.mjs ./scripts/
 COPY src ./src
 COPY registry ./registry
 COPY site/admin ./site/admin

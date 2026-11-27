@@ -5,12 +5,8 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createLocalApp, decode } from './api.js';
 import { Sources } from './source.js';
-import { configure } from './main.js';
-import { FreeLLMAPI, freeConfig } from './freellmapi.js';
 import { OpenCode } from './opencode.js';
-import { KILO_PARTICLE } from './kilo.js';
-import { BrowserSquire, ensureRouter, FreeLLMAdmin, setupProviders, guardRouterSharing } from './setup.js';
-import { recordDataSharingConsent } from './data-sharing.js';
+import { BrowserSquire, setupProviders } from './setup.js';
 import type * as Prompts from '@clack/prompts';
 import type { SetupSquire } from './setup.js';
 
@@ -24,38 +20,7 @@ beforeEach(async () => {
   vi.stubEnv('GRUNT_SQUIRE_XDG_CONFIG_HOME', '');
 });
 afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); await rm(stateDir, { recursive: true, force: true }); });
-const request = { model: 'freellmapi', messages: [{ role: 'user', content: 'hello' }], tools: [], cwd: '/tmp', stream: false };
-
-it.each([undefined, 100000])('routes the daemon free API through loopback FreeLLMAPI, preserves tools with budget %s', async maxTokens => {
-  const fetcher = vi.fn<typeof fetch>(async () => Response.json({ choices: [{ message: { content: 'routed reply' } }] }));
-  const app = createLocalApp(new Sources([new FreeLLMAPI({ key: 'synthetic', fetcher })]));
-  const response = await app.request('http://127.0.0.1:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...request, max_tokens: maxTokens, tools: [{ type: 'function', function: { name: 'read', parameters: {} } }] }) });
-  expect(response.status).toBe(200);
-  expect((await response.json()).choices[0].message.content).toBe('routed reply');
-  expect(fetcher.mock.calls).toHaveLength(1);
-  expect(fetcher.mock.calls[0]![0]).toBe('http://127.0.0.1:3001/v1/chat/completions');
-  expect(JSON.parse(String(fetcher.mock.calls[0]![1]?.body)).max_tokens).toBe(maxTokens);
-  expect(JSON.parse(String(fetcher.mock.calls[0]![1]?.body))).toMatchObject({ model: 'auto', tools: [{ function: { name: 'read' } }] });
-  expect(configure({ GRUNT_GATEWAY_URL: 'https://openrouter.ai/api/v1' }).sources.map(s => s.id)).not.toContain('gateway');
-  for (const url of ['https://openrouter.ai/api/v1', 'http://example.com/v1', 'http://localhost:3001/v1']) {
-    expect(() => new FreeLLMAPI({ url })).toThrow('loopback');
-  }
-});
-
-it('keeps upstream failures and credentials out of error text', async () => {
-  const api = new FreeLLMAPI({ key: 'synthetic', fetcher: async () => new Response('secret upstream payload', { status: 403 }) });
-  await expect(api.complete(request, AbortSignal.timeout(1000))).rejects.toMatchObject({ code: 'refused', message: 'FreeLLMAPI returned HTTP 403' });
-});
-
-it('registers only anonymous Kilo and never creates a retired Freebuff bridge fallback', () => {
-  const config = freeConfig();
-  expect(config.customProviders).toEqual([
-    { baseUrl: 'https://ai-gateway.kilo.ai/api/v1', apiKey: 'no-key', label: 'Kilo Free', models: [{ model: KILO_PARTICLE, supportsTools: true }] }
-  ]);
-  expect(config.routing.strategy).toBe('priority');
-  expect(config.fallback).toEqual([{ platform: 'custom', modelId: KILO_PARTICLE, endpoint: 'https://ai-gateway.kilo.ai/api/v1', priority: 999999 }]);
-  expect(config.fallback.map(f => f.platform)).not.toContain('openrouter');
-});
+const request = { model: 'opencode', cwd: '/tmp', stream: false, tools: [], messages: [{ role: 'user', content: 'hello' }] };
 
 it('types the exact latest OpenCode fixture message and reuses the session for follow-ups', async () => {
   const fixture = JSON.parse(await readFile(new URL('./fixtures/opencode.json', import.meta.url), 'utf8'));
@@ -105,9 +70,9 @@ function fakeSquire() {
   return squire;
 }
 
-it('sets up every free provider through the user Squire and imports keys only into FreeLLMAPI', async () => {
+it('provisions a free provider through the user Squire grant', async () => {
   const squire = fakeSquire(), imported: unknown[] = [], output: string[] = [];
-  await setupProviders(squire, { addGrant: async (platform, grant) => { imported.push({ platform, grant }); } }, { notify: line => output.push(line) });
+  await setupProviders(squire, { addGrant: async (platform, grant) => { imported.push({ platform, grant }); } }, { providers: ['groq'], notify: line => output.push(line) });
   expect(vi.mocked(squire.runs.start).mock.calls.map(([input]) => input.service)).toEqual(['groq']);
   expect(imported).toEqual(['groq'].map(platform => ({ platform, grant: { base_url: 'https://egress.squire.test/v1', token: `synthetic-${platform}` } })));
   expect(JSON.stringify(output)).not.toContain('synthetic-');
@@ -145,23 +110,6 @@ it('uses the local Squire browser driver and approved vault capture', async () =
   expect(call).toHaveBeenLastCalledWith('grant_app_access', { reference: 'vault://synthetic' });
 });
 
-it('preserves disabled providers and enables Kilo in the router chain', async () => {
-  const admin = new FreeLLMAdmin();
-  const call = vi.spyOn(admin, 'call').mockResolvedValue([
-    { modelDbId: 1, platform: 'groq', modelId: 'groq', priority: 1 },
-    { modelDbId: 2, platform: 'mistral', modelId: 'mistral', priority: 2 },
-    { modelDbId: 3, platform: 'nvidia', modelId: 'nvidia', priority: 3 },
-    { modelDbId: 4, platform: 'custom', modelId: 'kilo-auto/free', keyLabel: 'Kilo Free', priority: 4 }
-  ]);
-  await admin.configureChain(['groq'], ['kilo']);
-  expect(call).toHaveBeenCalledWith('/fallback', [
-    { modelDbId: 1, enabled: false, priority: 1 },
-    { modelDbId: 2, enabled: false, priority: 2 },
-    { modelDbId: 3, enabled: false, priority: 3 },
-    { modelDbId: 4, enabled: false, priority: 999999 }
-  ], 'PUT');
-});
-
 it.each([
   { reason: 'Provider denied automated account creation.', remaining: '' },
   { reason: 'Provider denied automated account creation.', remaining: 'API key: synthetic-private-value; password=short-secret; token https://example.test/?token=private; gsk_syntheticprivatevalue1234567890' },
@@ -194,34 +142,8 @@ it.each([
 it('preserves refusal details from rejected setup runs', async () => {
   const squire = fakeSquire();
   vi.mocked(squire.runs.start).mockResolvedValue({ decision: 'reject', reason: 'Free API access is unavailable in this region.', run: { id: 'groq', state: 'rejected' } });
-  await expect(setupProviders(squire, { addGrant: vi.fn() }, { notify: vi.fn() })).rejects.toThrow('Free API access is unavailable in this region.');
+  await expect(setupProviders(squire, { addGrant: vi.fn() }, { providers: ['groq'], notify: vi.fn() })).rejects.toThrow('Free API access is unavailable in this region.');
 });
-
-it('recovers an interrupted router installation using the supplied local admin credentials', async () => {
-  const run = vi.fn(async (args: string[]) => {
-    if (args[0] === 'inspect') throw Object.assign(new Error('missing'), { code: 1, stderr: 'Error: No such object: grunt-freellmapi' });
-    return { stdout: '' };
-  });
-  await ensureRouter('synthetic-password', 'synthetic-encryption', run);
-  expect(run.mock.calls.map(([args]) => args[0])).toEqual(['inspect', 'inspect', 'pull', 'run']);
-  expect(run.mock.calls[3]![0]).toContain('io.grunt.router=1');
-  expect(run.mock.calls[3]![0]).toContain('PROVIDER_TIMEOUT_CUSTOM=600000');
-  expect(JSON.stringify(run.mock.calls.map(([args]) => args))).not.toContain('synthetic-');
-  const unrelated = vi.fn(async () => ({ stdout: 'not-grunt' }));
-  await expect(ensureRouter('synthetic-password', 'synthetic-encryption', unrelated)).rejects.toThrow('belongs to another installation');
-  expect(unrelated).toHaveBeenCalledTimes(1);
-});
-
-it('registers the provider API path beneath a Squire egress root and rejects legacy bare-root entries', async () => {
-  const admin = new FreeLLMAdmin();
-  const call = vi.spyOn(admin, 'call').mockImplementation(async path => path === '/keys/custom/discover-models' ? { models: [{ id: 'openai/gpt-oss-120b' }] } : [{ id: 1, platform: 'custom', label: 'Grunt groq (Squire)', baseUrl: 'https://egress.test/g_123' }]);
-  expect(await admin.hasKey('groq')).toBe(false);
-  await admin.addGrant('groq', { base_url: 'https://egress.test/g_123', token: 'synthetic-grant' });
-  expect(call).toHaveBeenCalledWith('/keys/custom', expect.objectContaining({ baseUrl: 'https://egress.test/g_123/openai/v1', apiKey: 'synthetic-grant', models: [{ model: 'openai/gpt-oss-120b', supportsTools: true }] }));
-  call.mockImplementation(async path => path === '/keys/custom/discover-models' ? { models: [{ id: 'openai/gpt-oss-120b' }] } : [{ id: 1, platform: 'custom', label: 'Grunt groq (Squire)', baseUrl: 'https://egress.test/g_123/openai/v1', models: [{ modelId: 'openai/gpt-oss-120b' }] }]);
-  expect(await admin.hasKey('groq')).toBe(true);
-});
-
 
 it.each(['allow', { edit: 'ask', external_directory: { '*': 'allow' } }])('preserves inline permissions %j while denying outside access and closing the probe', async permission => {
   const pidFile = join(stateDir, 'probe.pid');
@@ -244,15 +166,6 @@ it.each(['allow', { edit: 'ask', external_directory: { '*': 'allow' } }])('prese
 });
 
 
-it.each([{ saved: [] }, { saved: ['kilo'] }])('adds only saved optional providers ($saved) without signup', async ({ saved }) => {
-  const squire = fakeSquire();
-  vi.mocked(squire.credentials.list).mockResolvedValue(saved.map(service => ({ service, reference: service, field_names: ['value'] })));
-  const addGrant = vi.fn();
-  await setupProviders(squire, { addGrant }, { providers: [], notify: vi.fn(), dataSharingApproved: ['kilo'] });
-  expect(addGrant.mock.calls.map(([provider]) => provider)).toEqual(saved);
-  expect(squire.runs.start).not.toHaveBeenCalled();
-});
-
 it.each([true, false])('explicit Kilo setup connects once, provisioning only when missing (%s)', async saved => {
   const squire = fakeSquire(), addGrant = vi.fn();
   if (saved) vi.mocked(squire.credentials.list).mockResolvedValue([{ service: 'kilo', reference: 'saved-kilo', field_names: ['value'] }]);
@@ -269,195 +182,4 @@ it('uses the Kilo profile and gateway grant metadata for explicit signup', async
   expect(call).toHaveBeenCalledWith('operate_drive', expect.objectContaining({
     url: 'https://app.kilo.ai/profile', goal: expect.stringContaining('api_hosts ["api.kilo.ai", "ai-gateway.kilo.ai"]')
   }));
-});
-
-it.each([true, false])('registers only exact Particle and refuses Auto/Nemotron fallback when absent (%s)', async particle => {
-  const admin = new FreeLLMAdmin();
-  const ids = [...(particle ? [KILO_PARTICLE] : []), 'nvidia/nemotron-3-ultra-550b-a55b:free', 'kilo-auto/free', 'stealth/glyph-cluster'];
-  const call = vi.spyOn(admin, 'call').mockImplementation(async path => path.includes('discover-models') ? { models: ids.map(id => ({ id })) } : []);
-  const operation = admin.addGrant('kilo', { base_url: 'https://egress.test/kilo', token: 'synthetic-grant' });
-  if (!particle) {
-    await expect(operation).rejects.toThrow('No supported chat model');
-    expect(call.mock.calls.some(([path]) => path === '/keys/custom')).toBe(false);
-    return;
-  }
-  await operation;
-  expect(call).toHaveBeenCalledWith('/keys/custom', {
-    baseUrl: 'https://egress.test/kilo/api/gateway', apiKey: 'synthetic-grant', label: 'Grunt kilo (Squire)',
-    models: [{ model: KILO_PARTICLE, supportsTools: true }]
-  });
-});
-
-it('enables only Particle on managed Kilo rows while preserving explicit custom routes', async () => {
-  const admin = new FreeLLMAdmin();
-  const call = vi.spyOn(admin, 'call').mockResolvedValue([
-    { modelDbId: 1, platform: 'custom', modelId: 'nvidia/nemotron-3-ultra-550b-a55b:free', keyLabel: 'Grunt kilo (Squire)', priority: 0 },
-    { modelDbId: 2, platform: 'custom', modelId: 'kilo-auto/free', keyLabel: 'Grunt kilo (Squire)', priority: 0 },
-    { modelDbId: 3, platform: 'custom', modelId: KILO_PARTICLE, keyLabel: 'Grunt kilo (Squire)', priority: 0 },
-    { modelDbId: 4, platform: 'custom', modelId: 'stealth/glyph-cluster', keyLabel: 'Kilo Free', priority: 0 },
-    { modelDbId: 5, platform: 'custom', modelId: 'kilo-auto/free', keyLabel: 'My provider', priority: 42, enabled: true }
-  ]);
-  await admin.configureChain([], ['kilo']);
-  expect(call).toHaveBeenCalledWith('/fallback', [
-    { modelDbId: 1, enabled: false, priority: 999999 }, { modelDbId: 2, enabled: false, priority: 999999 },
-    { modelDbId: 3, enabled: true, priority: 999999 }, { modelDbId: 4, enabled: false, priority: 999999 },
-    { modelDbId: 5, enabled: true, priority: 42 }
-  ], 'PUT');
-});
-
-it('refreshes a legacy Kilo grant missing Particle and reuses complete saved providers', async () => {
-  const admin = new FreeLLMAdmin();
-  let models = [{ modelId: 'kilo-auto/free' }];
-  vi.spyOn(admin, 'call').mockImplementation(async path => path.includes('discover-models')
-    ? { models: [{ id: KILO_PARTICLE }, { id: 'kilo-auto/free' }] }
-    : [{ id: 1, platform: 'custom', label: 'Grunt kilo (Squire)', baseUrl: 'https://egress.test/kilo/api/gateway', models }]);
-  expect(await admin.hasKey('kilo')).toBe(false);
-  models = [...models, { modelId: KILO_PARTICLE }];
-  expect(await admin.hasKey('kilo')).toBe(true);
-  const squire = fakeSquire(), addGrant = vi.fn();
-  await setupProviders(squire, { addGrant, hasKey: async () => true }, { providers: [], notify: vi.fn(), dataSharingApproved: ['kilo'] });
-  expect(addGrant).not.toHaveBeenCalled();
-  expect(squire.credentials.grant).not.toHaveBeenCalled();
-});
-
-function legacyParticleRouter(options: { failed?: boolean; missing?: boolean; customParticle?: boolean; managedParticle?: boolean } = {}) {
-  const keys = [
-    { id: 11, platform: 'custom', label: 'Kilo Free', baseUrl: 'https://ai-gateway.kilo.ai/api/v1', models: [{ modelId: 'kilo-auto/free' }] },
-    { id: 12, platform: 'custom', label: 'Grunt kilo (Squire)', baseUrl: 'https://egress.test/kilo/api/gateway', models: [{ modelId: 'nvidia/nemotron-3-ultra-550b-a55b:free' }] },
-    { id: 13, platform: 'custom', label: 'My custom route', baseUrl: 'https://custom.test/v1', models: [{ modelId: 'kilo-auto/free' }] },
-    { id: 14, platform: 'custom', label: 'Freebuff', baseUrl: 'http://127.0.0.1:8789/v1', models: [{ modelId: 'freebuff' }] }
-  ];
-  const rows = [
-    { modelDbId: 1, keyId: 11, platform: 'custom', modelId: 'kilo-auto/free', keyLabel: 'Kilo Free', priority: 9, enabled: true },
-    { modelDbId: 2, keyId: 12, platform: 'custom', modelId: 'nvidia/nemotron-3-ultra-550b-a55b:free', keyLabel: 'Grunt kilo (Squire)', priority: 10, enabled: true },
-    { modelDbId: 3, keyId: 13, platform: 'custom', modelId: 'kilo-auto/free', keyLabel: 'My custom route', priority: 42, enabled: true },
-    { modelDbId: 4, keyId: 14, platform: 'custom', modelId: 'freebuff', keyLabel: 'Freebuff', priority: 1000000, enabled: true }
-  ];
-  if (options.customParticle || options.managedParticle) {
-    keys[0]!.models.push({ modelId: KILO_PARTICLE });
-    rows.push({ modelDbId: 5, keyId: 11, platform: 'custom', modelId: KILO_PARTICLE, keyLabel: options.managedParticle ? 'Kilo Free' : 'My explicitly disabled Particle', priority: 12, enabled: false });
-  }
-  const admin = new FreeLLMAdmin();
-  const call = vi.spyOn(admin, 'call').mockImplementation(async (path, body, method) => {
-    if (path === '/auth/login') return { token: 'synthetic-login' };
-    if (path === '/keys' && method === 'GET') return structuredClone(keys);
-    if (path === '/fallback' && method === 'GET') return structuredClone(rows);
-    if (path === '/fallback' && method === 'PUT') {
-      for (const update of body as { modelDbId: number; enabled: boolean; priority: number }[]) Object.assign(rows.find(row => row.modelDbId === update.modelDbId)!, update);
-      return {};
-    }
-    if (path === '/keys/custom/discover-models') return { models: options.missing ? [{ id: 'kilo-auto/free' }] : [{ id: KILO_PARTICLE }, { id: 'kilo-auto/free' }] };
-    if (path === '/keys/custom') {
-      if (options.failed) throw new Error('Registration failed');
-      const keyId = (body as { keyId: number }).keyId, key = keys.find(key => key.id === keyId)!;
-      key.models.push({ modelId: KILO_PARTICLE });
-      const id = rows.length + 10;
-      rows.push({ modelDbId: id, keyId, platform: 'custom', modelId: KILO_PARTICLE, keyLabel: key.label, priority: 1000001, enabled: true });
-      return { modelDbId: id, model: KILO_PARTICLE, created: 1, models: [{ modelDbId: id, model: KILO_PARTICLE, created: true }] };
-    }
-    return {};
-  });
-  return { admin, call, rows, keys };
-}
-
-it('migrates existing owned endpoints by key ID before legacy forwarding without reading or replacing credentials', async () => {
-  const state = legacyParticleRouter();
-  await state.admin.migrateKiloModels(['kilo']);
-  await state.admin.migrateKiloModels(['kilo']);
-  const registrations = state.call.mock.calls.filter(([path]) => path === '/keys/custom');
-  expect(registrations.map(([, body]) => body)).toEqual([11, 12].map(keyId => ({ keyId, models: [{ model: KILO_PARTICLE }] })));
-  expect(state.rows.slice(0, 2).every(row => !row.enabled)).toBe(true);
-  expect(state.rows.filter(row => row.modelId === KILO_PARTICLE)).toHaveLength(2);
-  expect(state.rows.filter(row => row.modelId === KILO_PARTICLE).every(row => row.enabled && row.priority === 999999)).toBe(true);
-  expect(state.rows[2]).toMatchObject({ enabled: true, priority: 42 });
-  expect(state.call.mock.calls.some(([path, , method]) => method === 'DELETE' || path.includes('reveal'))).toBe(false);
-});
-
-it('legacy setup uses the same idempotent existing-key Particle migration', async () => {
-  const state = legacyParticleRouter();
-  await state.admin.ensureFreeFallbacks(['kilo']);
-  expect(state.call.mock.calls.filter(([path]) => path === '/keys/custom')).toHaveLength(2);
-  expect(state.rows.filter(row => row.modelId === KILO_PARTICLE).every(row => row.priority === 999999)).toBe(true);
-  expect(state.rows.find(row => row.keyLabel === 'Freebuff')).toMatchObject({ enabled: false, priority: 1000000 });
-  expect(state.keys.find(key => key.label === 'Freebuff')).toMatchObject({ id: 14, baseUrl: 'http://127.0.0.1:8789/v1', models: [{ modelId: 'freebuff' }] });
-});
-
-it('upgrades existing Kilo endpoints on the guarded legacy request path without another setup or provider signup', async () => {
-  const state = legacyParticleRouter();
-  vi.spyOn(FreeLLMAdmin.prototype, 'call').mockImplementation(state.call.getMockImplementation()!);
-  await writeFile(join(stateDir, 'router-admin.json'), JSON.stringify({ password: 'a'.repeat(64), encryption: 'b'.repeat(64) }), { mode: 0o600 });
-  await recordDataSharingConsent(stateDir, ['kilo', 'freebuff']);
-  await guardRouterSharing('http://127.0.0.1:3001/v1', stateDir);
-  expect(state.rows.slice(0, 2).every(row => !row.enabled)).toBe(true);
-  expect(state.rows.filter(row => row.modelId === KILO_PARTICLE)).toHaveLength(2);
-  expect(state.rows.filter(row => row.modelId === KILO_PARTICLE).every(row => row.enabled && row.priority === 999999)).toBe(true);
-  expect(state.rows[2]).toMatchObject({ enabled: true, priority: 42 });
-  expect(state.rows.find(row => row.keyLabel === 'Freebuff')).toMatchObject({ enabled: false });
-});
-
-it('quarantines retired Freebuff before a failing unrelated migration and preserves its saved key', async () => {
-  const state = legacyParticleRouter({ failed: true });
-  await expect(state.admin.ensureFreeFallbacks(['kilo', 'freebuff'])).rejects.toThrow('Registration failed');
-  expect(state.rows.find(row => row.keyLabel === 'Freebuff')).toMatchObject({ enabled: false, priority: 1000000 });
-  expect(state.keys.find(key => key.label === 'Freebuff')).toMatchObject({ id: 14, models: [{ modelId: 'freebuff' }] });
-  expect(state.call.mock.calls.some(([, , method]) => method === 'DELETE')).toBe(false);
-});
-
-it('quarantines old owned rows without adding Particle until current consent is approved', async () => {
-  const state = legacyParticleRouter();
-  await state.admin.ensureFreeFallbacks([]);
-  expect(state.rows.slice(0, 2).every(row => !row.enabled)).toBe(true);
-  expect(state.call.mock.calls.some(([path]) => path === '/keys/custom')).toBe(false);
-  expect(state.rows[2]).toMatchObject({ enabled: true, priority: 42 });
-});
-
-it('leaves an existing custom disabled Particle row untouched during managed endpoint migration', async () => {
-  const state = legacyParticleRouter({ customParticle: true });
-  await state.admin.migrateKiloModels(['kilo']);
-  expect(state.call.mock.calls.filter(([path]) => path === '/keys/custom').map(([, body]) => (body as { keyId: number }).keyId)).toEqual([12]);
-  expect(state.rows.find(row => row.modelDbId === 5)).toMatchObject({ enabled: false, priority: 12, keyLabel: 'My explicitly disabled Particle' });
-});
-
-it('preserves a disabled managed Particle row and its custom priority during migration and repeat setup', async () => {
-  const state = legacyParticleRouter({ managedParticle: true });
-  await state.admin.migrateKiloModels(['kilo']);
-  expect(state.rows.find(row => row.modelDbId === 5)).toMatchObject({ enabled: false, priority: 12, keyLabel: 'Kilo Free' });
-  await state.admin.configureChain([], ['kilo']);
-  expect(state.rows.find(row => row.modelDbId === 5)).toMatchObject({ enabled: false, priority: 12, keyLabel: 'Kilo Free' });
-});
-
-it('preserves a custom disabled Particle row created while catalog discovery is pending', async () => {
-  const state = legacyParticleRouter();
-  const original = state.call.getMockImplementation()!;
-  let release!: () => void;
-  const discovery = new Promise<void>(resolve => { release = resolve; });
-  let discovering = false;
-  state.call.mockImplementation(async (path, body, method) => {
-    if (path === '/keys/custom/discover-models' && (body as { keyId: number }).keyId === 11) {
-      discovering = true; await discovery;
-      return { models: [{ id: KILO_PARTICLE }] };
-    }
-    if (path === '/keys/custom' && (body as { keyId: number }).keyId === 11) {
-      return { modelDbId: 5, model: KILO_PARTICLE, created: 0, models: [{ modelDbId: 5, model: KILO_PARTICLE, created: false }] };
-    }
-    return original(path, body, method);
-  });
-  const migration = state.admin.migrateKiloModels(['kilo']);
-  await vi.waitFor(() => expect(discovering).toBe(true));
-  state.keys[0]!.models.push({ modelId: KILO_PARTICLE });
-  state.keys.push({ id: 15, platform: 'custom', label: 'Concurrent custom Particle', baseUrl: state.keys[0]!.baseUrl, models: [{ modelId: KILO_PARTICLE }] });
-  state.rows.push({ modelDbId: 5, keyId: 15, platform: 'custom', modelId: KILO_PARTICLE, keyLabel: 'Concurrent custom Particle', priority: 17, enabled: false });
-  release(); await migration;
-  expect(state.rows.find(row => row.modelDbId === 5)).toMatchObject({ enabled: false, priority: 17, keyLabel: 'Concurrent custom Particle' });
-  const updates = state.call.mock.calls.filter(([path, , method]) => path === '/fallback' && method === 'PUT').flatMap(([, body]) => body as { modelDbId: number }[]);
-  expect(updates.some(row => row.modelDbId === 5)).toBe(false);
-});
-
-it.each([{ failed: true }, { missing: true }])('never leaves Auto or Nemotron enabled if Particle migration cannot finish (%j)', async options => {
-  const state = legacyParticleRouter(options);
-  if (options.failed) await expect(state.admin.migrateKiloModels(['kilo'])).rejects.toThrow('Registration failed');
-  else await state.admin.migrateKiloModels(['kilo']);
-  expect(state.rows.slice(0, 2).every(row => !row.enabled)).toBe(true);
-  expect(state.rows[2]).toMatchObject({ enabled: true, priority: 42 });
-  expect(state.call.mock.calls.some(([, body]) => typeof body === 'object' && body !== null && Object.hasOwn(body, 'apiKey'))).toBe(false);
 });

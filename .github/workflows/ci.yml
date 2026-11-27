@@ -37,3 +37,6 @@ jobs:
       - id: build
         if: ${{ !cancelled() }}
         run: pnpm build
+      - name: Start the daemon offline without node_modules
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: node scripts/smoke-daemon.mjs

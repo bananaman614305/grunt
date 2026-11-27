@@ -7,11 +7,14 @@ import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { beginSetupSession } from './setup-session.js';
-import { configRoot, gruntEnv } from '../brand.js';
+import { gruntEnv } from '../brand.js';
+import { bootoutService, installedConfigRoot, legacyService, migrateServiceEnvironment, prepareServiceMigration } from './service-migration.js';
 import { serviceEnvironment, serviceEnvironmentTokens as environmentTokens } from './service-environment.js';
 import { migrateManagedPiWorkingContext } from './harnesses.js';
 import { migrateAutomaticPool } from './automatic-pool.js';
-import { localRuntimeDependencies } from './runtime-dependencies.js';
+import { copyDaemon, daemonFile, legacyDaemonFile } from './daemon-files.js';
+import { hasOwnerMode } from './private-file.js';
+import { startWindowsService, stopWindowsService, windowsService, writeWindowsLauncher } from './windows-service.js';
 
 const execute = promisify(execFile);
 const LATEST = 'https://registry.npmjs.org/usegrunt/latest';
@@ -20,10 +23,10 @@ const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 export type UpdateRun = (binary: string, args: string[], options?: { signal?: AbortSignal; timeout?: number; env?: NodeJS.ProcessEnv }) => Promise<string>;
 export interface UpdateOptions {
   env?: NodeJS.ProcessEnv; directory?: string; fetcher?: typeof fetch; run?: UpdateRun;
-  signal?: AbortSignal; platform?: 'linux' | 'darwin'; notify?: (line: string) => void;
+  signal?: AbortSignal; platform?: 'linux' | 'darwin' | 'win32'; notify?: (line: string) => void;
   now?: () => number; wait?: (ms: number, signal: AbortSignal) => Promise<void>;
 }
-interface Service { identity: string; port: number; node: string; active: boolean; automaticSources?: string[]; stop(): Promise<void>; start(): Promise<void> }
+interface Service { identity: string; port: number; node: string; entry: string; active: boolean; automaticSources?: string[]; windowsEnv?: Record<string, string>; migration?: Awaited<ReturnType<typeof prepareServiceMigration>>; stop(): Promise<void>; start(): Promise<void> }
 const failed = (message: string) => new Error(message);
 const runCommand: UpdateRun = async (binary, args, options = {}) => {
   try { return (await execute(binary, args, { ...options, timeout: options.timeout ?? 30000, maxBuffer: 2 * 1024 * 1024 })).stdout; }
@@ -35,21 +38,36 @@ function port(value: string | undefined) {
 }
 async function privateDirectory(path: string) {
   const stat = await lstat(path);
-  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o700) throw failed('Grunt update requires a private, owned installation directory');
+  if (!stat.isDirectory() || stat.isSymbolicLink() || !hasOwnerMode(stat, 0o700)) throw failed('Grunt update requires a private, owned installation directory');
 }
 function unquote(value: string) { return value.replace(/^"(.*)"$/, '$1'); }
 function systemdDecode(value: string) { return value.replace(/\\x([a-fA-F0-9]{2})/g, (_match, hex: string) => String.fromCharCode(parseInt(hex, 16))); }
-function escaped(value: string) { return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 async function serviceInfo(directory: string, platform: string, run: UpdateRun, env: NodeJS.ProcessEnv, signal: AbortSignal): Promise<Service> {
-  const entry = join(directory, 'runtime', 'dist', 'local', 'main.js');
+  const entry = join(directory, 'runtime', daemonFile);
+  const supportedEntries = [entry, join(directory, 'runtime', legacyDaemonFile)];
   const opts = { env, signal };
+  if (platform === 'win32') {
+    const task = await windowsService(directory, (binary, args) => run(binary, args, opts));
+    if (!task) throw failed('No installed Grunt task was found; run npx usegrunt setup first');
+    if (task.state === 2) throw failed('The Grunt task is queued; retry the update after it settles');
+    const command = (binary: string, args: string[]) => run(binary, args, { env });
+    const automaticSources = task.environment.GRUNT_DAEMON === '1' ? task.environment.GRUNT_SOURCES?.split(',').filter(Boolean) : undefined;
+    return {
+      identity: task.identity, node: task.node, entry, active: task.state === 4, port: port(task.environment.GRUNT_PORT),
+      windowsEnv: task.environment, ...(automaticSources ? { automaticSources } : {}),
+      stop: () => stopWindowsService(directory, command),
+      start: () => startWindowsService(directory, command),
+    };
+  }
+  const recoveryRun = (binary: string, args: string[]) => run(binary, args, { env, timeout: 210000 });
   if (platform === 'linux') {
     const properties = ['LoadState', 'ExecStart', 'Environment', 'EnvironmentFiles', 'UnsetEnvironment', 'ActiveState'];
-    const candidates = await Promise.all(['grunt.service', 'milo.service'].map(async identity => {
+    const candidates = await Promise.all(['grunt.service', `${legacyService}.service`].map(async identity => {
       const values = await Promise.all(properties.map(property => run('systemctl', ['--user', 'show', identity, '-p', property, '--value'], opts))).catch(() => undefined);
       if (!values || values[0]?.trim() !== 'loaded') return;
-      const effective = serviceEnvironment(values[2] ?? '');
-      return { identity, values, effective };
+      const original = serviceEnvironment(values[2] ?? '');
+      const legacy = identity === `${legacyService}.service`;
+      return { identity, values, effective: legacy ? migrateServiceEnvironment(original) : original, original, legacy };
     }));
     const loaded = candidates.filter(candidate => candidate !== undefined);
     const matching = loaded.filter(candidate => {
@@ -59,28 +77,35 @@ async function serviceInfo(directory: string, platform: string, run: UpdateRun, 
     if (matching.length > 1) throw failed('Multiple Grunt services own this configuration directory; stop the duplicate before updating');
     const selectedService = matching[0];
     if (!selectedService) throw failed(loaded.length ? 'The Grunt service uses a different configuration directory; its runtime was not changed' : 'No installed Grunt service was found; run npx usegrunt setup first');
-    const { identity, effective } = selectedService;
+    const { identity, effective, original, legacy } = selectedService;
     const [, rawExec, , files, unset, state] = selectedService.values as [string, string, string, string, string, string];
     const exec = systemdDecode(rawExec), node = unquote(exec.match(/(?:^|[ {])path=([^;]+);/)?.[1]?.trim() ?? '');
     const argv = exec.match(/argv\[\]=(.*?);/)?.[1]?.trim();
-    if (!node.startsWith('/') || !['node', 'nodejs'].includes(basename(node)) || !new RegExp(`(?:^|[\\s"'])${escaped(entry)}(?=$|[\\s"';])`).test(exec)
-      || ![`${node} ${entry}`, `"${node}" "${entry}"`, `${node} "${entry}"`, `"${node}" ${entry}`].includes(argv ?? '')) {
+    const managedEntry = supportedEntries.find(file => [`${node} ${file}`, `"${node}" "${file}"`, `${node} "${file}"`, `"${node}" ${file}`].includes(argv ?? ''));
+    if (!node.startsWith('/') || !['node', 'nodejs'].includes(basename(node)) || !managedEntry) {
       throw failed('The existing Grunt service does not use the managed runtime; its configuration was not changed');
     }
     // Environment files or explicit removals can override Environment. Refuse
     // an ambiguous endpoint rather than probing another project's port.
-    if (files.trim() || environmentTokens(unset).some(value => ['GRUNT_PORT', 'GRUNT_CONFIG_DIR', 'MILO_PORT', 'MILO_CONFIG_DIR'].some(name => value === name || value.startsWith(name + '=')))) throw failed('The installed Grunt port uses an unsupported environment override; its configuration was not changed');
+    const removedSettings = environmentTokens(unset).map(value => value.split('=', 1)[0]!);
+    const removed = Object.fromEntries(removedSettings.map(name => [name, '1']));
+    const normalizedRemoved = legacy ? migrateServiceEnvironment(removed) : removed;
+    if (files.trim() || normalizedRemoved.GRUNT_PORT || normalizedRemoved.GRUNT_CONFIG_DIR) throw failed('The installed Grunt port uses an unsupported environment override; its configuration was not changed');
     const selected = port(gruntEnv('PORT', effective));
     if (!['active', 'inactive', 'failed'].includes(state.trim())) throw failed('The Grunt service is changing state; retry the update after it settles');
-    const selectionOverride = environmentTokens(unset).some(value => /^(?:GRUNT|MILO)_(?:SOURCES|DAEMON)(?:=|$)/.test(value));
+    const selectionOverride = normalizedRemoved.GRUNT_SOURCES || normalizedRemoved.GRUNT_DAEMON;
     const automaticSources = !selectionOverride && gruntEnv('DAEMON', effective) === '1' ? gruntEnv('SOURCES', effective)?.split(',').map(id => id.trim()).filter(Boolean) : undefined;
-    return { identity, port: selected, node, active: state.trim() === 'active', ...(automaticSources ? { automaticSources } : {}),
+    const property = (name: string) => run('systemctl', ['--user', 'show', identity, '-p', name, '--value'], opts).then(value => value.trim());
+    const migration = legacy ? await prepareServiceMigration({ platform, file: await property('FragmentPath'),
+      node, entry: managedEntry, effective: migrateServiceEnvironment(original), original, enabled: await property('UnitFileState'), run: recoveryRun }) : undefined;
+    return { identity, port: selected, node, entry: managedEntry, active: state.trim() === 'active', ...(automaticSources ? { automaticSources } : {}),
+      ...(migration ? { migration } : {}),
       stop: () => run('systemctl', ['--user', 'stop', identity], { env, timeout: 210000 }).then(() => {}),
       start: () => run('systemctl', ['--user', 'start', identity], { env }).then(() => {}) };
   }
   const domain = `gui/${process.getuid!()}`;
   const readVariable = (plist: string, name: string) => run('plutil', ['-extract', `EnvironmentVariables.${name}`, 'raw', '-o', '-', plist], opts).then(value => value.replace(/\r?\n$/, '')).catch(() => undefined);
-  const candidates = await Promise.all(['ai.grunt.service', 'ai.milo.service'].map(async identity => {
+  const candidates = await Promise.all(['ai.grunt.service', `ai.${legacyService}.service`].map(async identity => {
     const target = `${domain}/${identity}`;
     const print = await run('launchctl', ['print', target], opts).catch(() => undefined);
     if (print === undefined) return;
@@ -88,42 +113,37 @@ async function serviceInfo(directory: string, platform: string, run: UpdateRun, 
     if (!plist.startsWith('/')) throw failed('No installed Grunt service was found; run npx usegrunt setup first');
     const stat = await lstat(plist);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o022)) throw failed('The existing Grunt service file is unsafe');
-    const primary = await readVariable(plist, 'GRUNT_CONFIG_DIR');
-    const stateDirectory = primary ?? await readVariable(plist, 'MILO_CONFIG_DIR');
-    return { identity, target, print, plist, stateDirectory };
+    const legacy = identity === `ai.${legacyService}.service`;
+    const original: NodeJS.ProcessEnv | undefined = legacy
+      ? JSON.parse(await run('plutil', ['-extract', 'EnvironmentVariables', 'json', '-o', '-', plist], opts)) : undefined;
+    const effective = original ? migrateServiceEnvironment(original) : undefined;
+    const stateDirectory = effective?.GRUNT_CONFIG_DIR ?? await readVariable(plist, 'GRUNT_CONFIG_DIR');
+    return { identity, print, plist, stateDirectory, original, effective };
   }));
   const loaded = candidates.filter(candidate => candidate !== undefined);
   const matching = loaded.filter(candidate => candidate.stateDirectory?.startsWith('/') && resolve(candidate.stateDirectory) === directory);
   if (matching.length > 1) throw failed('Multiple Grunt services own this configuration directory; stop the duplicate before updating');
   const selectedService = matching[0];
   if (!selectedService) throw failed(loaded.length ? 'The Grunt service uses a different configuration directory; its runtime was not changed' : 'No installed Grunt service was found; run npx usegrunt setup first');
-  const { identity, target, print, plist } = selectedService;
+  const { identity, print, plist, original, effective } = selectedService;
   // Loaded waiting/exited KeepAlive jobs can restart themselves during a
   // filesystem swap. Support running jobs only until their intent can be
   // distinguished safely from an intentionally paused launchd service.
   if (!/^\s*state = running\s*$/m.test(print)) throw failed('Start the installed Grunt macOS service before updating; its configuration was not changed');
   // plutil preserves paths containing spaces without evaluating shell text.
-  const [argumentsText, portText] = await Promise.all([
+  const readSetting = (name: string) => effective ? effective['GRUNT_' + name] : readVariable(plist, 'GRUNT_' + name);
+  const [argumentsText, portText, managed, selected] = await Promise.all([
     run('plutil', ['-extract', 'ProgramArguments', 'json', '-o', '-', plist], opts),
-    readVariable(plist, 'GRUNT_PORT').then(value => value ?? readVariable(plist, 'MILO_PORT'))
+    readSetting('PORT'), readSetting('DAEMON'), readSetting('SOURCES')
   ]);
   let args: unknown; try { args = JSON.parse(argumentsText); } catch { throw failed('The existing Grunt service arguments could not be verified'); }
-  if (!Array.isArray(args) || args.length !== 2 || typeof args[0] !== 'string' || !args[0].startsWith('/') || !['node', 'nodejs'].includes(basename(args[0])) || args[1] !== entry) throw failed('The existing Grunt service does not use the managed runtime; its configuration was not changed');
-  const readSetting = (name: string) => readVariable(plist, 'GRUNT_' + name).then(value => value ?? readVariable(plist, 'MILO_' + name));
-  const managed = await readSetting('DAEMON'), selected = await readSetting('SOURCES');
+  if (!Array.isArray(args) || args.length !== 2 || typeof args[0] !== 'string' || !args[0].startsWith('/') || !['node', 'nodejs'].includes(basename(args[0])) || !supportedEntries.includes(args[1])) throw failed('The existing Grunt service does not use the managed runtime; its configuration was not changed');
   const automaticSources = managed === '1' ? selected?.split(',').map(id => id.trim()).filter(Boolean) : undefined;
-  return { identity, port: port(portText), node: args[0], active: true, ...(automaticSources ? { automaticSources } : {}),
-    stop: async () => {
-      try { await run('launchctl', ['bootout', target], { env, timeout: 210000 }); }
-      catch {
-        // A previous bootout may have succeeded before cancellation, or a
-        // failed bootstrap may never have registered its replacement. Only
-        // treat this as stopped when the live domain confirms no such job.
-        const listing = await run('launchctl', ['print', domain], { env });
-        if (!new RegExp(`^${escaped(domain)} = \\{`).test(listing) || !/^\s*services = \{\s*$/m.test(listing)
-          || listing.includes(identity)) throw failed('Could not confirm the Grunt macOS service is stopped');
-      }
-    },
+  const migration = original && effective ? await prepareServiceMigration({ platform: 'darwin', file: plist,
+    node: args[0], entry: args[1], effective, original, run: recoveryRun }) : undefined;
+  return { identity, port: port(portText), node: args[0], entry: args[1], active: true, ...(automaticSources ? { automaticSources } : {}),
+    ...(migration ? { migration } : {}),
+    stop: () => bootoutService(recoveryRun, domain, identity),
     start: () => run('launchctl', ['bootstrap', domain, plist], { env }).then(() => {}) };
 }
 async function bytes(response: Response, limit: number, signal: AbortSignal) {
@@ -174,14 +194,18 @@ async function status(fetcher: typeof fetch, selected: number, signal: AbortSign
   return { legacy: false, active: Number(body.activeRequests) };
 }
 
-/** Refresh the managed backend without rerunning signup or rewriting its unit. */
+/** Refresh the managed backend without rerunning signup. */
 export async function updateRuntime(options: UpdateOptions = {}): Promise<{ version: string; port: number; backup: string; active: boolean }> {
   options.signal?.throwIfAborted();
   const env = options.env ?? process.env, platform = options.platform ?? process.platform;
-  if (!['linux', 'darwin'].includes(platform)) throw failed('Grunt update requires Linux with systemd or macOS with launchd');
-  const directory = resolve(options.directory ?? configRoot(env));
+  if (!['linux', 'darwin', 'win32'].includes(platform)) throw failed('Grunt update requires Linux with systemd, macOS with launchd, or Windows with Task Scheduler');
+  const directory = resolve(options.directory ?? installedConfigRoot(env));
   const runtime = join(directory, 'runtime');
-  try { await privateDirectory(directory); await privateDirectory(runtime); await access(join(runtime, 'dist/local/main.js'), constants.R_OK); }
+  try {
+    await privateDirectory(directory);
+    await privateDirectory(runtime);
+    await access(join(runtime, daemonFile), constants.R_OK).catch(() => access(join(runtime, legacyDaemonFile), constants.R_OK));
+  }
   catch { throw failed('No safe installed Grunt runtime was found; run npx usegrunt setup first'); }
   const lease = await beginSetupSession(directory, []);
   const cancellation = new AbortController(), cancel = () => cancellation.abort(failed('Grunt update cancelled'));
@@ -191,7 +215,7 @@ export async function updateRuntime(options: UpdateOptions = {}): Promise<{ vers
   const preparationEnv = { ...env };
   // Staging must not execute caller-provided tar hooks or Node preloads. The
   // actual service retains its own unchanged environment and interpreter.
-  for (const key of ['TAR_OPTIONS', 'NODE_OPTIONS', 'NODE_PATH']) delete preparationEnv[key];
+  for (const key of Object.keys(preparationEnv)) if (['TAR_OPTIONS', 'NODE_OPTIONS', 'NODE_PATH'].includes(platform === 'win32' ? key.toUpperCase() : key)) delete preparationEnv[key];
   const now = options.now ?? Date.now, wait = options.wait ?? ((ms, signal) => delay(ms, undefined, { signal }));
   const notify = (message: string) => { try { options.notify?.(message); } catch { /* Progress output must not interrupt a runtime transaction. */ } };
   const migratePi = async (port: number) => {
@@ -203,11 +227,12 @@ export async function updateRuntime(options: UpdateOptions = {}): Promise<{ vers
     }
   };
   let temporary: string | undefined, backup: string | undefined, stopped = false, swapped = false;
-  let service: Service | undefined;
+  let service: Service | undefined, migration: Service['migration'];
   let rollbackSelection: (() => Promise<void>) | undefined;
   try {
     signal.throwIfAborted();
     service = await serviceInfo(directory, platform, run, env, signal);
+    await access(service.entry, constants.R_OK);
     notify('Fetching the latest Grunt release from npm');
     const download = await latest(fetcher, AbortSignal.any([signal, AbortSignal.timeout(60000)]));
     signal.throwIfAborted();
@@ -217,21 +242,34 @@ export async function updateRuntime(options: UpdateOptions = {}): Promise<{ vers
     const [names, verbose] = await Promise.all([run('tar', ['-tzf', archive], { env: preparationEnv, signal }), run('tar', ['-tvzf', archive], { env: preparationEnv, signal })]);
     vetArchive(names, verbose);
     await run('tar', ['-xzf', archive, '-C', unpacked], { env: preparationEnv, signal });
-    const candidate = join(unpacked, 'package'); await chmod(candidate, 0o700);
-    const manifest = JSON.parse(await readFile(join(candidate, 'package.json'), 'utf8')) as { name?: unknown; version?: unknown; type?: unknown; dependencies?: unknown };
-    if (manifest.name !== 'usegrunt' || manifest.version !== download.version || manifest.type !== 'module' || !manifest.dependencies || typeof manifest.dependencies !== 'object' || Array.isArray(manifest.dependencies)) throw failed('The downloaded Grunt package does not match its release metadata');
-    if (Object.entries(manifest.dependencies).some(([name, version]) => !/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/.test(name)
-      || typeof version !== 'string' || !version.trim() || version.length > 256 || !/^[0-9A-Za-z.*^~<>=| +_-]+$/.test(version))) throw failed('The downloaded Grunt package has an unsupported dependency source');
-    const runtimeDependencies = localRuntimeDependencies(manifest.dependencies as Record<string, string>);
-    await writeFile(join(candidate, 'package.json'), JSON.stringify({ name: 'grunt-runtime', version: download.version, private: true, type: 'module', dependencies: runtimeDependencies }), { mode: 0o600 });
+    const pkg = join(unpacked, 'package');
+    const manifest = JSON.parse(await readFile(join(pkg, 'package.json'), 'utf8')) as { name?: unknown; version?: unknown; type?: unknown; dependencies?: unknown };
+    if (manifest.name !== 'usegrunt' || manifest.version !== download.version || manifest.type !== 'module') throw failed('The downloaded Grunt package does not match its release metadata');
     notify(`Preparing Grunt ${download.version}`);
-    await run('npm', ['install', '--prefix', candidate, '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--workspaces=false', '--registry=https://registry.npmjs.org'], { env: preparationEnv, signal, timeout: 300000 });
+    const bundled = service.entry === join(runtime, daemonFile);
+    const candidate = bundled ? join(temporary, 'runtime') : pkg;
+    if (bundled) {
+      await mkdir(candidate, { mode: 0o700 });
+      await copyDaemon(join(pkg, 'dist'), candidate, signal);
+      if (service.windowsEnv) await writeWindowsLauncher(candidate, service.windowsEnv);
+    } else {
+      // Older unit files still execute the installed CLI. Keep their runtime
+      // layout until setup migrates the service's entry point.
+      await chmod(candidate, 0o700);
+      if (!manifest.dependencies || typeof manifest.dependencies !== 'object' || Array.isArray(manifest.dependencies)
+        || Object.entries(manifest.dependencies).some(([name, version]) => !/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/.test(name)
+          || typeof version !== 'string' || !version.trim() || version.length > 256 || !/^[0-9A-Za-z.*^~<>=| +_-]+$/.test(version))) throw failed('The downloaded Grunt package has an unsupported dependency source');
+      await writeFile(join(candidate, 'package.json'), JSON.stringify({ name: 'grunt-runtime', version: download.version, private: true, type: 'module', dependencies: manifest.dependencies }), { mode: 0o600 });
+      await run('npm', ['install', '--prefix', candidate, '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--workspaces=false', '--registry=https://registry.npmjs.org'], { env: preparationEnv, signal, timeout: 300000 });
+    }
     // Import without executing the CLI guard, including older releases where
     // --help could accidentally start another daemon.
-    await run(service.node, ['--input-type=module', '-e', 'process.argv[1]="";await import(process.argv[2]);', '-', pathToFileURL(join(candidate, 'dist/local/main.js')).href], { env: preparationEnv, signal });
+    await run(service.node, ['--input-type=module', '-e', 'process.argv[1]="";await import(process.argv[2]);', '-', pathToFileURL(join(candidate, bundled ? daemonFile : legacyDaemonFile)).href], { env: preparationEnv, signal });
     const currentService = await serviceInfo(directory, platform, run, env, signal);
-    if (currentService.identity !== service.identity || currentService.port !== service.port || currentService.node !== service.node || currentService.active !== service.active
+    if (currentService.identity !== service.identity || currentService.port !== service.port || currentService.node !== service.node || currentService.entry !== service.entry || currentService.active !== service.active
+      || JSON.stringify(currentService.windowsEnv) !== JSON.stringify(service.windowsEnv)
       || currentService.automaticSources?.join(',') !== service.automaticSources?.join(',')) throw failed('The Grunt service changed while preparing the update; retry without changing its configuration');
+    service = currentService;
     const deadline = now() + 180000;
     for (; service.active;) {
       signal.throwIfAborted();
@@ -251,12 +289,16 @@ export async function updateRuntime(options: UpdateOptions = {}): Promise<{ vers
     signal.throwIfAborted();
     rollbackSelection = await migrateAutomaticPool(directory, service.automaticSources);
     signal.throwIfAborted();
+    migration = service.migration;
+    if (migration) { await migration.apply(); signal.throwIfAborted(); }
     if (!service.active) {
+      await migration?.finish();
       notify(`Grunt ${download.version} is installed; the service remains stopped`);
       await migratePi(service.port);
       return { version: download.version, port: service.port, backup, active: false };
     }
-    await service.start();
+    if (migration) await migration.start();
+    else await service.start();
     const readyBy = now() + 30000; let ready = false;
     while (now() < readyBy) {
       signal.throwIfAborted();
@@ -264,6 +306,7 @@ export async function updateRuntime(options: UpdateOptions = {}): Promise<{ vers
       await wait(250, signal);
     }
     if (!ready) throw failed('The updated Grunt daemon did not become ready');
+    await migration?.finish();
     notify(`Grunt ${download.version} is ready on port ${service.port}`);
     await migratePi(service.port);
     return { version: download.version, port: service.port, backup, active: true };
@@ -271,7 +314,8 @@ export async function updateRuntime(options: UpdateOptions = {}): Promise<{ vers
     if (rollbackSelection) await rollbackSelection().catch(() => notify('Automatic source selection cleanup needs attention; restoring the previous runtime'));
     if ((stopped || swapped) && service) {
       try {
-        if (stopped) await service.stop();
+        if (migration) await migration.restore();
+        else if (stopped) await service.stop();
         if (swapped && backup) { await rename(runtime, join(directory, `runtime-failed-${randomUUID()}`)); await rename(backup, runtime); }
         if (stopped) await service.start();
       } catch { throw failed('Grunt update failed and the previous service could not be restarted; the saved runtime backup was retained'); }

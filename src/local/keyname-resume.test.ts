@@ -3,7 +3,7 @@ import { BrowserSquire } from './setup.js';
 
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
-const zroInput = { service: 'zro', plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none', idempotency_key: 'milo-free-zro' };
+const zroInput = { service: 'zro', plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none', idempotency_key: 'grunt-free-zro' };
 const question = 'Choose one current target key, or DONE, BLOCKED, NONE_OF_THESE, or WAIT.';
 // Squire 1.1.62's handoff for Zro's create-key dialog (trace row 588), trimmed.
 const unsure = (url: string, field: string, slug: string) => ({

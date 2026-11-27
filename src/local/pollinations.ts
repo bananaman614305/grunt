@@ -1,8 +1,9 @@
+import { hasOwnerMode, openPrivateFile } from './private-file.js';
 import { observeAttemptDispatch, diagnosticFetch } from './diagnostics.js';
 import type { SafeDiagnosticMetadata } from './diagnostics.js';
 import { configRoot } from '../brand.js';
 import { constants } from 'node:fs';
-import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { compileToolSchemas } from './tool-schema.js';
@@ -69,9 +70,9 @@ export async function readPollinationsGrant(
 ): Promise<PollinationsGrant> {
   let file;
   try {
-    file = await open(pollinationsGrantPath(location), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    file = await openPrivateFile(pollinationsGrantPath(location), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const stat = await file.stat();
-    if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.size > 32768) throw rejected();
+    if (!stat.isFile() || !hasOwnerMode(stat, 0o600) || stat.size > 32768) throw rejected();
     const raw = object(JSON.parse(await file.readFile('utf8')));
     const vaulted = await readVaultGrant('pollinations', location, env);
     if (raw.credential_source === 'vault') {

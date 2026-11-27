@@ -1,6 +1,7 @@
+import { hasOwnerMode, openPrivateFile } from './private-file.js';
 import { configRoot } from '../brand.js';
 import { constants } from 'node:fs';
-import { mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { FreeApi, isDeepSeekV41Model } from './free-api.js';
@@ -32,10 +33,10 @@ function validate(value: unknown): ZroGrant {
   return { base_url, token: grant.token, free_account_verified: true, verified_at: grant.verified_at, credential_sha256: expected };
 }
 export async function readZroGrant(location = directory(), env: NodeJS.ProcessEnv = process.env): Promise<ZroGrant> {
-  const file = await open(join(location, 'zro.json'), constants.O_RDONLY | constants.O_NOFOLLOW);
+  const file = await openPrivateFile(join(location, 'zro.json'), constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = await file.stat();
-    if (!stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.uid !== process.getuid?.()) throw new Error('Unsafe Zro grant file');
+    if (!stat.isFile() || !hasOwnerMode(stat, 0o600)) throw new Error('Unsafe Zro grant file');
     const raw = JSON.parse(await file.readFile('utf8')) as Record<string, unknown>;
     const vaulted = await readVaultGrant('zro', location, env);
     if (raw && typeof raw === 'object' && !Array.isArray(raw) && raw.credential_source === 'vault') {

@@ -1,6 +1,7 @@
+import { hasOwnerMode, openPrivateFile } from './private-file.js';
 import { configRoot } from '../brand.js';
 import { constants } from 'node:fs';
-import { open } from 'node:fs/promises';
+
 import { join } from 'node:path';
 import { readDataSharingConsent } from './data-sharing.js';
 import { diagnosticFetch, observeAttemptDispatch } from './diagnostics.js';
@@ -24,10 +25,10 @@ interface CatalogEntry {
 async function readGrant(directory: string, env: NodeJS.ProcessEnv = process.env) {
   const vaulted = await readVaultGrant('kenari', directory, env);
   if (vaulted) return validateProviderGrant({ base_url: vaulted.base_url, token: vaulted.token });
-  const file = await open(join(directory, 'kenari.json'), constants.O_RDONLY | constants.O_NOFOLLOW);
+  const file = await openPrivateFile(join(directory, 'kenari.json'), constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = await file.stat();
-    if (!stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.uid !== process.getuid?.()) throw new Error('Unsafe Kenari grant file');
+    if (!stat.isFile() || !hasOwnerMode(stat, 0o600)) throw new Error('Unsafe Kenari grant file');
     return validateProviderGrant(JSON.parse(await file.readFile('utf8')));
   } finally { await file.close(); }
 }

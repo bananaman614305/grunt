@@ -1,3 +1,4 @@
+import { hasOwnerMode } from './private-file.js';
 import { spawn } from 'node:child_process';
 import { observeAttemptDispatch, diagnosticFetch } from './diagnostics.js';
 import type { ChildProcess } from 'node:child_process';
@@ -6,7 +7,6 @@ import { tmpdir } from 'node:os';
 import { lstat, realpath } from 'node:fs/promises';
 import { userTurns } from './harness.js';
 import { executable } from './multiplexer.js';
-import { loopback } from './freellmapi.js';
 import { ManagedOpenCodeProcess } from './managed-opencode-process.js';
 import { lengthLimited, preventReplay, replayTimeout, withObservedEnding, SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
@@ -83,7 +83,12 @@ export class OpenCode implements Source {
   private busy = new Set<string>();
   private shutdown = new AbortController();
   constructor(private options: { url?: string; fetcher?: typeof fetch; model?: string | (() => string); models?: readonly string[] | (() => readonly string[]); timeout?: number; configFile?: string; idleTimeoutMs?: number } = {}) {
-    if (options.url) loopback(options.url);
+    if (options.url) {
+      const url = new URL(options.url);
+      if (url.protocol !== 'http:' || !['127.0.0.1', '[::1]'].includes(url.hostname) || url.username || url.password || url.search || url.hash) {
+        throw new Error('A numeric HTTP loopback URL is required');
+      }
+    }
     if (options.idleTimeoutMs !== undefined && (!Number.isFinite(options.idleTimeoutMs) || options.idleTimeoutMs < 0)) throw new Error('Invalid managed OpenCode idle timeout');
   }
   private get fetcher() { return diagnosticFetch(this.options.fetcher ?? fetch, 'opencode', 'local.opencode'); }
@@ -113,7 +118,7 @@ export class OpenCode implements Source {
       if (this.options.configFile) {
         try {
           const stat = await lstat(this.options.configFile);
-          if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600) throw new Error('Invalid private config');
+          if (!stat.isFile() || stat.isSymbolicLink() || !hasOwnerMode(stat, 0o600)) throw new Error('Invalid private config');
           // Signup may create this private grant after the daemon was started.
           // Let the CLI read it; provider values never enter this process.
           env.OPENCODE_CONFIG = this.options.configFile;

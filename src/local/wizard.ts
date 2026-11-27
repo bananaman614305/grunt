@@ -1,32 +1,35 @@
+import { hasOwnerMode } from './private-file.js';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { spawn, execFile } from 'node:child_process';
-import { constants } from 'node:fs';
-import { mkdir, readFile, writeFile, cp, mkdtemp, rm, access, lstat, open, rename } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, mkdtemp, rm, access, lstat, rename } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { setupFallbacks } from './fallback-setup.js';
 import { parallelMap } from './parallel.js';
 import { withTerminal } from './terminal.js';
-import { localRuntimeDependencies } from './runtime-dependencies.js';
-import { BrowserSquire, PROVIDERS, providerURL, setup, squireEnvironment } from './setup.js';
+import { BrowserSquire, PROVIDERS, setup } from './setup.js';
+import { copyDaemon, daemonFile, legacyDaemonFile } from './daemon-files.js';
 import { RegistrySync } from './registry.js';
 import { bundledRegistry, disabledAdapters, knownAdapters } from '../registry.js';
-import { writeAutomaticPool } from './automatic-pool.js';
+import { AUTOMATIC_POOL_FILE, writeAutomaticPool } from './automatic-pool.js';
 import { banner } from './banner.js';
 import { approveDataSharing, DATA_SHARING_MANUAL_APPROVAL, DATA_SHARING_OPT_OUT, requiresManualDataSharing } from './data-sharing.js';
 import { configurePi, connectHarness, detectHarnesses, HARNESSES, launchLines, listFreeModels, nextDriver, onPath, probeFreeModel, signupHarness, runHarness } from './harnesses.js';
 import type { Harness } from './harnesses.js';
-import type { SignupAgent } from './signup-mcp.js';
+import type { EmbeddedSignupRuntime, SignupAgent, SignupCeremonyOpenInfo } from './signup-mcp.js';
 import { beginSetupSession } from './setup-session.js';
 import { configRoot, gruntEnv } from '../brand.js';
+import { bootoutService, installedConfigRoot, launchAgent, legacyService, migrateServiceEnvironment, prepareServiceMigration, replaceServiceEntry, systemdEnvironment, systemdQuote, xml } from './service-migration.js';
 import { SetupTable } from './setup-table.js';
 import { setupFailureReason, signupOperatorUnavailable } from './setup-failure.js';
 import { fetchStatus } from './dashboard.js';
 import { select, isCancel } from '@clack/prompts';
 import { serviceEnvironment } from './service-environment.js';
+import { registerWindowsService, removeWindowsService, startWindowsService, stopWindowsService, taskScheduler, windowsService, writeWindowsLauncher } from './windows-service.js';
+import { saveSquireClientPath } from './squire-client-path.js';
 
 export const configDir = (env = process.env) => configRoot(env);
 export async function command(binary: string, args: string[], interactive = false, signal?: AbortSignal, env?: NodeJS.ProcessEnv) {
@@ -39,97 +42,45 @@ export async function command(binary: string, args: string[], interactive = fals
   });
   await (interactive ? withTerminal(run) : run());
 }
-export async function squireBrokerExists() {
-  const service = process.platform === 'darwin'
-    ? ['launchctl', ['print', `gui/${process.getuid!()}/ai.trustysquire.trusty-squire-broker`]] as const
-    : ['systemctl', ['--user', 'is-active', 'trusty-squire-broker']] as const;
-  try { await promisify(execFile)(service[0], [...service[1]], { timeout: 10000 }); return true; }
-  catch { /* An inactive service can still own the broker installation. */ }
-  if (process.platform === 'linux') {
-    try {
-      const { stdout } = await promisify(execFile)('systemctl', ['--user', 'list-unit-files', 'trusty-squire-broker*.service', '--no-legend', '--no-pager'], { timeout: 10000 });
-      if (/^trusty-squire-broker\S*\.service\s/m.test(stdout)) return true;
-    } catch { /* Socket discovery remains available without a service manager. */ }
+function logEmbeddedSignInOpen(info: SignupCeremonyOpenInfo) {
+  if (info.browserLocation.kind === 'virtual') {
+    console.log(`… sign in with Google in Grunt's isolated browser: ${info.browserLocation.url}`);
+  } else if (info.browserLocation.kind === 'host_screen') {
+    console.log("… sign in with Google in the opened Grunt browser window to continue setup");
   }
-  const home = homedir();
-  const serviceFile = process.platform === 'darwin'
-    ? join(home, 'Library', 'LaunchAgents', 'ai.trustysquire.trusty-squire-broker.plist')
-    : join(process.env.XDG_CONFIG_HOME || join(home, '.config'), 'systemd', 'user', 'trusty-squire-broker.service');
-  try { await access(serviceFile); return true; } catch { /* Check socket discovery too. */ }
-  const discovery = join(dirname(fileURLToPath(import.meta.resolve('@trusty-squire/mcp'))), 'bot/broker/discovery.js');
-  const program = `const {brokerSocketPath} = await import(${JSON.stringify(pathToFileURL(discovery).href)}); const {existsSync} = await import('node:fs'); process.stdout.write(existsSync(brokerSocketPath()) ? 'present' : 'missing');`;
-  const result = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', program], { env: squireEnvironment(), timeout: 10000 });
-  return result.stdout === 'present';
 }
-async function squireBootstrapEnvironment(signal?: AbortSignal): Promise<NodeJS.ProcessEnv> {
-  signal?.throwIfAborted();
-  const directory = configDir();
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  signal?.throwIfAborted();
-  const parent = await lstat(directory);
-  if (!parent.isDirectory() || parent.isSymbolicLink() || parent.uid !== process.getuid?.() || (parent.mode & 0o777) !== 0o700) {
-    throw new Error('Squire setup requires a private grunt configuration directory');
-  }
-  const path = join(directory, 'squire-opencode.json');
-  const file = await open(path, constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
-  try {
-    const stat = await file.stat();
-    if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o777) !== 0o600 || stat.size > 262144) {
-      throw new Error('Squire setup requires a private grunt-owned client configuration file');
-    }
-    signal?.throwIfAborted();
-    if (!stat.size) await file.writeFile('{}\n');
-  } finally { await file.close(); }
-  signal?.throwIfAborted();
-  // The supported Squire override applies only to this installer child. It
-  // must never rewrite the user's OpenCode config or a provider grant config.
-  return { ...process.env, OPENCODE_CONFIG: path };
-}
-export async function connectSquire(options: { hasBroker?: () => Promise<boolean>; run?: typeof command; installer?: string; squire?: BrowserSquire; signal?: AbortSignal } = {}) {
-  const probe = async () => {
-    options.signal?.throwIfAborted();
-    const squire = options.squire ?? new BrowserSquire(options.signal ? { signal: options.signal } : {});
-    try { await squire.connect(); options.signal?.throwIfAborted(); }
-    finally { if (!options.squire) await squire.close(); }
-  };
-  try { await probe(); return 'existing' as const; }
-  catch (error) {
-    options.signal?.throwIfAborted();
-    const exists = await (options.hasBroker || squireBrokerExists)();
-    options.signal?.throwIfAborted();
-    if (exists) {
-      throw new Error(`Existing trusty-squire-broker failed its connection probe: ${error instanceof Error ? error.message : String(error)}. Repair the broker, then rerun usegrunt setup.`, { cause: error });
-    }
-  }
-  if (gruntEnv('SETUP_NO_HUMAN') === '1') throw new Error('Squire login needs human verification; stopped before onboarding');
-  // Only a machine without a broker may enter the installer.
-  const bin = options.installer || join(dirname(fileURLToPath(import.meta.resolve('@trusty-squire/mcp'))), 'bin.js');
-  const env = await squireBootstrapEnvironment(options.signal);
+export async function connectSquire(options: {
+  squire?: BrowserSquire;
+  signal?: AbortSignal;
+  directory?: string;
+  onSignInOpen?: (info: SignupCeremonyOpenInfo) => Promise<void> | void;
+  embeddedRuntime?: EmbeddedSignupRuntime;
+} = {}) {
   options.signal?.throwIfAborted();
-  await (options.run || command)(process.execPath, [bin, 'connect', '--target=opencode', '--json'], false, options.signal, env);
-  await probe();
-  return 'installed' as const;
+  const squire = options.squire ?? new BrowserSquire({
+    directory: options.directory ?? configDir(),
+    ...(options.signal ? { signal: options.signal } : {}),
+    onSignInOpen: options.onSignInOpen ?? logEmbeddedSignInOpen,
+    ...(options.embeddedRuntime ? { embeddedRuntime: options.embeddedRuntime } : {})
+  });
+  try {
+    await squire.connect();
+    options.signal?.throwIfAborted();
+    return squire.connectState;
+  } finally {
+    if (!options.squire) await squire.close();
+  }
 }
 export async function preflight(run = command) {
-  const major = Number(process.versions.node.split('.')[0]);
-  if (major < 22 || major >= 25) throw new Error('Install Node.js 22 or 24 LTS, then run npx usegrunt setup.');
-  if (!['linux', 'darwin'].includes(process.platform)) throw new Error('Run setup on Linux with systemd or macOS with launchd.');
-  for (const [binary, args, fix] of [
-    ['npm', ['--version'], 'Install Node.js 22 or 24 LTS including npm.'],
-    ['tar', ['--version'], 'Install tar using your system package manager.']
-  ] as const) {
-    try { await run(binary, [...args]); } catch { throw new Error(fix + ' Then run npx usegrunt setup.'); }
-  }
-  if (gruntEnv('ROUTER_RUNTIME') === 'docker') {
-    try { await run('docker', ['info']); } catch { throw new Error('Install and start Docker Desktop, then run npx usegrunt setup.'); }
-  }
+  const [major = 0, minor = 0] = process.versions.node.split('.').map(Number);
+  if (major < 22 || major >= 25 || (major === 22 && minor < 13)) throw new Error('Install an up-to-date Node.js 22 or 24 LTS, then run npx usegrunt setup.');
+  if (!['linux', 'darwin', 'win32'].includes(process.platform)) throw new Error('Run setup on Linux with systemd, macOS with launchd, or Windows with Task Scheduler.');
   try {
     if (process.platform === 'linux') await run('systemctl', ['--user', 'show-environment']);
-    else await run('launchctl', ['print', `gui/${process.getuid!()}`]);
-  } catch { throw new Error('Start a normal user login with its systemd/launchd service manager, then run npx usegrunt setup.'); }
+    else if (process.platform === 'darwin') await run('launchctl', ['print', `gui/${process.getuid!()}`]);
+    else await run(taskScheduler, ['/query']);
+  } catch { throw new Error('Sign in to a user session with a working service manager, then run npx usegrunt setup.'); }
 }
-const systemdQuote = (value: string) => '"' + value.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%').replaceAll('$', '$$').replaceAll('\n', '\\n') + '"';
-const xml = (value: string) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 // Without lingering, the systemd user manager and its services stop at logout
 // and start again only at the next login, not at boot.
 async function enableLinger(signal?: AbortSignal) {
@@ -139,48 +90,133 @@ async function enableLinger(signal?: AbortSignal) {
     console.log('– local service: stops at logout until lingering is enabled; run loginctl enable-linger');
   }
 }
-export async function installedSources(directory = configDir()) {
+export async function installedSources(directory = installedConfigRoot()) {
   try {
     const sources: unknown = JSON.parse(await readFile(join(directory, 'installed-sources.json'), 'utf8'));
-    if (!Array.isArray(sources) || sources.some(id => typeof id !== 'string' || ![...knownAdapters, 'freellmapi'].includes(id))) throw new Error('Invalid saved grunt sources');
-    return [...new Set(sources)].filter(id => !disabledAdapters.has(id)).join(',');
+    if (!Array.isArray(sources) || sources.some(id => typeof id !== 'string')) throw new Error('Invalid saved grunt sources');
+    return [...new Set(sources)].filter(id => knownAdapters.has(id) && !disabledAdapters.has(id)).join(',');
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-  try { await access(join(directory, 'router-admin.json')); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    return 'opencode,kilo,zro';
-  }
-  return 'freellmapi,kilo,opencode,zro';
+  return 'opencode,kilo,zro';
 }
+class ServiceRecoveryError extends Error {}
+
 export async function installService(adapters?: string[], options: { signal?: AbortSignal } = {}) {
+  const windows = process.platform === 'win32';
+  const cancellation = windows ? new AbortController() : undefined;
+  const cancel = () => cancellation?.abort(new Error('Grunt setup cancelled'));
+  const signal = cancellation && options.signal ? AbortSignal.any([cancellation.signal, options.signal]) : cancellation?.signal ?? options.signal;
   const stage = async <T>(operation: () => Promise<T>) => {
-    options.signal?.throwIfAborted();
+    signal?.throwIfAborted();
     const result = await operation();
-    options.signal?.throwIfAborted();
+    signal?.throwIfAborted();
     return result;
   };
   options.signal?.throwIfAborted();
-  if (!['linux', 'darwin'].includes(process.platform)) throw new Error('grunt background service requires systemd or launchd');
+  if (!['linux', 'darwin', 'win32'].includes(process.platform)) throw new Error('grunt background service requires systemd, launchd, or Task Scheduler');
   const selected = [...new Set(adapters ?? (await stage(() => installedSources())).split(','))].filter(id => id && !disabledAdapters.has(id));
-  if (selected.some(id => !knownAdapters.has(id) && id !== 'freellmapi')) throw new Error('Invalid grunt service selection');
-  const directory = configDir(), runtime = join(directory, 'runtime');
+  if (selected.some(id => !knownAdapters.has(id))) throw new Error('Invalid grunt service selection');
+  const directory = resolve(installedConfigRoot()), runtime = join(directory, 'runtime');
   // npx cache entries can disappear. Keep a backend runtime outside that cache.
-  const root = fileURLToPath(new URL('../../', import.meta.url));
-  await stage(() => mkdir(runtime, { recursive: true, mode: 0o700 }));
-  await stage(() => cp(join(root, 'dist'), join(runtime, 'dist'), { recursive: true }));
-  const pkg = JSON.parse(await stage(() => readFile(join(root, 'package.json'), 'utf8')));
-  await stage(() => writeFile(join(runtime, 'package.json'), JSON.stringify({ name: 'grunt-runtime', private: true, type: 'module', dependencies: localRuntimeDependencies(pkg.dependencies) }), { mode: 0o600 }));
-  await stage(() => command('npm', ['install', '--prefix', runtime, '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], false, options.signal));
-  const entry = join(runtime, 'dist', 'local', 'main.js');
+  const dist = fileURLToPath(new URL(import.meta.url.endsWith('.ts') ? '../../dist/' : '../', import.meta.url));
   const port = gruntEnv('PORT') || '8788';
   if (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new Error('Invalid grunt service port');
-  const env: Record<string, string> = { GRUNT_DAEMON: '1', GRUNT_CONFIG_DIR: directory, GRUNT_PORT: port, GRUNT_SOURCES: selected.join(','), PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin' };
-  const routerURL = gruntEnv('FREELLMAPI_URL');
-  if (routerURL) env.GRUNT_FREELLMAPI_URL = routerURL;
+  const entry = join(runtime, daemonFile);
+  const env: Record<string, string> = { GRUNT_DAEMON: '1', GRUNT_CONFIG_DIR: directory, GRUNT_PORT: port, GRUNT_SOURCES: selected.join(',') };
+  if (process.platform !== 'win32') env.PATH = process.env.PATH || '/usr/local/bin:/usr/bin:/bin';
+  else if (process.env.PATH) env.PATH = process.env.PATH;
   const opencodeConfig = join(directory, 'opencode-free.json');
-  try { await stage(() => readFile(opencodeConfig)); env.OPENCODE_CONFIG = opencodeConfig; }
+  try { await stage(() => access(opencodeConfig)); env.OPENCODE_CONFIG = opencodeConfig; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-  const effectivePort = await stage(() => installBackgroundService('grunt', entry, env, { ...options, automaticPool: true, selectedSources: selected })) ?? port;
+
+  await stage(() => mkdir(directory, { recursive: true, mode: 0o700 }));
+  await stage(() => saveSquireClientPath(directory));
+  const temporary = await mkdtemp(join(directory, '.install-'));
+  const next = join(temporary, 'runtime'), previous = join(temporary, 'previous');
+  let saved = false, replaced = false, keepBackup = false, effectivePort: string;
+  const restoreRuntime = async () => {
+    if (!saved && !windows) return;
+    if (replaced) { await rename(runtime, next); replaced = false; }
+    if (saved) { await rename(previous, runtime); saved = false; }
+  };
+  const inspectRuntime = async () => {
+    try {
+      const info = await lstat(runtime);
+      if (!info.isDirectory() || !hasOwnerMode(info, 0o700)) throw new Error('Grunt setup requires a private runtime directory');
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      return false;
+    }
+  };
+  const swapRuntime = async () => {
+    if (await inspectRuntime()) { await rename(runtime, previous); saved = true; }
+    await rename(next, runtime);
+    replaced = true;
+  };
+  async function activateWindowsRuntime() {
+    // Let a scheduler command settle before checking cancellation. Recovery
+    // uses the same bounded commands even after the setup signal is aborted.
+    const run = async (binary: string, args: string[]) => (await promisify(execFile)(binary, args, { timeout: 10000 })).stdout;
+    await stage(inspectRuntime);
+    const existing = await stage(() => windowsService(directory, run));
+    if (existing?.state === 1) throw new Error('Enable the installed Grunt task in Task Scheduler, then rerun setup');
+    const effective = existing?.environment ?? env;
+    const port = effective.GRUNT_PORT;
+    if (!port || !/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new Error('Could not determine the installed Grunt port safely');
+    await stage(() => writeWindowsLauncher(next, effective));
+    const sources = effective.GRUNT_SOURCES;
+    const pool = join(directory, AUTOMATIC_POOL_FILE), previousPool = join(temporary, 'previous-pool');
+    if (sources) await stage(() => writeAutomaticPool(temporary, [...new Set(sources.split(','))], selected));
+    let stopping = false, registering = false, starting = false, savedPool = false, replacedPool = false;
+    try {
+      if (existing) await stage(async () => { stopping = true; await stopWindowsService(directory, run); });
+      await stage(swapRuntime);
+      if (sources) await stage(async () => {
+        try { await rename(pool, previousPool); savedPool = true; }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+        await rename(join(temporary, AUTOMATIC_POOL_FILE), pool);
+        replacedPool = true;
+      });
+      if (!existing) await stage(async () => { registering = true; await registerWindowsService(directory, run); });
+      await stage(async () => { starting = true; await startWindowsService(directory, run); });
+      await stage(() => checkService(Number(port), 90000, signal));
+      if ((await stage(() => windowsService(directory, run)))?.state !== 4) throw new Error('The Grunt Windows task did not stay running');
+      return port;
+    } catch (error) {
+      try {
+        if (starting) await stopWindowsService(directory, run);
+        if (registering) await removeWindowsService(directory, run);
+        await restoreRuntime();
+        if (replacedPool) await rm(pool, { force: true });
+        if (savedPool) await rename(previousPool, pool);
+        if (stopping && (existing?.state === 4 || existing?.state === 2)) {
+          const restored = await windowsService(directory, run);
+          if (!restored || restored.state === 1) throw new Error('The previous Grunt Windows task is unavailable');
+          if (restored.state === 3) await startWindowsService(directory, run);
+        }
+      } catch (cause) {
+        throw new ServiceRecoveryError('Grunt setup could not restore the previous Windows service. Inspect Task Scheduler and the installation directory before retrying.', { cause });
+      }
+      throw error;
+    }
+  }
+  if (windows) { process.on('SIGINT', cancel); process.on('SIGTERM', cancel); }
+  try {
+    await stage(() => mkdir(next, { mode: 0o700 }));
+    await stage(() => copyDaemon(dist, next, signal));
+    if (windows) effectivePort = await activateWindowsRuntime();
+    else {
+      await stage(swapRuntime);
+      effectivePort = await installBackgroundService(entry, env, { ...options, selectedSources: selected, restoreRuntime });
+    }
+  } catch (error) {
+    keepBackup = error instanceof ServiceRecoveryError;
+    if (!keepBackup) await restoreRuntime();
+    throw error;
+  } finally {
+    if (windows) { process.off('SIGINT', cancel); process.off('SIGTERM', cancel); }
+    if (!keepBackup) await rm(temporary, { recursive: true, force: true });
+  }
   await stage(() => writeFile(join(directory, 'installed-sources.json'), JSON.stringify(selected), { mode: 0o600 }));
   const portStage = join(directory, `.installed-port-${randomUUID()}`);
   try {
@@ -188,7 +224,10 @@ export async function installService(adapters?: string[], options: { signal?: Ab
     await stage(() => rename(portStage, join(directory, 'installed-port.json')));
   } finally { await rm(portStage, { force: true }); }
 }
-export async function installBackgroundService(name: string, entry: string, env: Record<string, string>, options: { signal?: AbortSignal; automaticPool?: boolean; selectedSources?: readonly string[] } = {}) {
+export async function installBackgroundService(entry: string, env: Record<string, string>, options: {
+  signal?: AbortSignal; selectedSources?: readonly string[]; restoreRuntime?: () => Promise<void>;
+} = {}) {
+  const name = 'grunt';
   const stage = async <T>(operation: () => Promise<T>) => {
     options.signal?.throwIfAborted();
     const result = await operation();
@@ -197,64 +236,120 @@ export async function installBackgroundService(name: string, entry: string, env:
   };
   const run = (binary: string, args: string[]) => stage(() => command(binary, args, false, options.signal));
   options.signal?.throwIfAborted();
-  if (!/^[a-z][a-z0-9-]*$/.test(name)) throw new Error('Invalid service name');
-  // Existing service files can contain custom ports, endpoints and drop-ins.
-  // Keep either installed identity and its configuration intact on reruns.
-  const legacy = name === 'grunt' ? 'milo' : name === 'grunt-router' ? 'milo-router' : undefined;
-  if (legacy) {
-    const existing: { identity: string; file: string; contents: string }[] = [];
-    for (const identity of [name, legacy]) {
-      const file = process.platform === 'linux'
-        ? join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'systemd', 'user', `${identity}.service`)
-        : join(homedir(), 'Library', 'LaunchAgents', `ai.${identity}.service.plist`);
+  const linux = process.platform === 'linux';
+  const domain = `gui/${process.getuid!()}`;
+  const existing: { identity: string; file: string; contents: string }[] = [];
+  const read = async (binary: string, args: string[]) =>
+    (await stage(() => promisify(execFile)(binary, args, { timeout: 10000, ...(options.signal ? { signal: options.signal } : {}) }))).stdout.trimEnd();
+  for (const identity of [name, legacyService]) {
+    const file = linux
+      ? join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'systemd', 'user', `${identity}.service`)
+      : join(homedir(), 'Library', 'LaunchAgents', `ai.${identity}.service.plist`);
+    try {
+      const info = await stage(() => lstat(file));
+      if (!info.isFile() || info.uid !== process.getuid?.() || (info.mode & 0o022) || info.size > 262144) throw new Error('The existing Grunt service file is unsafe');
+      existing.push({ identity, file, contents: await stage(() => readFile(file, 'utf8')) });
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  }
+  if (existing.length > 1) throw new Error('Multiple Grunt service identities are installed; resolve the duplicate before setup');
+  if (existing[0]) {
+    const { identity, file, contents } = existing[0];
+    const legacy = identity === legacyService;
+    const previousEntry = join(dirname(entry), legacyDaemonFile);
+    const replacement = replaceServiceEntry(contents, linux, previousEntry, entry);
+    if (replacement === contents && !contents.includes(linux ? systemdQuote(entry) : xml(entry))) throw new Error('The existing Grunt service uses a different runtime; its configuration was not changed');
+    const property = (name: string) => read('systemctl', ['--user', 'show', `${identity}.service`, '-p', name, '--value']);
+    const plist = (key: string, format: string) => read('plutil', ['-extract', key, format, '-o', '-', file]);
+    const installed: NodeJS.ProcessEnv = linux ? serviceEnvironment(await property('Environment'))
+      : legacy ? JSON.parse(await plist('EnvironmentVariables', 'json'))
+        : { GRUNT_CONFIG_DIR: await plist('EnvironmentVariables.GRUNT_CONFIG_DIR', 'raw'),
+          GRUNT_PORT: await plist('EnvironmentVariables.GRUNT_PORT', 'raw'),
+          GRUNT_SOURCES: await plist('EnvironmentVariables.GRUNT_SOURCES', 'raw').catch(() => undefined) };
+    const effective = legacy ? migrateServiceEnvironment(installed) : installed;
+    if (effective.GRUNT_CONFIG_DIR !== env.GRUNT_CONFIG_DIR) throw new Error('The existing Grunt service uses a different configuration directory; its configuration was not changed');
+    const port = effective.GRUNT_PORT;
+    if (!port || !/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new Error('Could not determine the installed Grunt port safely');
+    const serviceSources = effective.GRUNT_SOURCES?.split(',').map(id => id.trim()).filter(Boolean);
+    if (options.selectedSources && serviceSources?.length) await stage(() => writeAutomaticPool(env.GRUNT_CONFIG_DIR!, [...new Set(serviceSources)], options.selectedSources));
+    const recoveryRun = async (binary: string, args: string[]) =>
+      (await promisify(execFile)(binary, args, { timeout: 30000 })).stdout;
+    if (legacy) {
+      const enabled = linux ? await property('UnitFileState') : undefined;
+      const migration = await stage(() => prepareServiceMigration({
+        platform: linux ? 'linux' : 'darwin', file, node: process.execPath, entry, previousEntry,
+        effective: migrateServiceEnvironment(installed), original: installed,
+        ...(enabled !== undefined ? { enabled, enableNew: true } : {}), run: recoveryRun
+      }));
+      const wasActive = linux ? await property('ActiveState') === 'active'
+        : Boolean(await read('launchctl', ['print', `${domain}/ai.${identity}.service`]).catch(() => undefined));
       try {
-        const info = await stage(() => lstat(file));
-        if (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid?.() || (info.mode & 0o022) || info.size > 262144) throw new Error('The existing Grunt service file is unsafe');
-        existing.push({ identity, file, contents: await stage(() => readFile(file, 'utf8')) });
-      } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-    }
-    if (existing.length > 1) throw new Error('Multiple Grunt service identities are installed; resolve the duplicate before setup');
-    const installedService = existing[0];
-    if (installedService) {
-      const { identity, file, contents } = installedService;
-      if (!contents.includes(process.platform === 'linux' ? systemdQuote(entry) : xml(entry))) throw new Error('The existing Grunt service uses a different runtime; its configuration was not changed');
-      let port: string | undefined, serviceSources: string[] | undefined;
-      if (name === 'grunt') {
-        if (process.platform === 'linux') {
-          const result = await stage(() => promisify(execFile)('systemctl', ['--user', 'show', `${identity}.service`, '-p', 'Environment', '--value'], { timeout: 10000, ...(options.signal ? { signal: options.signal } : {}) }));
-          const installed = serviceEnvironment(result.stdout);
-          if (gruntEnv('CONFIG_DIR', installed) !== env.GRUNT_CONFIG_DIR) throw new Error('The existing Grunt service uses a different configuration directory; its configuration was not changed');
-          port = gruntEnv('PORT', installed);
-          serviceSources = gruntEnv('SOURCES', installed)?.split(',').map(id => id.trim()).filter(Boolean);
-        } else {
-          const value = async (setting: string) => stage(() => promisify(execFile)('plutil', ['-extract', `EnvironmentVariables.${setting}`, 'raw', '-o', '-', file], { timeout: 10000, ...(options.signal ? { signal: options.signal } : {}) })).then(result => result.stdout.replace(/\r?\n$/, ''));
-          const directory = await value('GRUNT_CONFIG_DIR').catch(() => value('MILO_CONFIG_DIR'));
-          if (directory !== env.GRUNT_CONFIG_DIR) throw new Error('The existing Grunt service uses a different configuration directory; its configuration was not changed');
-          port = await value('GRUNT_PORT').catch(() => value('MILO_PORT'));
-          serviceSources = (await value('GRUNT_SOURCES').catch(() => value('MILO_SOURCES')).catch(() => ''))?.split(',').map(id => id.trim()).filter(Boolean);
+        if (linux) await run('systemctl', ['--user', 'stop', `${identity}.service`]);
+        else await stage(() => bootoutService(recoveryRun, domain, `ai.${identity}.service`));
+        await stage(() => migration.apply());
+        if (linux) await stage(() => enableLinger(options.signal));
+        await stage(() => migration.start());
+        await checkService(Number(port), 90000, options.signal);
+        await migration.finish();
+      } catch (error) {
+        try {
+          await migration.restore();
+          await options.restoreRuntime?.();
+          if (wasActive) {
+            if (linux) await recoveryRun('systemctl', ['--user', 'start', `${identity}.service`]);
+            else await recoveryRun('launchctl', ['bootstrap', domain, file]);
+          }
+        } catch { throw new ServiceRecoveryError('Grunt setup could not restore the previous service. Inspect the user service manager before retrying.'); }
+        throw error;
+      }
+    } else {
+      const replace = async (value: string) => {
+        const temporary = file + '-' + randomUUID();
+        try { await writeFile(temporary, value, { mode: 0o600, flag: 'wx' }); await rename(temporary, file); }
+        finally { await rm(temporary, { force: true }); }
+      };
+      let replaced = false;
+      const wasActive = replacement !== contents && (linux ? await property('ActiveState') === 'active'
+        : Boolean(await read('launchctl', ['print', `${domain}/ai.grunt.service`]).catch(() => undefined)));
+      try {
+        if (replacement !== contents) {
+          await replace(replacement);
+          replaced = true;
+          if (linux) await run('systemctl', ['--user', 'daemon-reload']);
         }
-        if (!port || !/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new Error('Could not determine the installed Grunt port safely');
+        if (linux) {
+          await run('systemctl', ['--user', 'enable', 'grunt.service']);
+          await stage(() => enableLinger(options.signal));
+          await run('systemctl', ['--user', 'restart', 'grunt.service']);
+        } else {
+          await run('launchctl', ['bootout', `${domain}/ai.grunt.service`]).catch(() => {});
+          options.signal?.throwIfAborted();
+          await run('launchctl', ['bootstrap', domain, file]);
+        }
+      } catch (error) {
+        if (replaced) {
+          try {
+            await replace(contents);
+            await options.restoreRuntime?.();
+            if (linux) {
+              await recoveryRun('systemctl', ['--user', 'daemon-reload']);
+              if (wasActive) await recoveryRun('systemctl', ['--user', 'restart', 'grunt.service']);
+            } else if (wasActive) {
+              await bootoutService(recoveryRun, domain, 'ai.grunt.service');
+              await recoveryRun('launchctl', ['bootstrap', domain, file]);
+            }
+          } catch { throw new ServiceRecoveryError('Grunt setup could not restore the previous service. Inspect the user service manager before retrying.'); }
+        }
+        throw error;
       }
-      if (name === 'grunt' && options.automaticPool && serviceSources?.length) await stage(() => writeAutomaticPool(env.GRUNT_CONFIG_DIR!, [...new Set(serviceSources)], options.selectedSources));
-      if (process.platform === 'linux') {
-        await run('systemctl', ['--user', 'enable', `${identity}.service`]);
-        await stage(() => enableLinger(options.signal));
-        await run('systemctl', ['--user', 'restart', `${identity}.service`]);
-      } else {
-        const domain = `gui/${process.getuid!()}`;
-        await run('launchctl', ['bootout', `${domain}/ai.${identity}.service`]).catch(() => {});
-        options.signal?.throwIfAborted();
-        await run('launchctl', ['bootstrap', domain, file]);
-      }
-      return port;
     }
+    return port;
   }
   const declaredSources = env.GRUNT_SOURCES;
-  if (name === 'grunt' && options.automaticPool && declaredSources) await stage(() => writeAutomaticPool(env.GRUNT_CONFIG_DIR!, declaredSources.split(','), options.selectedSources));
+  if (options.selectedSources && declaredSources) await stage(() => writeAutomaticPool(env.GRUNT_CONFIG_DIR!, declaredSources.split(','), options.selectedSources));
   if (process.platform === 'linux') {
     const units = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'systemd', 'user');
     await stage(() => mkdir(units, { recursive: true }));
-    await stage(() => writeFile(join(units, `${name}.service`), `[Unit]\nDescription=grunt model service\nAfter=network-online.target\n\n[Service]\nExecStart=${systemdQuote(process.execPath)} ${systemdQuote(entry)}\n${Object.entries(env).map(([key, value]) => `Environment=${systemdQuote(`${key}=${value}`)}`).join('\n')}\nRestart=on-failure\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`, { mode: 0o600 }));
+    await stage(() => writeFile(join(units, `${name}.service`), `[Unit]\nDescription=grunt model service\nAfter=network-online.target\n\n[Service]\nExecStart=${systemdQuote(process.execPath)} ${systemdQuote(entry)}\n${systemdEnvironment(env)}\nRestart=on-failure\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`, { mode: 0o600 }));
     await run('systemctl', ['--user', 'daemon-reload']);
     await run('systemctl', ['--user', 'enable', `${name}.service`]);
     await stage(() => enableLinger(options.signal));
@@ -263,40 +358,41 @@ export async function installBackgroundService(name: string, entry: string, env:
     const agents = join(homedir(), 'Library', 'LaunchAgents');
     await stage(() => mkdir(agents, { recursive: true }));
     const plist = join(agents, `ai.${name}.service.plist`), domain = `gui/${process.getuid!()}`;
-    await stage(() => writeFile(plist, `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>ai.${name}.service</string><key>ProgramArguments</key><array><string>${xml(process.execPath)}</string><string>${xml(entry)}</string></array><key>EnvironmentVariables</key><dict>${Object.entries(env).map(([key, value]) => `<key>${xml(key)}</key><string>${xml(value)}</string>`).join('')}</dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>Umask</key><integer>63</integer></dict></plist>`, { mode: 0o600 }));
+    await stage(() => writeFile(plist, launchAgent(name, process.execPath, entry, env), { mode: 0o600 }));
     await run('launchctl', ['bootout', `${domain}/ai.${name}.service`]).catch(() => {});
     await run('launchctl', ['bootstrap', domain, plist]);
   }
-  return env.GRUNT_PORT;
+  return env.GRUNT_PORT!;
 }
 // /v1/models asks every source whether it is available. Bound the combined probe
 // so a hung native CLI cannot leave the installer waiting forever.
 const SERVICE_PROBE_TIMEOUT_MS = 35000;
-export async function checkService(port = 8788, totalMs = 90000) {
+export async function checkService(port = 8788, totalMs = 90000, signal?: AbortSignal) {
   const deadline = Date.now() + totalMs;
   while (Date.now() < deadline) {
     const timeout = Math.max(1, Math.min(SERVICE_PROBE_TIMEOUT_MS, deadline - Date.now()));
-    try { const response = await fetch(`http://127.0.0.1:${port}/v1/models`, { signal: AbortSignal.timeout(timeout) }); if (response.ok) return; } catch { /* Wait for the service manager. */ }
-    await delay(Math.max(0, Math.min(1000, deadline - Date.now())));
+    signal?.throwIfAborted();
+    const limit = AbortSignal.timeout(timeout);
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/v1/models`, { signal: signal ? AbortSignal.any([signal, limit]) : limit });
+      if (response.ok) return;
+    } catch { signal?.throwIfAborted(); }
+    await delay(Math.max(0, Math.min(1000, deadline - Date.now())), undefined, { signal });
   }
   throw new Error('grunt service did not start; inspect its service status');
 }
 type Systemctl = (args: string[]) => Promise<string>;
 const systemctl: Systemctl = async args => (await promisify(execFile)('systemctl', ['--user', ...args], { timeout: 10000 })).stdout;
-// Read the effective primary or compatibility source setting and its origin.
-export async function serviceSources(run: Systemctl = systemctl, name?: string): Promise<{ sources: string[]; origin: string; variable: string } | undefined> {
+// Read the effective source setting and its origin.
+export async function serviceSources(run: Systemctl = systemctl): Promise<{ sources: string[]; origin: string; variable: string } | undefined> {
   if (run === systemctl && process.platform !== 'linux') return;
-  if (!name) {
-    for (const identity of ['grunt', 'milo']) { const unit = await serviceSources(run, identity); if (unit) return unit; }
-    return;
-  }
   let environment: string, dropIns: string;
-  try { [environment, dropIns] = await Promise.all(['Environment', 'DropInPaths'].map(property => run(['show', `${name}.service`, '-p', property, '--value']))) as [string, string]; }
+  try { [environment, dropIns] = await Promise.all(['Environment', 'DropInPaths'].map(property => run(['show', 'grunt.service', '-p', property, '--value']))) as [string, string]; }
   catch { return; }
-  const effective = serviceEnvironment(environment), variable = effective.GRUNT_SOURCES !== undefined ? 'GRUNT_SOURCES' : 'MILO_SOURCES';
+  const effective = serviceEnvironment(environment), variable = 'GRUNT_SOURCES';
   const value = effective[variable];
   if (value === undefined) return;
-  let origin = `${name}.service`;
+  let origin = 'grunt.service';
   for (const path of dropIns.trim().split(/\s+/).filter(Boolean)) {
     try { if (new RegExp(`^\\s*Environment=.*${variable}=`,'m').test(await readFile(path, 'utf8'))) origin = path; }
     catch { /* An unreadable drop-in cannot be named. */ }
@@ -305,7 +401,7 @@ export async function serviceSources(run: Systemctl = systemctl, name?: string):
 }
 async function setupPort() {
   try {
-    const saved: unknown = JSON.parse(await readFile(join(configDir(), 'installed-port.json'), 'utf8'));
+    const saved: unknown = JSON.parse(await readFile(join(installedConfigRoot(), 'installed-port.json'), 'utf8'));
     if (typeof saved === 'number' && Number.isInteger(saved) && saved >= 1 && saved <= 65535) return saved;
   } catch { /* A new installation uses its requested port until service admission. */ }
   return Number(gruntEnv('PORT') || '8788');
@@ -360,7 +456,7 @@ export type RegistryOrigin = 'remote' | 'cache' | 'bundled';
 // Same URL and validation as the daemon's RegistrySync; says where the list came from.
 export async function loadRegistry(options: { url?: string; fetcher?: typeof fetch } = {}) {
   let offline = false, cached = false;
-  const registry = new RegistrySync({ directory: configDir(), ...options, notify: () => { offline = true; } });
+  const registry = new RegistrySync({ directory: installedConfigRoot(), ...options, notify: () => { offline = true; } });
   try {
     await registry.load();
     cached = registry.current.published !== bundledRegistry.published || JSON.stringify(registry.current) !== JSON.stringify(bundledRegistry);
@@ -455,12 +551,12 @@ export async function prepareHarnesses(port: number, options: HarnessOptions = {
 export async function connectHarnesses(port: number, options: HarnessOptions = {}) {
   return (await prepareHarnesses(port, options))();
 }
-const wizardActions = { smokeTest, resumeBackground, probeOperator: probeSetupOperator, chooseHarness: chooseSetupHarness, connectHarness, signupHarness, listFreeModels, installedSources, createSquire: () => new BrowserSquire(), banner, preflight, connectSquire, setup, setupFallbacks, installService, configurePi, checkService, checkFallbackServices, loadRegistry, checkServiceSources, connectHarnesses, prepareHarnesses, approveDataSharing };
+const wizardActions = { smokeTest, resumeBackground, probeOperator: probeSetupOperator, chooseHarness: chooseSetupHarness, connectHarness, signupHarness, listFreeModels, installedSources, createSquire: () => new BrowserSquire({ directory: configDir(), onSignInOpen: logEmbeddedSignInOpen }), banner, preflight, connectSquire, setup, setupFallbacks, installService, configurePi, checkService, checkFallbackServices, loadRegistry, checkServiceSources, connectHarnesses, prepareHarnesses, approveDataSharing };
 type Optional = 'probeOperator' | 'chooseHarness' | 'connectHarness' | 'signupHarness' | 'listFreeModels' | 'installedSources' | 'createSquire' | 'banner' | 'loadRegistry' | 'checkServiceSources' | 'connectHarnesses' | 'prepareHarnesses' | 'configurePi' | 'approveDataSharing';
 export async function wizard(add?: string, actions: Omit<typeof wizardActions, Optional> & Partial<Pick<typeof wizardActions, Optional>> = wizardActions) {
-  if (add === '') throw new Error('Specify a provider name or base URL');
+  if (add === '') throw new Error('Specify a provider name');
   if (add && disabledAdapters.has(add)) throw new Error(`${add} routing is disabled`);
-  if (add && !providerURL(add) && !Object.hasOwn(PROVIDERS, add)) throw new Error(`Choose a supported provider: ${Object.keys(PROVIDERS).join(', ')}, or paste an OpenAI-compatible base URL`);
+  if (add && (!knownAdapters.has(add) || !Object.hasOwn(PROVIDERS, add))) throw new Error(`Choose a supported provider: ${Object.keys(PROVIDERS).filter(id => knownAdapters.has(id)).join(', ')}`);
   // Preliminary steps print as plain lines. The table appears once, for the
   // signups, and stays in place until setup ends.
   const table = new SetupTable(process.stdout, { live: false });
@@ -488,11 +584,9 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     squire?.useRegistry?.(() => registry);
     const requested = add ? [add] : registry.adapters.filter(adapter => knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)).map(adapter => adapter.id);
     const defaults = bundledRegistry.adapters.filter(adapter => knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)).map(adapter => adapter.id);
-    const sources = add ? knownAdapters.has(add) || add === 'nvidia'
-      ? [...new Set([...(previous.length ? previous : defaults), add])]
-      : [...new Set(['freellmapi', ...previous, ...defaults])] : requested;
+    const sources = add ? [...new Set([...(previous.length ? previous : defaults), add])] : requested;
     let sharingNotice: string | undefined;
-    const consent = await (actions.approveDataSharing ?? approveDataSharing)({ directory: configDir(), providers: [...new Set([...sources, 'opencode'])], notice: line => { sharingNotice = line; } });
+    const consent = await (actions.approveDataSharing ?? approveDataSharing)({ directory: installedConfigRoot(), providers: [...new Set([...sources, 'opencode'])], notice: line => { sharingNotice = line; } });
     const manualOff = consent.skipped.filter(requiresManualDataSharing);
     console.log(consent.skipped.length ? `– data sharing: off for ${consent.skipped.join(', ')} (${manualOff.length ? `${DATA_SHARING_MANUAL_APPROVAL}=${manualOff.join(',')} approves after you read its notice` : DATA_SHARING_OPT_OUT})`
       : sharingNotice ? `✓ ${sharingNotice.replace(/^Data sharing on: /, 'data sharing: on for ')}` : '✓ data sharing: on, no new sources');
@@ -504,15 +598,15 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     // row says waiting until its own setup starts.
     for (const id of ids) table.set('source', id, 'waiting');
     if (!ids.length) return;
-    const port = await setupPort();
     if (add) {
       table.set('source', add, 'connecting');
       if (!['nous', 'reflection-beam', 'antseed-vikey'].includes(add)) { await connect(); console.log('✓ Trusty Squire: signed in'); }
       table.start();
       try {
-        await actions.setup(notify, [add], { ...(squire ? { squire } : {}), dataSharingApproved: consent.approved,
+        await actions.setup(notify, [add], { ...(squire ? { squire } : {}), dataSharingApproved: consent.approved, directory: installedConfigRoot(),
           ...(add === 'beatapi' ? { upgradeBeatAPI: true } : {}) });
         await actions.installService(sources.filter(id => !skipped.has(id)));
+        const port = await setupPort();
         await actions.checkService(port);
         const unavailable: string[] = [];
         await actions.checkFallbackServices(unavailable, port, notify, [add]);
@@ -522,17 +616,18 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       console.log('Ready');
       return;
     }
+    const pool = [...new Set(ids)];
+    const skipAnonymous = gruntEnv('SETUP_NO_ANONYMOUS') === '1';
+    session = await beginSetupSession(installedConfigRoot(), revised ? pool : ids, { anonymousKilo: revised && !skipAnonymous });
+    session.signal.addEventListener('abort', abortSetup, { once: true });
+    session.signal.throwIfAborted();
+    await actions.installService(pool, { signal: session.signal });
+    const port = await setupPort();
     const plan = revised ? undefined : await actions.prepareHarnesses?.(port, { table });
     const applyHarnesses = plan ?? (async () => {
       if (actions.connectHarnesses) await actions.connectHarnesses(port, { table });
       else await actions.configurePi?.(port);
     });
-    const pool = [...new Set([...previous.filter(id => id === 'freellmapi'), ...ids])];
-    const skipAnonymous = gruntEnv('SETUP_NO_ANONYMOUS') === '1';
-    session = await beginSetupSession(configDir(), revised ? pool : ids, { anonymousKilo: revised && !skipAnonymous });
-    session.signal.addEventListener('abort', abortSetup, { once: true });
-    session.signal.throwIfAborted();
-    await actions.installService(pool, { signal: session.signal });
     await actions.checkService(port);
     console.log(`✓ local service: running on port ${port}`);
     const unavailable: string[] = [];
@@ -607,7 +702,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       if (ids.includes(id) && !settled.has(id)) table.set('source', id, state === 'waiting' ? 'waiting' : 'connecting');
     });
     const provision = async (adapters: string[], kiloAccount = false) => {
-      const outcome = await actions.setupFallbacks({ directory: configDir(), run: command, adapters, notify, onSettled, connect,
+      const outcome = await actions.setupFallbacks({ directory: installedConfigRoot(), run: command, adapters, notify, onSettled, connect,
         onStarted: (id: string) => { if (!settled.has(id)) table.set('source', id, 'connecting'); },
         signal: session!.signal, dataSharingApproved: consent.approved, ...(squire ? { squire } : {}), ...(kiloAccount ? { kiloAccount } : {}) });
       await parallelMap(adapters, id => onSettled(id, !outcome.unavailable.includes(id)));

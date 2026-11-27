@@ -114,7 +114,7 @@ it.each([false, true].flatMap(polled => [
   vi.spyOn(squire.credentials, 'list').mockResolvedValue([]);
   if (polled) vi.spyOn(squire.runs, 'start').mockResolvedValueOnce({ run: { id: 'zro', state: 'running' }, decision: 'silent' });
   const lines: string[] = [];
-  await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], reuseSaved: false, notify: line => lines.push(line) });
+  await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], notify: line => lines.push(line) });
   expect(lines.join('\n')).toContain(stopQuestion);
   expect(lines.join('\n')).toContain('confidence 0.32');
   expect(lines.join('\n')).not.toContain('ghp_syntheticSensitive1234567890');
@@ -161,7 +161,7 @@ it.each(['rejected', 'page'])('preserves benign key diagnostics at refusal/page 
   vi.stubEnv('GRUNT_SETUP_DEBUG', '1');
   directory = await mkdtemp(join(tmpdir(), 'grunt-drop-reason-'));
   const diagnostic = 'No matching fact for the API key name field';
-  const secrets = ['sk-short', 'sk_short', 'gsk_short', 'nvapi-short', 'ghp_short', 'freellmapi-short',
+  const secrets = ['sk-short', 'sk_short', 'gsk_short', 'nvapi-short', 'ghp_short',
     'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', 'basic-value', 'bearer-value', 'synthetic-sensitive-value', '123e4567-e89b-12d3-a456-426614174000', 'quoted-value', 'single-quoted-value', 'SyntheticPass!42', 'SyntheticToken!42', 'BarePass!42', 'Swordfish', 'correct horse battery staple', 'aBcD'];
   const message = `${diagnostic}; ${secrets.slice(0, 8).join(' ')} Basic basic-value Bearer bearer-value secret is synthetic-sensitive-value; API key 123e4567-e89b-12d3-a456-426614174000 was rejected; ${JSON.stringify({ api_key: 'quoted-value' })}; 'password': 'single-quoted-value'; Password "SyntheticPass!42" was rejected; token 'SyntheticToken!42' was rejected; Password BarePass!42 was rejected; Password Swordfish was rejected; Password is correct horse battery staple; API key aBcD was rejected`;
   const squire = new BrowserSquire();
@@ -191,7 +191,7 @@ it.each(['swordfish', 'Swordfish', 'correct horse battery staple'])('omits API k
     ? { status: 'rejected', reason: `Provider denied automated signup. API key ${secret} was rejected`, session_id: 'tab' } : {});
   vi.spyOn(squire.credentials, 'list').mockResolvedValue([]);
   const lines: string[] = [];
-  await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], reuseSaved: false, notify: line => lines.push(line) });
+  await setupProviders(squire, { addGrant: async () => {} }, { providers: ['zro'], notify: line => lines.push(line) });
   expect(lines.join('\n')).toContain('Provider denied automated signup.');
   expect(lines.join('\n')).not.toContain(secret);
   await squire.close();

@@ -4,9 +4,11 @@ import { expect, it } from "vitest";
 
 it("tracks only the root app, proof adapters, static site, registry, configuration and five workflows", () => {
   const paths = execFileSync("git", ["ls-files"], { encoding: "utf8" }).trim().split("\n");
-  const files = new Set([".dockerignore", ".gitignore", "CLAUDE.md", "README.md", "VISION.md", "CHANGELOG.md", "Dockerfile", "fly.toml", "package.json", "pnpm-lock.yaml", "tsconfig.json", "eslint.config.js", "vitest.config.ts", "docs/reference.md", "docs/efficiency.md", "docs/router.md", "docs/antseed-vikey-provisioning.md", "docs/providers/freepi.md", "docs/admin-deployment.md", "docs/admin-collector.md", "PRODUCT.md", "DESIGN.md", "registry/adapters.json", "proof/freebuff-json-bridge.md", "proof/kilo.mjs", "proof/add-url.mjs", "proof/vetted-onboarding.mjs", "proof/free-api-route.mjs", "proof/nvidia-route.mjs", "proof/opencode-model-pool.mjs"]);
+  const files = new Set([".dockerignore", ".gitignore", "CLAUDE.md", "README.md", "VISION.md", "CHANGELOG.md", "Dockerfile", "fly.toml", "package.json", "pnpm-lock.yaml", "tsconfig.json", "eslint.config.js", "vitest.config.ts", "docs/reference.md", "docs/efficiency.md", "docs/router.md", "docs/antseed-vikey-provisioning.md", "docs/providers/freepi.md", "docs/admin-deployment.md", "docs/admin-collector.md", "PRODUCT.md", "DESIGN.md", "registry/adapters.json", "proof/freebuff-json-bridge.md", "proof/vetted-onboarding.mjs", "proof/free-api-route.mjs", "proof/nvidia-route.mjs", "proof/opencode-model-pool.mjs"]);
   for (const image of ["desktop", "registry", "phone", "installation-phone"]) files.add(`docs/dashboard-proof/${image}.png`);
   files.add("scripts/fleet-report.mjs");
+  files.add("scripts/build.mjs");
+  files.add("scripts/smoke-daemon.mjs");
   files.add("scripts/recovery-audit.mjs");
   files.add("docs/fleet-audit-proof/desktop.png");
   files.add("docs/fleet-audit-proof/phone.png");
@@ -23,5 +25,5 @@ it("packages usegrunt with the primary command and compatibility aliases", () =>
   expect(pkg.name).toBe("usegrunt");
   expect(pkg.version).toMatch(/^\d+\.\d+\.\d+$/);
   expect(pkg.description).toBe("One-command setup for grunt");
-  expect(pkg.bin).toEqual({ usegrunt: "dist/local/main.js", "grunt-local": "dist/local/main.js", milo: "dist/local/main.js", "milo-local": "dist/local/main.js" });
+  expect(pkg.bin).toEqual({ usegrunt: "dist/local/main.js", "grunt-local": "dist/local/main.js" });
 });

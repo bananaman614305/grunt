@@ -1,3 +1,4 @@
+import { installedConfigRoot } from '../local/service-migration.js';
 import { sellerQuota } from '../local/quota-policy.js';
 import { constants } from 'node:fs';
 import { lstat, mkdir, open, readFile, realpath, rename, rm } from 'node:fs/promises';
@@ -5,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { cpus, freemem, homedir, loadavg, platform, totalmem, uptime } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { configRoot, gruntEnv } from '../brand.js';
+import { gruntEnv } from '../brand.js';
 import { knownAdapters, localOptInAdapterIds } from '../registry.js';
 import { sanitizeDiagnosticEvent } from '../local/diagnostics.js';
 import type { DiagnosticEvent } from '../local/diagnostics.js';
@@ -18,7 +19,7 @@ const POLL_MS = 25000;
 // These measurements stay local until the independently deployed admin wire
 // contract supports them. Source-page progress must still include their IDs.
 const localOnlyEvents = new Set<DiagnosticEvent['type']>(['work.start', 'work.finish', 'release.marker']);
-const ids = new Set([...knownAdapters, ...localOptInAdapterIds, 'freellmapi', 'codex', 'dots']);
+const ids = new Set([...knownAdapters, ...localOptInAdapterIds, 'codex']);
 const states = new Set(['unknown', 'available', 'ready', 'answering', 'connecting', 'verifying', 'approval', 'limited', 'error', 'disabled', 'unavailable']);
 const errors = new Set(['not_installed', 'logged_out', 'quota', 'timeout', 'upstream', 'refused', 'cancelled']);
 const maintenanceErrors = new Set([...errors, 'busy', 'foreground', 'consent']);
@@ -79,7 +80,7 @@ export function collectorConfig(env: NodeJS.ProcessEnv = process.env): Collector
     || !instancePattern.test(instanceId) || !/^\d{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new CollectorError('invalid_configuration');
   return {
     url: destination(env.GRUNT_ADMIN_COLLECTOR_URL ?? 'https://api.grunt.run/admin/ingest'),
-    ingestKey, instanceId, directory: configRoot(env), daemonPort: Number(port),
+    ingestKey, instanceId, directory: installedConfigRoot(env), daemonPort: Number(port),
     scoutDirectory: join(homedir(), '.local/state/usegrunt-scout')
   };
 }

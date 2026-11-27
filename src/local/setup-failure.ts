@@ -23,7 +23,7 @@ export function setupFailureReason(error: unknown): string {
   if (/needs? uv or Python/i.test(error.message)) return 'requires uv or a newer Python';
   if (/\b(?:not signed in|logged out|authentication|unauthorized|sign-in required)\b/i.test(error.message)) return 'sign-in required';
   if (/\b(?:timed out|timeout|did not answer)\b/i.test(error.message)) return 'timed out';
-  if (/Squire .*unavailable|repair the broker|Connect Trusty Squire/i.test(error.message)) return 'Squire unavailable';
+  if (/Squire .*unavailable|repair the broker|Connect Trusty Squire|Could not connect Grunt embedded signup|sign-in ceremony|unshowable/i.test(error.message)) return 'Squire unavailable';
   if (/no verified Kilo credential/i.test(error.message)) return 'no verified Kilo credential';
   if (/release checksum|package integrity/i.test(error.message)) return 'download failed integrity check';
   if (/release download|package download/i.test(error.message)) return 'download failed';
