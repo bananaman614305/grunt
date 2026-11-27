@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { hasOwnerMode, openPrivateFile } from './private-file.js';
@@ -49,6 +49,7 @@ export interface SquireResolutionOptions {
   autoUpdate?: boolean;
   fetcher?: typeof fetch;
   run?: SquireInstallRun;
+  execPath?: string;
   now?: () => number;
   signal?: AbortSignal;
   bundled?: boolean;
@@ -160,11 +161,117 @@ function shouldAutoUpdate(options?: SquireResolutionOptions): boolean {
 const defaultRun: SquireInstallRun = async (binary, args, options = {}) => {
   const { stdout } = await execute(binary, args, {
     ...options,
+    windowsHide: true,
     timeout: options.timeout ?? SQUIRE_INSTALL_TIMEOUT_MS,
     maxBuffer: 2 * 1024 * 1024
   });
   return stdout;
 };
+
+function envPathValue(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string | undefined {
+  if (platform !== 'win32') return env.PATH;
+  const entry = Object.entries(env).find(([key]) => key.toUpperCase() === 'PATH');
+  return entry?.[1];
+}
+
+async function isRegularFile(filePath: string): Promise<boolean> {
+  try {
+    return (await stat(filePath)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+async function findNpmCliFromNodeDir(dir: string): Promise<string | undefined> {
+  const candidates = [
+    join(dir, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    join(dir, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    join(dir, '..', 'share', 'npm', 'bin', 'npm-cli.js')
+  ];
+  for (const candidate of candidates) {
+    if (await isRegularFile(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+async function findNpmCliScript(
+  execPath: string,
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform
+): Promise<string | undefined> {
+  const visitedDirs = new Set<string>();
+  const checkNodeDir = async (dir: string): Promise<string | undefined> => {
+    const normalized = resolve(dir);
+    if (visitedDirs.has(normalized)) return undefined;
+    visitedDirs.add(normalized);
+    return findNpmCliFromNodeDir(normalized);
+  };
+
+  const execDir = dirname(execPath);
+  const direct = await checkNodeDir(execDir);
+  if (direct) return direct;
+
+  const realExecPath = await realpath(execPath).catch(() => undefined);
+  if (realExecPath) {
+    const fromRealExec = await checkNodeDir(dirname(realExecPath));
+    if (fromRealExec) return fromRealExec;
+  }
+
+  const rawPath = envPathValue(env, platform);
+  if (!rawPath) return undefined;
+  const delimiter = platform === 'win32' ? ';' : ':';
+
+  for (const rawEntry of rawPath.split(delimiter)) {
+    const entry = (platform === 'win32' ? rawEntry.trim().replace(/^"(.*)"$/, '$1') : rawEntry.trim());
+    if (!entry) continue;
+
+    const fromPathDir = await checkNodeDir(entry);
+    if (fromPathDir) return fromPathDir;
+
+    if (platform === 'win32') {
+      const realCmd = await realpath(join(entry, 'npm.cmd')).catch(() => undefined);
+      if (realCmd) {
+        const fromCmd = await checkNodeDir(dirname(realCmd));
+        if (fromCmd) return fromCmd;
+      }
+    } else {
+      const realNpm = await realpath(join(entry, 'npm')).catch(() => undefined);
+      if (realNpm) {
+        if (basename(realNpm) === 'npm-cli.js' && await isRegularFile(realNpm)) {
+          return realNpm;
+        }
+        const sibling = join(dirname(realNpm), 'npm-cli.js');
+        if (await isRegularFile(sibling)) return sibling;
+        const fromNpmDir = await checkNodeDir(dirname(realNpm));
+        if (fromNpmDir) return fromNpmDir;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Resolves npm's JavaScript entry point (`npm-cli.js`) and runs it via
+ * `process.execPath` with separate arguments so Windows never passes a `.cmd`
+ * wrapper to `execFile` or invokes a shell.
+ */
+export async function resolveNpmCommand(
+  npmArgs: readonly string[],
+  options: { execPath?: string; env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {}
+): Promise<{ binary: string; args: string[] }> {
+  const platform = options.platform ?? process.platform;
+  const execPath = options.execPath ?? process.execPath;
+  const env = options.env ?? process.env;
+  const npmCli = await findNpmCliScript(execPath, env, platform);
+  if (npmCli) {
+    return { binary: execPath, args: [npmCli, ...npmArgs] };
+  }
+  if (platform === 'win32') {
+    throw new Error('Could not locate npm-cli.js for Node on Windows');
+  }
+  return { binary: 'npm', args: [...npmArgs] };
+}
 
 function sanitizeInstallEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return Object.fromEntries(
@@ -617,10 +724,9 @@ async function installManagedVersion(
     await writeFile(globalNpmrc, '', { flag: 'wx', mode: 0o600 });
 
     const run = options?.run ?? defaultRun;
-    const npmBinary = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    const rawEnv = options?.env ?? process.env;
     const installTimeoutMs = options?.installTimeoutMs ?? SQUIRE_INSTALL_TIMEOUT_MS;
-    await run(
-      npmBinary,
+    const npmCommand = await resolveNpmCommand(
       [
         'install',
         '--prefix', staging,
@@ -635,7 +741,15 @@ async function installManagedVersion(
         '--globalconfig', globalNpmrc
       ],
       {
-        env: sanitizeInstallEnv(options?.env ?? process.env),
+        env: rawEnv,
+        ...(options?.execPath ? { execPath: options.execPath } : {})
+      }
+    );
+    await run(
+      npmCommand.binary,
+      npmCommand.args,
+      {
+        env: sanitizeInstallEnv(rawEnv),
         timeout: installTimeoutMs,
         ...(options?.signal ? { signal: options.signal } : {})
       }

@@ -1,6 +1,6 @@
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   SQUIRE_LATEST_URL,
@@ -9,6 +9,7 @@ import {
   compareSemver,
   parseSemver,
   parseStableSemver,
+  resolveNpmCommand,
   resolveSquirePackage,
   squireClientPath
 } from './squire-client-path.js';
@@ -17,6 +18,7 @@ import { loadEmbeddedSignupSdk } from './signup-mcp.js';
 
 let root: string;
 let configDir: string;
+const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
 
 async function writeFakeSquirePackage(
   packageDir: string,
@@ -83,6 +85,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  Object.defineProperty(process, 'platform', originalPlatform);
   vi.restoreAllMocks();
   await rm(root, { recursive: true, force: true });
 });
@@ -129,6 +132,9 @@ describe('on-need @trusty-squire/mcp updates', () => {
     expect(installer.run).toHaveBeenCalledOnce();
 
     const call = installer.calls[0]!;
+    expect(call.binary).toBe(process.execPath);
+    expect(basename(call.args[0]!)).toBe('npm-cli.js');
+    expect(call.args[1]).toBe('install');
     expect(call.args).toContain('--ignore-scripts');
     expect(call.args).toContain('--omit=dev');
     expect(call.args).toContain('--registry=https://registry.npmjs.org');
@@ -443,5 +449,96 @@ describe('on-need @trusty-squire/mcp updates', () => {
     });
     expect(resolved.source).toBe('packaged');
     expect(resolved.version).toBe('1.4.0');
+  });
+
+  it('launches npm-cli.js through process.execPath on Windows via real execFile and loads the upgraded SDK', async () => {
+    const packagedDir = join(root, 'packaged-1.2.0');
+    await writeFakeSquirePackage(packagedDir, '1.2.0', { marker: 'win-packaged-1.2.0' });
+
+    // Simulate a standard Windows Node directory layout:
+    //   <winNodeDir>/node
+    //   <winNodeDir>/npm.cmd (must never be executed)
+    //   <winNodeDir>/node_modules/npm/bin/npm-cli.js
+    const winNodeDir = join(root, 'win-node');
+    const npmBinDir = join(winNodeDir, 'node_modules', 'npm', 'bin');
+    await mkdir(npmBinDir, { recursive: true });
+    const fakeNode = join(winNodeDir, 'node');
+    await symlink(process.execPath, fakeNode);
+    await writeFile(join(winNodeDir, 'npm.cmd'), '@echo off\r\nexit /b 99\r\n', { mode: 0o600 });
+    const fakeNpmCli = join(npmBinDir, 'npm-cli.js');
+    await writeFile(
+      fakeNpmCli,
+      `const { mkdirSync, readFileSync, writeFileSync } = require('node:fs');
+const { join } = require('node:path');
+const args = process.argv.slice(2);
+if (args[0] !== 'install') throw new Error('expected install subcommand');
+if (!args.includes('--ignore-scripts') || !args.includes('--omit=dev')) throw new Error('missing safety flags');
+if (process.env.NODE_OPTIONS || process.env.npm_config_registry) throw new Error('env was not sanitized');
+const prefix = args[args.indexOf('--prefix') + 1];
+const manifest = JSON.parse(readFileSync(join(prefix, 'package.json'), 'utf8'));
+const version = manifest.dependencies['@trusty-squire/mcp'];
+const pkgDir = join(prefix, 'node_modules', '@trusty-squire', 'mcp');
+const distDir = join(pkgDir, 'dist');
+mkdirSync(distDir, { recursive: true });
+writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ name: '@trusty-squire/mcp', version, type: 'module' }));
+writeFileSync(join(distDir, 'bin.js'), 'export default {};\\n');
+writeFileSync(join(distDir, 'signup.js'), 'export const SDK_MARKER = ' + JSON.stringify('win-managed-' + version) + ';\\nexport const SDK_VERSION = ' + JSON.stringify(version) + ';\\n');
+`,
+      { mode: 0o600 }
+    );
+
+    Object.defineProperty(process, 'platform', { ...originalPlatform, value: 'win32' });
+
+    const command = await resolveNpmCommand(['install', '--prefix', '/tmp/example'], {
+      execPath: fakeNode,
+      env: { Path: '' },
+      platform: 'win32'
+    });
+    expect(command.binary).toBe(fakeNode);
+    expect(command.args).toEqual([fakeNpmCli, 'install', '--prefix', '/tmp/example']);
+
+    // Run without stubbing `run`: exercises the real execFile path end to end.
+    const fetcher = vi.fn<typeof fetch>(async () =>
+      registryResponse({ name: SQUIRE_PACKAGE_NAME, version: '1.2.8' })
+    );
+    const sdk = await loadEmbeddedSignupSdk(configDir, {
+      packagedDir,
+      bundled: false,
+      fetcher,
+      execPath: fakeNode,
+      now: () => 1_700_000_000_000,
+      env: {
+        Path: '',
+        NODE_OPTIONS: '--require /tmp/should-be-stripped.js',
+        npm_config_registry: 'https://evil.example'
+      }
+    }) as unknown as { SDK_MARKER: string; SDK_VERSION: string };
+
+    expect(sdk.SDK_MARKER).toBe('win-managed-1.2.8');
+    expect(sdk.SDK_VERSION).toBe('1.2.8');
+
+    // Also verify Windows Path lookup (mixed-case `Path`) when npm-cli.js is not adjacent to execPath.
+    const bareNodeDir = join(root, 'bare-node');
+    await mkdir(bareNodeDir, { recursive: true });
+    const bareNode = join(bareNodeDir, 'node.exe');
+    await writeFile(bareNode, '', { mode: 0o600 });
+    await writeFile(join(bareNodeDir, 'npm.cmd'), '@echo off\r\nexit /b 99\r\n', { mode: 0o600 });
+
+    const pathLookupCommand = await resolveNpmCommand(['install'], {
+      execPath: bareNode,
+      env: { Path: `"${winNodeDir}"` },
+      platform: 'win32'
+    });
+    expect(pathLookupCommand.binary).toBe(bareNode);
+    expect(pathLookupCommand.args).toEqual([fakeNpmCli, 'install']);
+
+    // Never fall back to npm.cmd on Windows if npm-cli.js is unavailable.
+    await expect(
+      resolveNpmCommand(['install'], {
+        execPath: bareNode,
+        env: { Path: bareNodeDir },
+        platform: 'win32'
+      })
+    ).rejects.toThrow('npm-cli.js');
   });
 });
