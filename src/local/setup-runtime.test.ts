@@ -58,7 +58,7 @@ it('defers maintenance during an updater lease while allowing existing routes to
   daemon.serve.mockImplementation((options: { fetch: typeof handler }) => { handler = options.fetch; return { close: daemon.close }; });
   const signals = ['SIGINT', 'SIGTERM'] as const;
   const previous = new Map(signals.map(signal => [signal, new Set(process.listeners(signal))]));
-  const running = start({ GRUNT_SOURCES: 'freellmapi,kilo', GRUNT_CONFIG_DIR: path, GRUNT_PORT: '18792' });
+  const running = start({ GRUNT_SOURCES: 'codex,kilo', GRUNT_CONFIG_DIR: path, GRUNT_PORT: '18792' });
   try {
     await handler(new Request('http://localhost:18792/v1/status'));
     expect(await daemon.maintenance!.check('kilo', new AbortController().signal)).toEqual({ outcome: 'deferred', code: 'foreground' });
@@ -228,7 +228,7 @@ it('maintains only currently approved curated sources using exact replies and ne
   daemon.serve.mockImplementation((options: { fetch: typeof handler }) => { handler = options.fetch; return { close: daemon.close }; });
   const signals = ['SIGINT', 'SIGTERM'] as const;
   const previous = new Map(signals.map(signal => [signal, new Set(process.listeners(signal))]));
-  const running = start({ GRUNT_SOURCES: 'freellmapi,kilo,perch', GRUNT_CONFIG_DIR: path, GRUNT_PORT: '18792' });
+  const running = start({ GRUNT_SOURCES: 'codex,kilo,perch', GRUNT_CONFIG_DIR: path, GRUNT_PORT: '18792' });
   try {
     await handler(new Request('http://localhost:18792/v1/status'));
     expect(daemon.maintenance?.providers()).toEqual(['kilo', 'perch']);

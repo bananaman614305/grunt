@@ -4,14 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DiagnosticsStore, withDiagnosticContext } from './diagnostics.js';
-import { FreeLLMAPI } from './freellmapi.js';
 import { TokenHarbor } from './tokenharbor.js';
 import { verifyBeatAPIAccess } from './beatapi.js';
 import { verifyPollinationsAccess } from './pollinations.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 import { runMistralVibeProcess } from './mistral-vibe.js';
 import { openPerchACP, runPerchCommand } from './perch-process.js';
-import type { ModelRequest } from './source.js';
 
 const directories: string[] = [];
 const stores: DiagnosticsStore[] = [];
@@ -27,7 +25,6 @@ async function fixture() {
   const requestId = randomUUID();
   return { directory, store, requestId, run: <T>(fn: () => T) => withDiagnosticContext({ requestId, kind: 'diagnostic', sink: store }, fn) };
 }
-const request: ModelRequest = { model: 'freellmapi', messages: [{ role: 'user', content: 'private synthetic prompt' }], tools: [], cwd: tmpdir(), stream: false };
 const privateBody = 'synthetic-private-upstream-body';
 const privateToken = 'synthetic-private-token';
 const privateGrant = 'g_AAAAAAAAAAAAAAAAAAAAAAAA';
@@ -36,18 +33,6 @@ function expectMetadataOnly(value: unknown) {
   const serialized = JSON.stringify(value);
   for (const text of [privateBody, privateToken, privateGrant, 'private synthetic prompt', 'Authorization', 'stdout', 'stderr']) expect(serialized).not.toContain(text);
 }
-
-it('retains the real HTTP status and Retry-After without recording an error body, URL, authorization or prompt', async () => {
-  const f = await fixture();
-  const fetcher = vi.fn<typeof fetch>(async () => new Response(privateBody, { status: 429, headers: { 'Retry-After': '73' } }));
-  const source = new FreeLLMAPI({ key: privateToken, fetcher });
-  await expect(f.run(() => source.complete(request, new AbortController().signal))).rejects.toMatchObject({ code: 'quota', diagnostics: { httpStatus: 429, transport: 'http' } });
-  const result = await f.store.list({ requestId: f.requestId });
-  expect(fetcher).toHaveBeenCalledOnce();
-  expect(result.events).toHaveLength(1);
-  expect(result.events[0]).toMatchObject({ type: 'transport.finish', source: 'freellmapi', httpStatus: 429, httpMethod: 'POST', endpointLabel: 'chat.completions', errorCode: 'quota', retryAfterSeconds: 73 });
-  expectMetadataOnly(result);
-});
 
 it('records availability metadata failures that the provider intentionally converts into false', async () => {
   const f = await fixture(); await recordDataSharingConsent(f.directory, ['tokenharbor']);
@@ -80,18 +65,6 @@ it('observes each Pollinations account/catalog check without exposing grant path
   expect(result.events.filter(event => event.endpointLabel === 'models')).toHaveLength(1);
   expect(result.events.every(event => event.httpStatus === 403 && event.source === 'pollinations')).toBe(true);
   expectMetadataOnly(result);
-});
-
-it('leaves unreported usage unknown and returns successful completions despite a broken diagnostic sink', async () => {
-  const f = await fixture();
-  vi.spyOn(f.store, 'record').mockImplementation(() => { throw new Error('synthetic recorder failure'); });
-  const response = Response.json({ choices: [{ message: { content: 'answer' } }] });
-  const fetcher = vi.fn<typeof fetch>(async () => response);
-  const source = new FreeLLMAPI({ key: privateToken, fetcher });
-  const completion = await f.run(() => source.complete(request, new AbortController().signal));
-  expect(completion.text).toBe('answer');
-  expect(completion.inputTokens).toBeUndefined(); expect(completion.outputTokens).toBeUndefined();
-  expect(fetcher).toHaveBeenCalledOnce();
 });
 
 it('records actual CLI exit codes while native stdout/stderr stay outside persistent diagnostics', async () => {

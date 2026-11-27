@@ -5,16 +5,9 @@ Grunt uses `usegrunt`, the `grunt` model/provider ID, `GRUNT_*` settings and
 
 ## Compatibility with existing installations
 
-The former `milo`/`milo-local` commands, pre-rename `MILO_*` settings, model and MCP aliases
-remain accepted for existing clients. `GRUNT_*` settings take precedence, and newer
-Grunt-era settings (such as `GRUNT_BACKGROUND_ACCOUNT_ACQUISITION`, `GRUNT_FLEET_REPORTING`,
-and `GRUNT_OPT_IN_SOURCES`) only accept the `GRUNT_*` prefix. Existing
-private configuration under `~/.config/milo` and an installed `milo.service` are
-reused so saved logins, custom ports and consent receipts are preserved. New
-installations use Grunt names. These are migration aliases, not current branding.
-The already allocated gateway app, volume and database file retain their
-resource identifiers in `fly.toml`; changing those without moving the data would
-create a separate deployment or database.
+Use `usegrunt` for setup and updates, `grunt` as the local model, and
+`GRUNT_*` for environment settings. Setup and update migrate an earlier managed
+daemon to the Grunt service identity and keep its private configuration directory.
 
 ## Run the gateway
 
@@ -245,8 +238,8 @@ each subagent's model calls arrive as ordinary requests. Pi has no subagents.
 - **Stickiness.** A subagent stays on its source for its whole run, including
   tool results and retries, and moves, with a handoff, only when that source
   returns a 429, fails past tolerance or loses its login. Managed pools always
-  route by weight and stay sticky. A source with no registry entry, such as an
-  earlier FreeLLMAPI route, is a last resort: it runs only when named as a model
+  route by weight and stay sticky. A source with no registry entry, such as
+  explicitly enabled Codex, is a last resort: it runs only when named as a model
   or after every routed source fails.
 - **Notifications.** Codex reports a finished subagent to its orchestrator as a
   `<subagent_notification>` user message and Claude Code as a
@@ -1031,7 +1024,7 @@ processes task and tool context for service delivery, security, debugging and
 metering even with the optional Data Program off. Retention, review limits and
 zero-retention coverage have not been independently verified. Setup enables both by default and records their current policies.
 
-NVIDIA remains an optional integration and is not in the bundled default pool while account verification is unvetted. Its direct Squire grant never uses the FreeLLMAPI fallback chain. Cloudflare Qwen is excluded from the pool by the owner's choice.
+NVIDIA remains an optional integration and is not in the bundled default pool while account verification is unvetted. Cloudflare Qwen is excluded from the pool by the owner's choice.
 
 Before making changes, setup checks Node, npm, tar and the user service
 manager. A missing prerequisite prints its install or repair step and stops.
@@ -1041,8 +1034,6 @@ you install a harness.
 Vault reuse and browser capture follow the
 [signup verification rules](#free-api-and-account-setup).
 An incomplete or refused service is reported while other service jobs finish.
-grunt calls `grant_app_access` and sends only the grant's base URL and bearer
-token to FreeLLMAPI's custom-provider endpoint for those API providers.
 Zro, Token Harbor and Runcrate keep private grants in `zro.json`,
 `tokenharbor.json` and `runcrate.json` and call
 `/v1/chat/completions` directly. Their upstream keys stay in Squire, scoped to
@@ -1055,13 +1046,9 @@ scoped to `integrate.api.nvidia.com`; no other backend can answer its requests.
 API-provider keys stay in Squire; no provider reveal approval is requested.
 Mistral Vibe, LiveKit, Perch and Nous use native clients that own their
 local credential exchanges and storage.
-Groq uses its `/openai/v1` API path beneath the Squire grant root. Setup discovers
-currently available chat models through that grant before registering one.
-`usegrunt add https://host/api/v1` adds an OpenAI-compatible endpoint with a hidden key prompt and discovered model choice. `usegrunt add` prompts for a name or URL.
-`usegrunt add groq` or `usegrunt add cerebras` connects another provider through
-the same flow, then restarts grunt with the API sources enabled. `usegrunt add kilo`
-checks the [anonymous Kilo free-model catalog](#kilo-free-models) after current
-approval; it does not create an account or capture a provider key.
+Use `usegrunt add <provider>` to set up a supported provider. For example,
+`usegrunt add kilo` checks the [anonymous Kilo free-model catalog](#kilo-free-models)
+after current approval without creating an account or capturing a provider key.
 
 When the first account-dependent job needs Squire and no session exists, setup
 runs Squire's own connect installer with the OpenCode target. Parallel jobs share
@@ -1073,44 +1060,22 @@ login and its broker service. An existing
 session with an unavailable broker reports the connection error for repair.
 Setup does not pair with Beeline or create agents or Rooms.
 
-grunt state lives under `$GRUNT_CONFIG_DIR`, otherwise `$XDG_CONFIG_HOME/grunt` or
-`~/.config/grunt` for new installs. Without an explicit setting or existing Grunt
-directory, the compatibility path described above reuses the existing legacy
-directory. Keep the selected directory across service restarts. Local router login
-and encryption material are generated once and stored with mode `0600`.
-FreeLLMAPI encrypts the grant tokens in its backend database. Neither tokens nor
-provider keys appear in Pi's config or terminal output. Never share backend state.
-Existing routers with keys are preserved if their local admin state is missing.
+Grunt state lives under `GRUNT_CONFIG_DIR`, otherwise `$XDG_CONFIG_HOME/grunt`
+or `~/.config/grunt` for new installs. Upgrades keep existing managed state at
+its original path. Keep the selected directory across service restarts.
 
-Fresh setup offers the bundled vetted pool listed above, enabling providers only
-after their required data-sharing approval.
-It also preserves an existing `freellmapi` route from an earlier
-API-provider setup. Service installs save their selected sources in
-`installed-sources.json` under grunt's config directory so later installs retain
-them. The daemon loads the saved router login at startup and retries if the
-router is temporarily unavailable. Setup keeps a runtime outside the npx cache,
-so cache cleanup does not remove the service. On Linux the service is an enabled
-systemd user unit that restarts after a crash. Setup attempts to enable lingering
-without an authentication prompt so the service keeps running after logout and
-starts at boot. If that fails, installation continues, but persistence across
-logout and boot requires running `loginctl enable-linger` as the installing user;
-setup prints this repair command. Rerunning setup re-enables and restarts an
-existing unit, including a legacy `milo` unit, while preserving its configuration
-and custom drop-ins. On macOS a LaunchAgent restarts it after a crash and starts
-it at each login. In the ready-first flow, providers
-join this installed runtime as their checks finish; the wizard does not reinstall
-or restart it for each provider. Pi's other providers are preserved.
-`PI_CODING_AGENT_DIR` selects a nondefault Pi agent directory.
+Setup offers the bundled pool and records enabled providers in
+`installed-sources.json`. It keeps a runtime outside the npx cache so cache
+cleanup does not remove the service. On Linux, the `grunt.service` user unit
+restarts after a crash. Setup attempts to enable lingering so the service starts
+at boot and survives logout. If that fails, run `loginctl enable-linger` as the
+installing user. On macOS, the `ai.grunt.service` LaunchAgent starts at login
+and restarts after a crash. When setup or update replaces an older service
+identity, it carries forward the effective port and Linux unit overrides.
 
-Named API-provider setup can install the pinned FreeLLMAPI Node server
-as a separate background service; Docker is not required. Linux uses systemd user
-units; macOS uses launchd (macOS remains untested). The router data and private login live under grunt's
-config directory. `GRUNT_FREELLMAPI_URL` chooses its numeric loopback address and
-is saved in grunt's service configuration. The router's database is created under
-umask `0077`. `GRUNT_ROUTER_RUNTIME=docker` retains the older Docker installer for
-existing installations and offline regression checks.
-The default Kilo source calls the public gateway directly and does not
-need this separate router service.
+In the ready-first flow, providers join the installed runtime as their checks
+finish. Setup preserves other Pi providers. `PI_CODING_AGENT_DIR` selects a
+nondefault Pi agent directory.
 
 `GRUNT_SQUIRE_HOME` and `GRUNT_SQUIRE_XDG_CONFIG_HOME` select an existing Squire
 home without relocating grunt state. `GRUNT_SETUP_NO_HUMAN=1` stops before Squire
@@ -1149,46 +1114,10 @@ the validation workflow; deployment/publication workflows remain separately
 controlled. Gateway changes update the two existing file overlays described
 under Deploy, not the image.
 
-Explicit legacy FreeLLMAPI installations send calls to `http://127.0.0.1:3001/v1`, including
-provider failover. There is no direct OpenRouter free API route. An already
-configured install can provide `GRUNT_FREELLMAPI_KEY` in its process environment;
-`GRUNT_FREELLMAPI_URL` accepts numeric HTTP loopback addresses only. The completion
-cap is (4096) tokens. Select `freellmapi` for a previously configured legacy
-chain; select `kilo` for the [direct free-model source](#kilo-free-models). Grunt-owned backend
-rows require current sharing approval; custom backend rows retain their own flags
-and priorities. Legacy requests reconcile owned rows from the existing private
-admin file before forwarding and fail closed if that state cannot be checked.
-The 0.6.6 migration retires Grunt-owned Auto, Nemotron and other non-Particle
-rows labeled `Kilo Free` or `Grunt kilo (Squire)`, even when an older approval
-exists. With current Kilo consent and a verified catalog entry,
-the runtime guard can add Particle to an existing Grunt-owned backend key using
-backend-held credentials. It preserves a previously disabled Particle row and
-its priority, and leaves user custom keys, rows,
-flags and priorities untouched. This guard creates no account, provider key or
-router service. Fresh legacy bootstrap also uses only Particle for Kilo; it does
-not restore Auto or Nemotron fallback. Metadata-only migration was verified on
-Chad: owned Auto/Nemotron rows are disabled and owned Particle rows are enabled.
-Version 0.6.5 used Auto Free by default and a Nemotron-first legacy
-chain. Auto Free is no longer the default in 0.6.6, and its changing pool does not
-guarantee DeepSeek. Particle is specifically post-trained from DeepSeek V4.1 Flash;
-it is not the standard DeepSeek model.
-On November 15, 2026, both official model catalogs
-([API gateway](https://api.kilo.ai/api/gateway/models),
-[AI gateway](https://ai-gateway.kilo.ai/api/v1/models)) listed the standard
-DeepSeek V4.1 Flash and its 1017 variant as paid, at $0.30 per million input
-tokens and $1.20 per million output tokens, with no free standard DeepSeek ID.
-The separately listed free Particle route does not make either standard route free.
-See [Kilo's free-model guidance](https://kilo.ai/docs/getting-started/using-kilo-for-free).
-Grunt-owned Freebuff fallback rows are disabled, and the port-8789 bridge no
-longer starts. Fresh setup of the [direct Kilo source](#kilo-free-models) needs
-no legacy router. FreeLLMAPI continues priority routing for eligible configured
-providers; custom user rows retain their own flags and priorities.
-
-FreeLLMAPI's signed catalog handles model and quota updates. Free installations
-receive its delayed monthly snapshot; live catalog access is a separate upstream
-premium option. Check the local dashboard when provider availability changes.
-FreeLLMAPI is single-user software for personal experimentation; keep it bound
-to loopback. See its [installation guide](https://github.com/tashfeenahmed/freellmapi/blob/main/docs/en/install/01-install.md).
+Kilo uses the direct [Particle free-model route](#kilo-free-models).
+Particle was post-trained from DeepSeek V4.1 Flash. The standard DeepSeek V4.1
+Flash and its 1017 variant were listed as paid in Kilo's catalogs during the
+release checks. See [Kilo's free-model guidance](https://kilo.ai/docs/getting-started/using-kilo-for-free).
 
 ### OpenCode app driver
 
@@ -1381,7 +1310,7 @@ user `config.toml` if you want grunt as the default. See the
 ### Codex source
 
 Codex is opt-in. With the official `codex` CLI already signed in using ChatGPT,
-set `GRUNT_SOURCES=codex,freellmapi,opencode,kilo` to enable it first. Enabling it
+set `GRUNT_SOURCES=codex,opencode,kilo` to enable it first. Enabling it
 spends your Codex plan allowance, including the weekly limit. Without
 `GRUNT_SOURCES`, grunt uses the bundled free pool and current data-sharing
 approvals; it never launches Codex. With Codex enabled, select model `codex` to use only Codex.
@@ -1536,22 +1465,17 @@ Removing a registry entry disables it without uninstalling its files. `GRUNT_CON
 `GRUNT_PORT` select the current config directory and port. `GRUNT_REGISTRY_URL` overrides the sync,
 feedback and scores endpoint for local development.
 
-Explicit `GRUNT_SOURCES` configurations containing legacy sources such as Dots,
-Codex or FreeLLMAPI retain their existing ordered behavior. They are outside the
-launch registry. Codex still requires explicit opt-in. A managed automatic pool
-behaves differently: a source it preserves that has no registry entry, such as an
-earlier FreeLLMAPI route, does not turn off weighted, sticky routing for the rest.
-The daemon logs one `grunt routing:` line naming such sources. They are never drawn
-or tried first; model `freellmapi` still selects one alone, and model `grunt` tries
-it only after every routed source has failed. The Fly personal-agent
-API remains separate from this local daemon.
+An explicit `GRUNT_SOURCES` list that includes Codex keeps its configured order.
+Codex requires opt-in and is outside the curated registry. When an existing
+automatic pool includes Codex, the routed sources retain weighted, sticky
+routing. Select model `codex` to use it directly. Model `grunt` tries it after
+every routed source fails.
 
 ### Retired sources
 
 Freebuff and APInex cannot be selected or routed through grunt in 0.6.6. Saved
 source selections and environment values are filtered, old consent receipts do
-not reactivate them, Grunt-owned Freebuff backend rows are disabled, and no
-port-8789 bridge starts. The person's native Freebuff application and account
+not reactivate them. The person's native Freebuff application and account
 are preserved. The prior DeepSeek-selection experiment received an explicit
 relaying-policy refusal; no pin shipped.
 
@@ -1560,36 +1484,6 @@ top-up. Grunt does not make that purchase; a one-time Telegram reward does not
 qualify as ongoing free access. Historical Freebuff bridge experiments and their
 limitations remain in [the recorded evidence](../proof/freebuff-json-bridge.md),
 not as supported routing instructions for this release.
-
-### Dots through the grunt connector (optional)
-
-With grunt running on your computer, tell your dot:
-
-> Join grunt: api.grunt.run/join
-
-Choose **Allow** when ChatGPT opens grunt's connection page. It sends your browser to the local daemon, redeems a single-use ticket, and returns to ChatGPT. No command or typed code is needed. The dot receives server instructions to subscribe to `grunt.request` automatically and return answers with `grunt_submit_reply`.
-
-Dots is off by default. Start grunt with an explicit source order that includes it:
-
-```sh
-GRUNT_SOURCES=dots,freellmapi,opencode,kilo usegrunt serve
-```
-
-The normal join flow targets the default daemon port (`8788`). The OAuth authorize URL can specify `grunt_port` when the daemon runs on another port. If grunt cannot be reached, or you approve on a phone, return to the Allow page and choose **Connect another computer**. Run the displayed fallback command, `usegrunt dots link <code>`, on the computer running grunt, then choose **Continue to ChatGPT** on that page. Codes and tickets are private, single-use, and expire within ten minutes. The fallback command reuses the same device secret as automatic pairing.
-
-Select model `dots` for the dot only. Model `grunt` moves to the next source when the device is not paired, no live subscription exists, the dot reports an actual quota refusal, or no reply arrives before `GRUNT_DOTS_TIMEOUT_MS` (default `300000`, five minutes). Caller cancellation stops the chain. Without pairing, dots is absent from `/v1/models`. Without `dots` in `GRUNT_SOURCES`, normal requests and the local pairing route make no gateway calls. Replies that merely discuss usage limits are returned normally.
-
-grunt stores its generated device secret in `dots.json` under `GRUNT_CONFIG_DIR`, otherwise `$XDG_CONFIG_HOME/grunt` or `~/.config/grunt`, with mode `0600`, and reuses it for later authorizations. It is a grunt relay secret, never an OpenAI token; do not share that file. Local pairing requires a navigation from the configured gateway and a ticket that gateway confirms was approved. It refuses arbitrary origins, return URLs, unapproved tickets, reused tickets and expired tickets.
-
-The public relay runs at api.grunt.run using the gateway target in `fly.toml`. `/join` is the canonical OAuth MCP endpoint; `/mcp` is an alias. `GRUNT_DOTS_URL` overrides the relay origin for tests (HTTP only on loopback). Pair using that override: grunt will not forward an existing device secret to another origin. The gateway's `GRUNT_PUBLIC_URL` defaults to `https://api.grunt.run` and controls OAuth metadata. Deployment is separate from the public GitHub Actions CI workflow.
-
-The relay sends a signed event containing only a request ID and fixed summary. The dot reads the conversation with `grunt_get_request`, then calls `grunt_submit_reply(requestId, text)` or `grunt_fail_request(requestId, reason)` (`quota` or `upstream`). Follow-ups carry earlier user and assistant turns. Prompt text is removed from SQLite when answered or expired; replies remain only until local acknowledgment or expiry. Text is never written to application logs. The relay temporarily stores conversation text and the dot receives it, so send only content you intend to share.
-
-MCP Events is experimental. The live test checks whether the dot follows the server instructions and subscribes by itself. If it does not, say: “Subscribe to grunt's grunt.request event, answer each request in chat, and send the answer back with grunt_submit_reply.” Record the exact error if ChatGPT rejects a subscription. You can ask the dot manually to read a queued request while its subscription remains live. Whether event-triggered dot work counts against plan limits must be checked live; do not assume it is free. Every prompt asks for a chat answer without starting Codex or Work tasks, but this cannot guarantee the dot's behavior or usage accounting. Replies are text only; they cannot edit the local working directory or return local tool calls.
-
-Disconnecting the connector revokes the grant and stops subscriptions when ChatGPT invokes the revocation endpoint. Otherwise subscriptions expire within a day; grunt cannot detect ChatGPT-only removal immediately.
-
-References: [OpenAI MCP Events](https://developers.openai.com/plugins/build/mcp-events), [ChatGPT plugin connections](https://developers.openai.com/plugins/deploy/connect-chatgpt), and [dots availability and delegated tasks](https://learn.chatgpt.com/docs/dots).
 
 ## Curated sources and explicit selections
 
@@ -1643,8 +1537,7 @@ managed service's existing source list. An ordinary update migrates a verified
 managed installation only when its private setup manifest matches that list.
 The daemon then considers newly curated sources even when the service file still
 contains an older list. Explicitly added supported sources are retained in a
-separate selection list, including the `freellmapi` router for custom API URLs;
-those additions do not promote an experimental source into the curated registry.
+separate selection list. Those additions do not promote an experimental source into the curated registry.
 Provider signup and current provider-specific consent
 remain required; this receipt records source selection, not account access.
 Manual daemons and explicit source overrides that differ from the anchor keep

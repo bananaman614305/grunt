@@ -1,4 +1,5 @@
-import { gruntEnv, configRoot } from '../brand.js';
+import { installedConfigRoot } from './service-migration.js';
+import { gruntEnv } from '../brand.js';
 import { providerQuotaPolicy, scheduledQuotaRefill, sellerQuota } from './quota-policy.js';
 import { Chalk } from 'chalk';
 import { stripVTControlCharacters } from 'node:util';
@@ -342,7 +343,7 @@ export function startDashboard(options: DashboardOptions): DashboardHandle {
 }
 
 export async function installedPort(env: NodeJS.ProcessEnv): Promise<number> {
-  const directory = configRoot(env);
+  const directory = installedConfigRoot(env);
   let file;
   try { file = await open(join(directory, 'installed-port.json'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 8788; throw new Error('Cannot read installed Grunt port; use --port explicitly'); }

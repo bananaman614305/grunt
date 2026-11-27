@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { Zro, ZRO_DEEPSEEK, readZroGrant, writeZroGrant } from './zro.js';
 import { TokenHarbor, TOKENHARBOR_DEEPSEEK, writeTokenHarborGrant } from './tokenharbor.js';
-import { BrowserSquire, FreeLLMAdmin, setup } from './setup.js';
+import { BrowserSquire, setup } from './setup.js';
 import { Sources } from './source.js';
 import { SourceAvailability } from './source-availability.js';
 import { SourceStatus } from './source-status.js';
@@ -60,12 +60,11 @@ const paused = () => Response.json({ error: { code: 'api_key_paused' } }, { stat
 
 it('uses a working vaulted Zro key without a browser run or aggregator, then reuses its local grant', async () => {
   const path = await directory();
-  const backend = vi.spyOn(FreeLLMAdmin.prototype, 'call').mockRejectedValue(new Error('must not start'));
   const squire = vaultedZro(async () => { throw new Error('must not drive'); });
   const fetcher = vi.fn<typeof fetch>(async () => response());
   vi.stubGlobal('fetch', fetcher);
   for (let i = 0; i < 2; i++) await setup(() => {}, ['zro'], { squire, directory: path });
-  expect(squire.runs.start).not.toHaveBeenCalled(); expect(squire.credentials.grant).toHaveBeenCalledOnce(); expect(backend).not.toHaveBeenCalled();
+  expect(squire.runs.start).not.toHaveBeenCalled(); expect(squire.credentials.grant).toHaveBeenCalledOnce();
   expect(await readZroGrant(path)).toMatchObject({ free_account_verified: true });
   // Readiness is a chat request, never the model list.
   expect(fetcher.mock.calls.length).toBeGreaterThan(0);

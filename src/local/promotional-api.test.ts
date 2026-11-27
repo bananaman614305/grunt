@@ -243,7 +243,7 @@ it('routes Fikra native tools through the Grunt HTTP interface with a mixed sour
     return Response.json({ model: PROMOTIONAL_PROVIDERS.fikra.model, choices: [{ message: { content: null,
       tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'ready', arguments: '{}' } }] } }] });
   }));
-  const sources = configure({ GRUNT_CONFIG_DIR: directory, GRUNT_SOURCES: 'freellmapi,fikra' }, () => preExpiryRegistry);
+  const sources = configure({ GRUNT_CONFIG_DIR: directory, GRUNT_SOURCES: 'codex,fikra' }, () => preExpiryRegistry);
   try {
     const response = await createLocalApp(sources, { cwd: directory }).request('http://127.0.0.1:8788/v1/chat/completions', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...request('fikra'), tools: [{ type: 'function', function: { name: 'ready', parameters: { type: 'object' } } }] })

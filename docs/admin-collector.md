@@ -25,8 +25,8 @@ browser:
 | `GRUNT_ADMIN_INGEST_KEY` | Dedicated machine ingestion credential accepted by the admin backend. Required. It is separate from Google owner login and read-only agent access. |
 | `GRUNT_ADMIN_INSTANCE_ID` | Backend-approved installation ID, for example `chad`. Required. |
 | `GRUNT_ADMIN_COLLECTOR_URL` | Defaults to `https://api.grunt.run/admin/ingest`. HTTPS, the exact ingestion path, and an owned Grunt hostname are required. The preserved `milo-gateway.fly.dev` origin is also accepted for operator deployment verification. |
-| `GRUNT_ADMIN_DAEMON_PORT` | Local daemon port. Defaults to `8792`; otherwise falls back to `GRUNT_PORT` / `MILO_PORT` when supplied. |
-| `GRUNT_CONFIG_DIR` | Existing private daemon configuration directory. The normal `MILO_CONFIG_DIR` and existing-directory migration compatibility remain supported. |
+| `GRUNT_ADMIN_DAEMON_PORT` | Local daemon port. Defaults to `8792`; otherwise falls back to `GRUNT_PORT` when supplied. |
+| `GRUNT_CONFIG_DIR` | Existing private daemon configuration directory. |
 
 The backend must independently allow the installation ID. The key permits
 ingestion only; it does not create an owner session or grant diagnostic reads.

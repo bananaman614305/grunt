@@ -278,7 +278,7 @@ async function runtimeCodeDigest(root: string, format: 'source' | 'built') {
 export async function loadWorkloadRuntime(root: string, preferredFormat: 'source' | 'built' = import.meta.url.endsWith('.ts') ? 'source' : 'built') {
   const canonical = await realpath(root);
   const metadata = JSON.parse(await readFile(join(canonical, 'package.json'), 'utf8')) as { name?: string; version?: string };
-  if (!['usegrunt', 'grunt-runtime', 'milo-runtime'].includes(metadata.name ?? '') || typeof metadata.version !== 'string') throw new Error('Baseline must be a trusted Grunt source checkout or built package.');
+  if (!['usegrunt', 'grunt-runtime'].includes(metadata.name ?? '') || typeof metadata.version !== 'string') throw new Error('Baseline must be a trusted Grunt source checkout or built package.');
   const exists = async (relative: string) => { try { return (await lstat(join(canonical, relative))).isFile(); } catch { return false; } };
   const runtimeFormat = preferredFormat === 'source' && await exists('src/local/source.ts') ? 'source' : 'built';
   const entrypoint = runtimeFormat === 'source' ? 'src/local/source.ts' : 'dist/local/source.js', source = join(canonical, entrypoint);

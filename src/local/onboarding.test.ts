@@ -7,9 +7,7 @@ import type { SignupAgent } from './signup-mcp.js';
 import { setupFallbacks } from './fallback-setup.js';
 import { withTerminal } from './terminal.js';
 import { BrowserSquire } from './setup.js';
-import { SourceError, Sources } from './source.js';
-import { FreeLLMAPI } from './freellmapi.js';
-import { createLocalApp } from './api.js';
+import { SourceError } from './source.js';
 import { parallelMap } from './parallel.js';
 import { bundledRegistry, validateRegistry } from '../registry.js';
 
@@ -104,20 +102,6 @@ it('pins Kilo installer and capabilities instead of accepting executable registr
   for (const change of [{ install: 'npm:untrusted' }, { install: 'builtin:other' }, { kind: 'agent' }, { modalities: ['image'] }]) {
     expect(() => validateRegistry({ ...bundledRegistry, adapters: [{ ...kilo, ...change }] })).toThrow();
   }
-});
-
-it.each(['custom/freebuff', 'groq/gpt-oss', 'cache', null])('never credits a backend fallback to Kilo (%s)', async route => {
-  const source = new FreeLLMAPI({ id: 'kilo', model: 'kilo-auto/free', key: 'synthetic', fetcher: async () => Response.json({ choices: [{ message: { content: 'a different provider answered' } }] }, { headers: route ? { 'X-Routed-Via': route } : {} }) });
-  const app = createLocalApp(new Sources([source]));
-  const response = await app.request('http://127.0.0.1:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'kilo', messages: [{ role: 'user', content: 'ready?' }] }) });
-  expect(response.status).not.toBe(200);
-  expect(response.headers.get('x-grunt-source')).not.toBe('kilo');
-});
-it('credits Kilo only when the backend confirms its Kilo model route', async () => {
-  const source = new FreeLLMAPI({ id: 'kilo', model: 'kilo-auto/free', key: 'synthetic', fetcher: async () => Response.json({ choices: [{ message: { content: 'Kilo answered' } }] }, { headers: { 'X-Routed-Via': 'custom/kilo-auto/free' } }) });
-  const app = createLocalApp(new Sources([source]));
-  const response = await app.request('http://127.0.0.1:8788/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'kilo', messages: [{ role: 'user', content: 'ready?' }] }) });
-  expect(response.status).toBe(200); expect(response.headers.get('x-grunt-source')).toBe('kilo');
 });
 
 it('serializes terminal ownership between interactive installers', async () => {

@@ -45,7 +45,7 @@ The daemon refreshes the registry on the [router loop schedule](docs/router.md#3
 ## One adapter per task, hand off at the wall
 
 Each new user turn starts a task, and the daemon binds it to one adapter, drawn at random by weight.
-Managed pools always draw by weight and stay sticky; a source with no registry entry, such as an earlier FreeLLMAPI route, is a last resort.
+Managed pools always draw by weight and stay sticky; a source with no registry entry, such as explicitly enabled Codex, is a last resort.
 Adapters that cannot handle the task's modality are filtered out before the draw.
 The task stays on that adapter until it returns a 429, fails past a set tolerance, or loses its login.
 grunt does not count usage ahead of time; it lets the adapter hit its limit, then switches.

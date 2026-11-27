@@ -25,7 +25,7 @@ async function localApp(routes: Source[]) {
   const app = createLocalApp(sources, { cwd: directory, observation: () => ({
     version: '1.2.3', startedAt: Date.now() - 1500, port: 8788, config: {
       fleetReporting: false, adoptionReporting: false, backgroundAccountAcquisition: false, registry: 'custom',
-      redactedSettings: ['FREELLMAPI_KEY']
+      redactedSettings: ['OPENCODE_URL']
     }
   }) });
   return { app, store, directory };
@@ -70,7 +70,7 @@ it('shows a live queue, failed route, dispatch and first progress before the res
     expect(await read()).toMatchObject({
       version: 1,
       daemon: { version: '1.2.3', uptimeMs: expect.any(Number), readiness: 'ready', config: {
-        host: '127.0.0.1', port: 8788, routing: 'ordered_chain', redactedSettings: ['FREELLMAPI_KEY']
+        host: '127.0.0.1', port: 8788, routing: 'ordered_chain', redactedSettings: ['OPENCODE_URL']
       } },
       diagnostics: { historyAvailable: true, health: { available: true, droppedEvents: 0 },
         losses: { persistentDroppedEvents: 0, droppedLateEvents: 0, overflowEvents: 0 } },
@@ -132,7 +132,7 @@ it('uses the existing journal for recent history and the same local response for
   const report = JSON.parse(output.mock.calls[0]![0] as string) as Observation;
   expect(report.inFlight).toEqual([]);
   expect(report.completed.map(item => item.id)).toEqual([oldest]);
-  await observeCommand(['--limit', '2'], { output, fetcher, env: { MILO_PORT: '8788' } });
+  await observeCommand(['--limit', '2'], { output, fetcher, env: { GRUNT_PORT: '8788' } });
   expect(output.mock.calls[1]?.[0]).toContain('Completed (2)');
   expect(output.mock.calls[1]?.[0]).toContain(newest);
   expect(output.mock.calls[1]?.[0]).not.toContain(priorProcess);

@@ -105,9 +105,9 @@ it('gives each Zro creation a readable UTC minute key name with no random suffix
     const call = vi.spyOn(squire, 'call').mockImplementation(async name => name === 'operate_drive' ? { status: 'complete', session_id: 'zro-session' } : {});
     const facts = () => call.mock.calls.filter(([name]) => name === 'operate_drive').map(([, args]) => (args as Record<string, unknown>).facts);
     vi.setSystemTime(new Date('2026-11-23T14:13:02Z'));
-    await squire.runs.start({ service: 'zro', plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none', idempotency_key: 'milo-free-zro' });
+    await squire.runs.start({ service: 'zro', plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none', idempotency_key: 'grunt-free-zro' });
     vi.setSystemTime(new Date('2026-11-23T14:14:40Z'));
-    await squire.runs.start({ service: 'zro', plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none', idempotency_key: 'milo-free-zro' });
+    await squire.runs.start({ service: 'zro', plan: 'free', project_name: 'grunt', category: 'ai', cost_cents: 0, recurrence: 'none', idempotency_key: 'grunt-free-zro' });
     expect(facts()).toEqual([
       { key_name: 'grunt-20261123-1413', plan: 'free', project_name: 'grunt-20261123-1413' },
       { key_name: 'grunt-20261123-1414', plan: 'free', project_name: 'grunt-20261123-1414' }
@@ -183,7 +183,7 @@ it.each(['zro', 'tokenharbor', 'runcrate', 'nvidia'])('counts one failed signup 
     return { status: 'needs_human', session_id: 'synthetic-session' };
   });
   const addGrant = vi.fn();
-  const result = await setupProviders(squire, { addGrant }, { providers: [provider], notify: () => {}, reuseSaved: false });
+  const result = await setupProviders(squire, { addGrant }, { providers: [provider], notify: () => {} });
   expect(result.dropped).toEqual([provider]);
   expect(signedUp.mock.calls).toEqual([[provider, false]]);
   expect(call).toHaveBeenCalledWith('operate_finish', expect.objectContaining({ session_id: 'synthetic-session' }));
