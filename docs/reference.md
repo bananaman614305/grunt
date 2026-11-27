@@ -77,8 +77,8 @@ require successful checks on an unchanged clean Git HEAD. Published-build counts
 come from actual successful GitHub Pages deployment receipts with bounded lookup
 coverage. These counts are observed lower bounds, not proof of correctness,
 playability or a complete release history. The dashboard shows missing/stale
-coverage and timestamps. See the [activity collector](../ops/adventure-feed/README.md)
-for sampling and retention details.
+coverage and timestamps. Sampling and retention details for the activity collector
+are in the private operator repository.
 
 ### Authentication and configuration
 
@@ -441,7 +441,7 @@ sibling defers rather than overlapping checks; a process exit releases its lock.
 The owner reloads current state before saving, retains other runtimes' provider
 entries and preserves the shared quiet gap. Installed curated sources and
 explicitly installed opt-ins are covered; disabled and custom sources are skipped.
-See the [owner maintenance rollout](../ops/adventure-execution/MAINTENANCE.md).
+The owner maintenance rollout is documented in the private operator repository.
 
 A successful reply within the past 24 hours satisfies a check if no newer error
 or cooldown has invalidated that evidence. Otherwise maintenance makes one
@@ -1144,7 +1144,7 @@ opening verification handoffs. The release passed 954 local tests, lint,
 TypeScript checks and a clean build; public GitHub Actions CI repeats the checks.
 Ordinary npm and gateway releases remain manual; the authorized operator scout
 can merge and publish qualified provider additions through its guarded pipeline.
-See the [provider scouting guide](../ops/provider-scout/README.md). Public CI runs
+The scouting guide lives in the private operator repository. Public CI runs
 the validation workflow; deployment/publication workflows remain separately
 controlled. Gateway changes update the two existing file overlays described
 under Deploy, not the image.

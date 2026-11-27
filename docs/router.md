@@ -270,7 +270,7 @@ shell commands, and unknown fields in `declarative` are rejected by the
 validator.
 
 An offering that needs custom client logic beyond `declarative:openai` stays a
-"needs adapter" signal for the scout's release pipeline (`ops/provider-scout`).
+"needs adapter" signal for the operator scout's release pipeline.
 It is written to the registry's `candidates` list, which every client ignores.
 Unknown `npm:*` registry ids that no shipped adapter matches are likewise
 ignored by the daemon.
