@@ -7,7 +7,6 @@ import { bundledRegistry } from '../registry.js';
 import { registryRoutes } from '../registry-routes.js';
 import { FEEDBACK_ROUTE_FIELDS, RegistryStore } from '../registry-store.js';
 import { FEEDBACK_ROUTE_KEYS, RouteFeedback } from './route-feedback.js';
-import { registryScoreFactor } from './routing.js';
 import { Sources } from './source.js';
 import type { ModelRequest, Source } from './source.js';
 import { SourceError } from './source.js';
@@ -40,7 +39,7 @@ it('sends only the documented counts, which the registry accepts', async () => {
   ]);
 });
 
-it('reports to the registry on each exchange, reads scores back and keeps one private install id', async () => {
+it('reports to the registry on each exchange, reads nothing back and keeps one private install id', async () => {
   const path = await directory(), registryDirectory = await directory();
   await writeFile(join(registryDirectory, 'registry.json'), JSON.stringify(bundledRegistry));
   const client = createClient({ url: 'file::memory:' });
@@ -54,9 +53,9 @@ it('reports to the registry on each exchange, reads scores back and keeps one pr
   for (let i = 0; i < 20; i++) feedback.record('zro', 'ok', 1500);
   await feedback.exchange();
   expect(fetcher.mock.calls.map(([url, init]) => [String(url), init?.method ?? 'GET'])).toEqual([
-    ['https://registry.test/v1/registry/feedback', 'POST'], ['https://registry.test/v1/registry/scores', 'GET']]);
-  expect(feedback.score('zro')).toBeGreaterThan(80);
-  expect(feedback.score('kilo')).toBeNull();
+    ['https://registry.test/v1/registry/feedback', 'POST']]);
+  expect(fetcher.mock.calls.some(([url]) => String(url).endsWith('/scores'))).toBe(false);
+  expect('score' in feedback).toBe(false);
   const install = (await readFile(join(path, 'registry-install'), 'utf8')).trim();
   expect(install).toMatch(/^[0-9a-f]{32}$/);
   expect((await stat(join(path, 'registry-install'))).mode & 0o777).toBe(0o600);
@@ -78,24 +77,22 @@ it('keeps routing working when the registry cannot be reached', async () => {
     fetcher: vi.fn<typeof fetch>().mockRejectedValue(new Error('offline')), now: () => NOW });
   feedback.record('zro', 'ok', 100);
   await expect(feedback.exchange()).resolves.toBeUndefined();
-  expect(feedback.score('zro')).toBeUndefined();
 });
 
-// Q3: registry scores feed the routing decision.
+// Q3: the routing draw uses only the git adapter weight and local observations.
 const request: ModelRequest = { model: 'grunt', messages: [{ role: 'user', content: 'Complete a synthetic task.' }], cwd: '/tmp', tools: [], stream: false };
 const source = (id: string): Source => ({ id, available: async () => true, complete: async () => ({ text: id }) });
-it('weights the routing draw by the registry score', async () => {
-  expect([registryScoreFactor(undefined), registryScoreFactor(null), registryScoreFactor(0), registryScoreFactor(50), registryScoreFactor(100)]).toEqual([1, 1, 0.5, 1, 1.5]);
-  const pick = async (scores?: Record<string, number>) => {
+it('weights the routing draw by the git adapter weight, not a remote score', async () => {
+  expect('setRegistryScores' in Sources.prototype).toBe(false);
+  const pick = async (weights: Record<string, number>) => {
     const items = [source('kilo'), source('zro')];
-    const pool = new Sources(items, { registry: () => ({ ...bundledRegistry, adapters: items.map(item => ({ ...bundledRegistry.adapters.find(a => a.id === item.id)!, weight: 1 })) }), random: () => 0.4 });
+    const pool = new Sources(items, { registry: () => ({ ...bundledRegistry, adapters: items.map(item => ({ ...bundledRegistry.adapters.find(a => a.id === item.id)!, weight: weights[item.id]! })) }), random: () => 0.4 });
     cleanup.push(() => pool.close());
-    if (scores) pool.setRegistryScores(id => scores[id]);
     return (await pool.complete({ ...request, userMessages: ['synthetic task'] }, AbortSignal.timeout(2000))).text;
   };
-  expect(await pick()).toBe('kilo');
-  expect(await pick({ kilo: 0, zro: 100 })).toBe('zro');
-  expect(await pick({ kilo: 100, zro: 0 })).toBe('kilo');
+  expect(await pick({ kilo: 1, zro: 1 })).toBe('kilo');
+  expect(await pick({ kilo: 1, zro: 4 })).toBe('zro');
+  expect(await pick({ kilo: 4, zro: 1 })).toBe('kilo');
 });
 
 it('counts routed replies by outcome for the feedback report', async () => {

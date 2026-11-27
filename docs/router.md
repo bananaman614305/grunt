@@ -94,11 +94,9 @@ enables acquisition.
 
 - **Score.** Each success or failure updates the route's reliability, latency
   and failure cost in `SourceStatus`, and this persists in routing history.
-  The weighted draw uses `registry weight × routingWeight × registry score
-  factor`. The factor comes from the registry's liveliness score for the route
-  (`GET /v1/registry/scores`, read after each registry sync): `0.5 + score/100`,
-  so 0.5 at score 0, 1 at 50 and 1.5 at 100. A route with no score keeps
-  factor 1.
+  The weighted draw uses `registry weight × routingWeight`: the static adapter
+  weight from the git registry times the route's local observations. The
+  daemon reads no remote score.
 - **Idle first.** A first draw and a fallback (the bound source failed or is
   benched) prefer routes with no active request and use a busy route only when
   no idle one is eligible. Both wait for pending admission checks of sources that
@@ -268,7 +266,7 @@ shell commands, and unknown fields in `declarative` are rejected by the
 validator.
 
 An offering that needs custom client logic beyond `declarative:openai` stays a
-"needs adapter" signal for the scout's release pipeline (`ops/provider-scout`).
+"needs adapter" signal for the operator scout's release pipeline.
 It is written to the registry's `candidates` list, which every client ignores.
 Unknown `npm:*` registry ids that no shipped adapter matches are likewise
 ignored by the daemon.
@@ -334,7 +332,8 @@ with reports but no success in the window scores 0; one with no reports has no
 score (`unknown`). A reported route is `live` if its last success was fewer
 than three UTC days ago, otherwise `dead`, even if its score is still positive.
 `GET /v1/registry/scores` serves the scores, their states and
-sample counts, and the daemon feeds them into the weighted draw (§2).
+sample counts for dashboards. The daemon does not read them; its weighted draw
+is local (§2).
 
 ## Operator fixes in this change
 
