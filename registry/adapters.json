@@ -140,7 +140,8 @@
       ],
       "install": "builtin:nous",
       "signup": "https://portal.nousresearch.com/login",
-      "model": "qwen/qwen4-max:free"
+      "model": "qwen/qwen4-max:free",
+      "status": "inactive"
     },
     {
       "id": "kenari",

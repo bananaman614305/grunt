@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { BrowserSquire, setup, setupProviders } from './setup.js';
 import { setupFallbacks } from './fallback-setup.js';
 import { Runcrate, RUNCRATE_DEEPSEEK } from './runcrate.js';
-import { Zro, writeZroGrant } from './zro.js';
+import { Zro, readZroGrant, writeZroGrant } from './zro.js';
 import { TokenHarbor } from './tokenharbor.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 import { SourceError } from './source.js';
@@ -355,6 +355,23 @@ it.each([true, false])('tries vaulted Zro access after local readiness reports q
   else await expect(setup(() => {}, ['zro'], { directory, squire })).rejects.toMatchObject({ code: 'quota' });
   expect(requests).toEqual(['Bearer local-limited', 'Bearer working']);
   expect(squire.runs.start).not.toHaveBeenCalled();
+  // A quota reply proves the key works, so a limited key stays installed for recovery at reset.
+  await expect(readZroGrant(directory)).resolves.toMatchObject({ token: 'working' });
+});
+
+it('removes a Zro key the provider rejects, but not one that is only over quota', async () => {
+  const squire = (token: string) => ({
+    credentials: {
+      list: async () => [{ service: 'zro', reference: `vault://${token}`, field_names: ['api_key'] }],
+      grant: async () => ({ base_url: 'https://grant.test', token })
+    }, runs: { start: vi.fn(async () => ({ decision: 'drop' as const })), get: vi.fn() }
+  });
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) =>
+    new Response(null, { status: new Headers(init!.headers).get('authorization') === 'Bearer limited' ? 402 : 401 }));
+  await expect(setup(() => {}, ['zro'], { directory, squire: squire('limited') })).rejects.toMatchObject({ code: 'quota' });
+  await expect(readZroGrant(directory)).resolves.toMatchObject({ token: 'limited' });
+  await setup(() => {}, ['zro'], { directory, squire: squire('revoked') }).catch(() => {});
+  await expect(readZroGrant(directory)).rejects.toThrow();
 });
 
 it('stops credential selection immediately on cancellation', async () => {

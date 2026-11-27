@@ -186,7 +186,13 @@ async function probeGrant(source: Source, location: string, caller?: AbortSignal
     signal.throwIfAborted();
     await source.complete({ model: source.id, cwd: location, messages: [{ role: 'user', content: 'Reply with one word: ready' }], tools: [], stream: false, maxTokens: 16 }, signal);
     signal.throwIfAborted();
-  } catch (error) { await rm(join(location, `${source.id}.json`), { force: true }); signal.throwIfAborted(); throw error; }
+  } catch (error) {
+    // A quota reply proves the key is accepted. Keep it so the daemon reports the
+    // source as limited and recovers at reset, instead of losing working access.
+    if (!(error instanceof SourceError && error.code === 'quota')) await rm(join(location, `${source.id}.json`), { force: true });
+    signal.throwIfAborted();
+    throw error;
+  }
 }
 
 export async function setupProviders(squire: SetupSquire, router: { addGrant(platform: string, grant: { base_url: string; token: string }): Promise<void>; addVerifiedGrant?(platform: string, grant: { base_url: string; token: string }, context?: RuncrateGrantContext): Promise<void>; hasKey?(platform: string): Promise<boolean> }, options: { providers: Provider[]; notify: (line: string) => void; signal?: AbortSignal | undefined; directory?: string; background?: boolean; exportToVault?: boolean } ) {
