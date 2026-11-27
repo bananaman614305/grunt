@@ -272,7 +272,7 @@ it('registers a limited Windows logon task and restarts it with the saved enviro
   expect(definition).toContain('<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>');
   expect(definition).toContain(`<Command>${process.execPath}</Command>`);
   expect(definition).toContain(`<Arguments>&quot;${path.replace('&', '&amp;')}&quot;</Arguments>`);
-  expect(launcher).toContain("import('./daemon.mjs')");
+  expect(launcher).toContain('import("./daemon.mjs")');
   const env = JSON.parse(launcher.split('\n')[0]!.slice('const environment = '.length, -1));
   expect(env).toMatchObject({ GRUNT_DAEMON: '1', GRUNT_SOURCES: 'kilo', GRUNT_PORT: '18792', GRUNT_CONFIG_DIR: config, GRUNT_FREELLMAPI_URL: process.env.GRUNT_FREELLMAPI_URL });
   vi.stubEnv('GRUNT_PORT', '18793');

@@ -3,6 +3,7 @@ import { constants } from 'node:fs';
 import { rename, rm, writeFile } from 'node:fs/promises';
 import { basename, isAbsolute, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { daemonFile } from './daemon-files.js';
 import { openPrivateFile } from './private-file.js';
 
 type Run = (command: string, args: string[]) => Promise<string>;
@@ -16,7 +17,8 @@ const xml = (value: string) => value.replaceAll('&', '&amp;').replaceAll('<', '&
 
 export async function writeWindowsLauncher(target: string, env: Record<string, string>) {
   const path = join(target, launcher), temporary = join(target, `.${launcher}-${randomUUID()}`);
-  const script = `${prefix}${JSON.stringify(env)};\nObject.assign(process.env, environment);\nconst { start } = await import('./daemon.mjs');\nstart();\n`;
+  const daemonImport = JSON.stringify('./' + daemonFile);
+  const script = `${prefix}${JSON.stringify(env)};\nObject.assign(process.env, environment);\nconst { start } = await import(${daemonImport});\nstart();\n`;
   try {
     await writeFile(temporary, script, { mode: 0o600, flag: 'wx' });
     await rename(temporary, path);
