@@ -117,9 +117,6 @@ it('requires an explicit private machine key and instance, and only accepts owne
   expect(() => collectorConfig({})).toThrow('invalid_configuration');
   const env = { GRUNT_ADMIN_INGEST_KEY: 'synthetic-machine-key', GRUNT_ADMIN_INSTANCE_ID: 'chad' };
   expect(collectorConfig(env)).toMatchObject({ daemonPort: 8792, url: 'https://api.grunt.run/admin/ingest', instanceId: 'chad' });
-  for (const url of ['https://grunt-gateway.fly.dev/admin/ingest', 'https://milo-gateway.fly.dev/admin/ingest']) {
-    expect(collectorConfig({ ...env, GRUNT_ADMIN_COLLECTOR_URL: url }).url).toBe(url);
-  }
   expect(collectorConfig({ ...env, MILO_PORT: '8793', GRUNT_PORT: '8794', GRUNT_ADMIN_DAEMON_PORT: '8792' }).daemonPort).toBe(8792);
   expect(collectorConfig({ ...env, GRUNT_CONFIG_DIR: '/owned/grunt', MILO_CONFIG_DIR: '/legacy/milo' }).directory).toBe('/owned/grunt');
   for (const url of ['http://api.grunt.run/admin/ingest', 'https://127.0.0.1/admin/ingest', 'https://example.com/admin/ingest',

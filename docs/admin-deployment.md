@@ -21,7 +21,7 @@ Before enabling live access, verify all of the following:
   clients, secrets and redirect registrations must not be reused or changed.
 - An authorized operator can update the existing Cloudflare Pages project and
   the `grunt.run` DNS zone.
-- An authorized operator can deploy to the `grunt-gateway` Fly app and
+- An authorized operator can deploy to the existing `milo-gateway` Fly app and
   provision its admin secrets through a protected backend or private input.
 - The admin changes have passed their tests, independent review and the
   canonical exact-head GitHub CI check before landing.
@@ -32,7 +32,7 @@ run. Site and npm publication workflows remain separately disabled. Registry
 updates follow the [registry publication contract](reference.md#sources-and-app-sessions).
 Use standard Ubuntu runners for CI, without paid runners or artifact/cache uploads.
 
-The deployment job runs `flyctl secrets sync --app grunt-gateway --stage` before
+The deployment job runs `flyctl secrets sync --app milo-gateway --stage` before
 deploying. Flyctl tracks the minimum secrets version locally, so a fresh runner
 must synchronize settings staged by another machine or through the Machines API.
 The sync step stages only; the following deployment activates the settings with
@@ -46,20 +46,9 @@ first owner's access.
 
 ## Hosting and DNS
 
-The backend runs on the Fly app `grunt-gateway` in `iad`, with its `grunt_data`
-volume mounted at `/data` and the database at `/data/grunt.db`. Preserve the current Pages project and the marketing site at
+Preserve the Fly app `milo-gateway`, its `milo_data` volume and existing database
+configuration. Preserve the current Pages project and the marketing site at
 the apex. The backend keeps its existing internal service port `8787`.
-
-### Fallback app
-
-The earlier Fly app `milo-gateway` (volume `milo_data`, database
-`/data/milo.db`, hostname `milo-gateway.fly.dev`) stays running as a fallback
-until traffic on `grunt-gateway` is verified. Do not deploy new changes to it,
-and do not destroy it, its volume or its secrets without a fresh owner decision.
-The collector still accepts `https://milo-gateway.fly.dev/admin/ingest` so Chad
-can fall back to it.
-
-The findings below were recorded against `milo-gateway` before the move.
 
 Initial read-only discovery found:
 
@@ -83,10 +72,10 @@ Recheck live state before applying DNS changes. These are read-only commands
 for an operator with app-scoped Fly access:
 
 ```sh
-fly status --app grunt-gateway --json
-fly ips list --app grunt-gateway
-fly certs show api.grunt.run --app grunt-gateway
-fly certs setup api.grunt.run --app grunt-gateway
+fly status --app milo-gateway --json
+fly ips list --app milo-gateway
+fly certs show api.grunt.run --app milo-gateway
+fly certs setup api.grunt.run --app milo-gateway
 dig +short A api.grunt.run
 dig +short AAAA api.grunt.run
 dig +short CNAME _acme-challenge.api.grunt.run
@@ -110,7 +99,7 @@ CNAME _acme-challenge.api.grunt.run -> api.grunt.run.e52kor1.flydns.net.
 Verify that value with Fly before using it. This challenge record validates TLS;
 it does not replace the API hostname's traffic-routing record. Do not create a
 second certificate merely because DNS has not been configured. An authorized
-operator can run `fly certs check api.grunt.run --app grunt-gateway` after the
+operator can run `fly certs check api.grunt.run --app milo-gateway` after the
 records are published, then verify HTTPS before enabling browser login or the
 collector. Review both IPv4 and IPv6 client reachability and any Cloudflare proxy
 configuration. See [Fly custom-domain instructions](https://docs.fly.io/networking/custom-domain).
@@ -263,7 +252,7 @@ honors `GRUNT_FLEET_REPORTING=0`, `GRUNT_SETUP_NO_DATA_SHARING=1` and custom
 registry destinations. Offline, unenrolled and earlier clients have unknown coverage.
 
 The scheduled reader uses its existing admin read bearer on
-`GET https://grunt-gateway.fly.dev/admin/api/fleet-audit?day=YYYY-MM-DD`
+`GET https://milo-gateway.fly.dev/admin/api/fleet-audit?day=YYYY-MM-DD`
 (the custom API domain uses the same path). The date defaults to yesterday UTC.
 Failure and slow-success comparisons apply the audit day's per-installation
 denominator shares to both windows. A contributing installation with no baseline
