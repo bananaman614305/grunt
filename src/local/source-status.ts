@@ -668,7 +668,13 @@ export class SourceStatus {
       exhaustedCount, readyCount, unconfiguredCount, errorCount
     };
     const shortReset = earliestResetAt !== undefined && earliestResetAt - now <= TRANSIENT_RETRY_WINDOW_SECONDS * 1000;
-    if (enabled.length > 0 && readyCount === 0 && connectingCount === 0 && unknownCount === 0) {
+    if (enabled.length === 0) {
+      const detail = sources.length === 0
+        ? 'No routes configured in pool. Run usegrunt setup.'
+        : `All ${sources.length} route${sources.length === 1 ? '' : 's'} disabled. Enable a route or run usegrunt setup.`;
+      return { state: 'globally_exhausted', detail, ...base };
+    }
+    if (readyCount === 0 && connectingCount === 0 && unknownCount === 0) {
       if (shortReset) {
         const wait = formatResetCountdown((earliestResetAt! - now) / 1000);
         return { state: 'transient_error', detail: `All routes temporarily rate-limited or recovering; next retry in ${wait}.`, ...base };

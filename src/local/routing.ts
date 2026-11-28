@@ -49,7 +49,7 @@ export const FIRST_DRAW_IDLE_WAIT_MS = 3000;
 // Prevents a dead or exhausted pool from stalling for tens of seconds before failing fast.
 export const COLD_POOL_PROBE_BUDGET_MS = 6000;
 // An image-capable source benched for longer than this no longer keeps the image in the conversation (see imageUsable).
-export const IMAGE_WAIT_SECONDS = 300;
+export const IMAGE_WAIT_SECONDS = TRANSIENT_RETRY_WINDOW_SECONDS;
 
 export const HEDGE_AFTER_MS = 8000;
 const backupUnavailable = Symbol('backup eligibility changed');
@@ -73,10 +73,25 @@ export class StickyRouter {
   constructor(private sources: Source[], private options: RoutingOptions) {
     this.observation = options.observation ?? new SourceStatus(sources.map(source => source.id), options.now);
     this.availability = new SourceAvailability(this.observation);
+    const startedAt = this.now();
+    for (const source of sources) if (options.pending?.has(source.id)) this.pendingWorkSince.set(source.id, startedAt);
   }
   private now() { return (this.options.now ?? Date.now)(); }
   // Routes allowed their one half-open trial request right now (see claimTrial).
   private trials = new Set<string>();
+  // Tracks when a route was first observed pending setup or running a half-open trial so the
+  // transient 429 exception stays bounded to TRANSIENT_RETRY_WINDOW_SECONDS instead of spinning indefinitely.
+  private pendingWorkSince = new Map<string, number>();
+  private pendingWithinWindow(id: string) {
+    const now = this.now();
+    let since = this.pendingWorkSince.get(id);
+    if (since === undefined) {
+      since = now;
+      this.pendingWorkSince.set(id, since);
+    }
+    const remainingMs = TRANSIENT_RETRY_WINDOW_SECONDS * 1000 - (now - since);
+    return remainingMs > 0 ? Math.ceil(remainingMs / 1000) : 0;
+  }
   // Sources a task has drawn and not yet finished with. A draw claims its source in the same tick, before
   // any await (handoff) and for the whole attempt, so concurrent new tasks see it as busy and spread out.
   private reservations = new Map<string, number>();
@@ -109,7 +124,11 @@ export class StickyRouter {
   claimTrial(id: string): () => void {
     if (!this.dueTrial(id) || this.trials.has(id)) return () => {};
     this.trials.add(id);
-    return () => { this.trials.delete(id); };
+    if (!this.pendingWorkSince.has(id)) this.pendingWorkSince.set(id, this.now());
+    return () => {
+      this.trials.delete(id);
+      if (!this.options.pending?.has(id) && !this.trialBusy(id)) this.pendingWorkSince.delete(id);
+    };
   }
   private dueTrial(id: string) {
     const general = generalHold(this.observation.routingBackoff(id)), tool = this.applicableTool(id);
@@ -243,26 +262,32 @@ export class StickyRouter {
     retryTimes: number[],
     refused = 0,
     transient = true,
-    imageRequest = false,
-    pendingSetup = false,
+    pendingWait?: number,
     counts: { limited: number; unconfigured: number; errored: number } = { limited: 0, unconfigured: 0, errored: 0 }
   ) {
     const now = this.now();
     const next = Math.min(...retryTimes);
     const immediate = Number.isFinite(next) && next <= now;
     const seconds = Number.isFinite(next) && next > now ? Math.ceil((next - now) / 1000) : undefined;
-    const retryWindow = imageRequest ? IMAGE_WAIT_SECONDS : TRANSIENT_RETRY_WINDOW_SECONDS;
-    const shortTransient = pendingSetup || immediate || (seconds !== undefined && seconds <= retryWindow);
+    const shortRetry = immediate || (seconds !== undefined && seconds <= TRANSIENT_RETRY_WINDOW_SECONDS);
+    const shortPending = pendingWait !== undefined && pendingWait > 0;
+    const shortTransient = shortRetry || shortPending;
+    const transientRetryAfter = shortRetry
+      ? seconds
+      : shortPending && seconds !== undefined
+        ? Math.min(seconds, pendingWait, TRANSIENT_RETRY_WINDOW_SECONDS)
+        : undefined;
     // Sources that refused the request's own shape never contacted a provider and are not rate limited. Say
     // so, and when nothing is merely waiting (cooling, limited, busy, pending, failed this call), answer as an
     // invalid request rather than a quota wait. Any transient source keeps the retryable error.
     if (refused) {
       const detail = `${refused} adapter${refused === 1 ? '' : 's'} refused this conversation's tool definitions or tool history locally, before any provider was contacted`;
+      const retryAfter = shortTransient ? transientRetryAfter : seconds;
       return !transient
         ? new RequestError(`${detail}, and no other tool-capable adapter is available; this request cannot be served as sent`)
         : new PoolExhaustedError(`${detail}; the other tool-capable adapters are cooling down or limited; retry after the reset`, {
           terminal: !shortTransient,
-          ...(seconds === undefined ? {} : { retryAfter: seconds })
+          ...(retryAfter === undefined ? {} : { retryAfter })
         });
     }
     if (!shortTransient) {
@@ -283,7 +308,7 @@ export class StickyRouter {
       toolsRequired ? NO_TOOL_SOURCE : 'No eligible adapter is available; finish setup or retry after quota resets',
       {
         terminal: false,
-        ...(seconds === undefined ? {} : { retryAfter: seconds })
+        ...(transientRetryAfter === undefined ? {} : { retryAfter: transientRetryAfter })
       }
     );
   }
@@ -462,8 +487,12 @@ export class StickyRouter {
         let eligible: Candidate[] = [];
         const unknown: Source[] = [];
         const retryTimes: number[] = [];
-        let transient = false, pendingSetup = false;
+        let transient = false;
+        let pendingWait: number | undefined;
         const counts = { limited: 0, unconfigured: 0, errored: 0 };
+        for (const id of this.pendingWorkSince.keys()) {
+          if (!this.options.pending?.has(id) && !this.trialBusy(id)) this.pendingWorkSince.delete(id);
+        }
         for (const source of this.sources) {
           signal.throwIfAborted();
           // Sources outside the registry are never drawn or reported as skipped;
@@ -481,10 +510,30 @@ export class StickyRouter {
             if (source.id === request.model) throw new SourceError('refused', `${source.id} requires approved request context`);
             continue;
           }
-          if (this.options.pending?.has(source.id)) { transient = true; pendingSetup = true; skip(source.id, 'pending_setup'); continue; }
+          if (this.options.pending?.has(source.id)) {
+            const wait = this.pendingWithinWindow(source.id);
+            if (wait > 0) {
+              transient = true;
+              pendingWait = pendingWait === undefined ? wait : Math.min(pendingWait, wait);
+            } else {
+              counts.unconfigured++;
+            }
+            skip(source.id, 'pending_setup');
+            continue;
+          }
           if (toolsRequired && !toolCapable(source)) { skip(source.id, 'tools_unsupported'); continue; }
           if (this.retired(source.id)) { counts.errored++; skip(source.id, 'retired'); continue; }
-          if (this.trialBusy(source.id)) { transient = true; pendingSetup = true; skip(source.id, 'trial_in_progress'); continue; }
+          if (this.trialBusy(source.id)) {
+            const wait = this.pendingWithinWindow(source.id);
+            if (wait > 0) {
+              transient = true;
+              pendingWait = pendingWait === undefined ? wait : Math.min(pendingWait, wait);
+            } else {
+              counts.errored++;
+            }
+            skip(source.id, 'trial_in_progress');
+            continue;
+          }
           const cooldown = this.cooldown(source.id);
           const until = cooldown?.until;
           if (until !== undefined && until > this.now()) {
@@ -516,14 +565,15 @@ export class StickyRouter {
               transient = true;
               if (checked?.code === 'quota') counts.limited++;
               else counts.errored++;
+            } else if (cause === 'transient' || cause === 'exhausted') {
+              transient = true;
+              if (cause === 'exhausted') counts.limited++;
+              else counts.errored++;
+            } else if (checkedUntil === Infinity || checked?.code === 'refused' || checked?.code === 'logged_out'
+              || (cause !== undefined && cause !== 'unconfigured')) {
+              counts.errored++;
             } else {
-              if (checkedUntil !== Infinity) transient = true;
-              if (checkedUntil === Infinity || checked?.code === 'refused' || checked?.code === 'logged_out'
-                || (cause !== undefined && cause !== 'unconfigured')) {
-                counts.errored++;
-              } else {
-                counts.unconfigured++;
-              }
+              counts.unconfigured++;
             }
             skip(source.id, 'unavailable');
           }
@@ -559,7 +609,7 @@ export class StickyRouter {
           const imageRefused = imageRequest && !this.sources.some(source => (!explicit || source.id === request.model) && !this.options.unrouted?.has(source.id) && this.imageListed(source.id));
           const failure = imageRefused ? new RequestError('This conversation contains an image, but no source on this route accepts image input; remove the image or continue in text')
             : imageRefusal && !transient ? new SourceError('refused', imageRefusal.message, undefined, undefined, imageRefusal.diagnostics)
-            : this.exhausted(toolsRequired, retryTimes, refused.size, transient, imageRequest, pendingSetup, counts);
+            : this.exhausted(toolsRequired, retryTimes, refused.size, transient, pendingWait, counts);
           // Keep the task reserved until its fallback has settled.
           if (!explicit && fallback) return await fallback(failure, signal);
           throw failure;

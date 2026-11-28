@@ -4,10 +4,13 @@ import { BEATAPI_MODEL, BEATAPI_MODELS, BEATAPI_ORIGIN, BeatAPI, writeBeatAPIGra
 import { recordDataSharingConsent } from './data-sharing.js';
 import { parseStatus, renderDashboard } from './dashboard.js';
 import { configureCodex } from './harnesses.js';
+import { observeDaemon } from './observe.js';
 import { classifyHttpFailure } from './provider-error.js';
 import { PromotionalApi } from './promotional-api.js';
+import { RETIRE_AFTER_FAILURES } from './routing.js';
+import { SourceStatus } from './source-status.js';
 import { bundledRegistry } from '../registry.js';
-import { Sources, SourceError } from './source.js';
+import { Sources, SourceError, requestRefusal } from './source.js';
 import type { Completion, ModelRequest, Source } from './source.js';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -274,4 +277,121 @@ it('renders global exhaustion banner, parses poolState/failureCause safely, and 
   await configureCodex(19878);
   const profile = await readFile(join(codexDir, 'grunt.config.toml'), 'utf8');
   expect(profile).toContain('request_max_retries = 0');
+});
+
+it('enforces the 60s cutoff on image requests and bounds pending setup and in-flight trials', async () => {
+  let now = 50_000;
+  const imageBody = {
+    model: 'grunt',
+    stream: false,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'describe' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } }] }]
+  };
+  const kiloOnly = {
+    ...bundledRegistry,
+    adapters: [bundledRegistry.adapters.find(adapter => adapter.id === 'kilo')!]
+  };
+  const img = make('kilo');
+  vi.mocked(img.complete).mockRejectedValue(new SourceError('quota', 'image quota', 120));
+  const imgPool = new Sources([img], { registry: () => kiloOnly, now: () => now });
+  pools.push(imgPool);
+  const imgResponse = await createLocalApp(imgPool).request('http://127.0.0.1:8788/v1/chat/completions', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(imageBody)
+  });
+  expect(imgResponse.status).toBe(402);
+  expect(imgResponse.headers.get('x-should-retry')).toBe('false');
+  expect(imgResponse.headers.get('retry-after')).toBeNull();
+  expect(imgResponse.headers.get('x-grunt-pool-state')).toBe('globally_exhausted');
+
+  // Pending setup keeps retries bounded to <= 60s even alongside a 2h exhausted route, then flips to HTTP 402.
+  const a = make('opencode'), b = make('kilo');
+  vi.mocked(a.complete).mockRejectedValue(new SourceError('quota', 'daily limit', 7200));
+  const pendingPool = new Sources([a, b], { registry: () => twoRouteRegistry, random: () => 0, now: () => now });
+  pools.push(pendingPool);
+  pendingPool.pending.add('kilo');
+  const pendingApp = createLocalApp(pendingPool);
+  const firstPending = await pendingApp.request('http://127.0.0.1:8788/v1/chat/completions', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'grunt', messages: request.messages })
+  });
+  expect(firstPending.status).toBe(429);
+  expect(Number(firstPending.headers.get('retry-after'))).toBeLessThanOrEqual(60);
+  now += 61_000;
+  const expiredPending = await pendingApp.request('http://127.0.0.1:8788/v1/chat/completions', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'grunt', messages: request.messages })
+  });
+  expect(expiredPending.status).toBe(402);
+  expect(expiredPending.headers.get('x-should-retry')).toBe('false');
+  expect(expiredPending.headers.get('retry-after')).toBeNull();
+  expect(expiredPending.headers.get('x-grunt-pool-state')).toBe('globally_exhausted');
+
+  // An in-flight half-open trial is also bounded to 60s before flipping to HTTP 402.
+  const trialSource = make('kilo');
+  const trialPool = new Sources([trialSource], { registry: () => kiloOnly, now: () => now });
+  pools.push(trialPool);
+  vi.mocked(trialSource.complete).mockRejectedValue(new SourceError('upstream', 'down', 30));
+  for (let i = 0; i < RETIRE_AFTER_FAILURES; i++) {
+    await expect(trialPool.complete(request, AbortSignal.timeout(1000))).rejects.toThrow();
+    now = (trialPool.status().sources[0]?.retryAt ?? now) + 1000;
+  }
+  expect(trialPool.retired('kilo')).toBe(false);
+  let finishTrial!: (value: Completion) => void;
+  vi.mocked(trialSource.complete).mockImplementationOnce(() => new Promise<Completion>(resolve => { finishTrial = resolve; }));
+  const inFlight = trialPool.complete(request, AbortSignal.timeout(2000));
+  await vi.waitFor(() => expect(finishTrial).toBeTypeOf('function'));
+  expect(trialPool.observationRoutes()[0]).toMatchObject({ id: 'kilo', trialInProgress: true });
+  const trialApp = createLocalApp(trialPool);
+  const whileTrialFresh = await trialApp.request('http://127.0.0.1:8788/v1/chat/completions', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'grunt', messages: request.messages })
+  });
+  expect(whileTrialFresh.status).toBe(429);
+  now += 61_000;
+  const whileTrialStale = await trialApp.request('http://127.0.0.1:8788/v1/chat/completions', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'grunt', messages: request.messages })
+  });
+  expect(whileTrialStale.status).toBe(402);
+  expect(whileTrialStale.headers.get('x-should-retry')).toBe('false');
+  finishTrial({ text: 'recovered' });
+  await inFlight;
+});
+
+it('reports globally_exhausted for empty and fully disabled pools across status and observe', async () => {
+  const runtime = { version: 'test', startedAt: 1000, port: 8788, readiness: 'ready' as const };
+  const emptySnapshot = new SourceStatus([]).snapshot({ ids: [], disabled: new Set(), pending: new Set(), verifying: new Set(), preparing: new Set() });
+  expect(emptySnapshot.poolState).toBe('globally_exhausted');
+  expect(emptySnapshot.pool?.detail).toContain('No routes configured');
+
+  const emptySources = new Sources([], { registry: () => twoRouteRegistry }, new Set(['opencode']));
+  pools.push(emptySources);
+  expect(emptySources.status().poolState).toBe('globally_exhausted');
+  expect((await observeDaemon(emptySources, 5, runtime)).poolState).toBe('globally_exhausted');
+
+  const disabled = new Sources([make('opencode'), make('kilo')], { registry: () => twoRouteRegistry }, new Set(['opencode', 'kilo']));
+  pools.push(disabled);
+  expect(disabled.status().poolState).toBe('globally_exhausted');
+  expect(disabled.status().pool?.detail).toContain('disabled');
+  expect((await observeDaemon(disabled, 5, runtime)).poolState).toBe('globally_exhausted');
+});
+
+it('preserves HTTP 400 when the only configured route refuses the request shape locally and the fallback is unconfigured', async () => {
+  const configured = make('kilo'), unconfigured = make('runcrate');
+  vi.mocked(configured.complete).mockRejectedValue(requestRefusal('bad tool schema'));
+  vi.mocked(unconfigured.available).mockResolvedValue(false);
+  const registry = {
+    ...bundledRegistry,
+    adapters: ['kilo', 'runcrate'].map(id => ({ ...bundledRegistry.adapters.find(a => a.id === id)!, weight: 0.5 }))
+  };
+  const sources = new Sources([configured, unconfigured], { registry: () => registry, random: () => 0 });
+  pools.push(sources);
+  const response = await createLocalApp(sources).request('http://127.0.0.1:8788/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'grunt',
+      messages: [{ role: 'user', content: 'go' }],
+      tools: [{ type: 'function', function: { name: 'read', parameters: { type: 'object' } } }]
+    })
+  });
+  expect(response.status).toBe(400);
+  expect(response.headers.get('x-should-retry')).toBeNull();
+  const json = await response.json();
+  expect(json.error.message).toMatch(/1 adapter refused this conversation's tool definitions or tool history locally/);
 });
