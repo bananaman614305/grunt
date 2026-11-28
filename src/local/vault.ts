@@ -367,10 +367,10 @@ async function ensurePrivateLockFile(lockPath: string): Promise<void> {
 async function withVaultFileLock<T>(
   directory: string,
   work: () => Promise<T>,
-  timeoutMs = VAULT_LOCK_TIMEOUT_MS
+  timeoutMs = VAULT_LOCK_TIMEOUT_MS,
+  lockPath = vaultLockPath(directory)
 ): Promise<T> {
   await assertPrivateDirectory(directory, true);
-  const lockPath = vaultLockPath(directory);
   await ensurePrivateLockFile(lockPath);
 
   const { createClient } = await import('@libsql/client');
@@ -414,6 +414,20 @@ function serializeWrite<T>(directory: string, work: () => Promise<T>, timeoutMs 
   const key = lockQueueKey(directory);
   const previous = writeQueues.get(key) ?? Promise.resolve();
   const next = previous.catch(() => {}).then(() => withVaultFileLock(directory, work, timeoutMs));
+  writeQueues.set(key, next);
+  void next.finally(() => {
+    if (writeQueues.get(key) === next) writeQueues.delete(key);
+  }).catch(() => {});
+  return next;
+}
+
+// The same OS-released process lock on a separate lock database, for a multi-step
+// update that itself writes the vault (so it cannot hold the vault lock).
+export function withNamedLock<T>(directory: string, name: string, work: () => Promise<T>, options: { timeoutMs?: number } = {}): Promise<T> {
+  if (!/^[a-z0-9-]+$/.test(name)) throw new Error('Invalid lock name');
+  const key = `${lockQueueKey(directory)}#${name}`;
+  const previous = writeQueues.get(key) ?? Promise.resolve();
+  const next = previous.catch(() => {}).then(() => withVaultFileLock(directory, work, options.timeoutMs ?? VAULT_LOCK_TIMEOUT_MS, join(directory, `.${name}-lock.db`)));
   writeQueues.set(key, next);
   void next.finally(() => {
     if (writeQueues.get(key) === next) writeQueues.delete(key);

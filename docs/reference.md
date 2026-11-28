@@ -18,7 +18,7 @@ or use Actions caches. Static site deployment and npm publication remain separat
 from CI; their workflows are not enabled by turning CI on.
 
 `site/` is served directly on Cloudflare Pages (`https://grunt.run`), including
-`site/registry.json` (kept identical to `registry/adapters.json`) and a `200`
+`site/registry.json` (the published form of `registry/adapters.json`) and a `200`
 rewrite from `/v1/registry` to `/registry.json`. There is no Grunt gateway
 server, SQLite admin backend, custom web dashboard, Jev, billing, roster
 service, worker tooling or monorepo.
@@ -912,6 +912,12 @@ Use `usegrunt add <provider>` to set up a supported provider. For example,
 `usegrunt add kilo` checks the [anonymous Kilo free-model catalog](#kilo-free-models)
 after current approval without creating an account or capturing a provider key.
 
+If a provider answers a saved key with HTTP 403, or says the account is banned,
+setup stops for that provider instead of signing up again. It records the refusal
+in `refused-providers/<provider>.json` in Grunt's configuration directory, and the daemon
+stops routing to that source. Setup starts no new signup for it until you run
+`usegrunt add <provider> --force`, which clears the refusal and retries.
+
 When the first account-dependent job needs Squire and no session exists, setup
 runs Squire's own connect installer with the OpenCode target. Parallel jobs share
 that pending bootstrap rather than starting duplicate installers. Its supported
@@ -1259,8 +1265,11 @@ git repository, only task text and output are sent. If the next adapter is
 Gödel Machines, it receives the approved request payload without generated
 handoff context.
 
-The static registry is maintained in `registry/adapters.json` and mirrored
-byte-for-byte in `site/registry.json` so Cloudflare Pages serves it directly at
+The static registry is maintained in `registry/adapters.json`. Its published
+form goes to `site/registry.json` (and the npm package's `dist/registry/adapters.json`):
+an adapter whose `expires` day has passed is left out, and the rest of its tier is
+scaled to keep the tier weight. `tsx src/registry.ts registry/adapters.json --publish site/registry.json`
+writes it. Cloudflare Pages serves it directly at
 `https://grunt.run/registry.json` (with `/v1/registry` rewritten to
 `/registry.json` as HTTP `200`). A shipped adapter id, an entry whose `install`
 is `declarative:openai` (with a strictly validated `declarative`

@@ -5,11 +5,14 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { BrowserSquire, setup, setupProviders } from './setup.js';
 import { setupFallbacks } from './fallback-setup.js';
 import { Runcrate, RUNCRATE_DEEPSEEK } from './runcrate.js';
-import { Zro, writeZroGrant } from './zro.js';
+import { Zro, readZroGrant, writeZroGrant } from './zro.js';
 import { TokenHarbor } from './tokenharbor.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 import { SourceError } from './source.js';
+import { readVaultEntry, writeVaultEntry } from './vault.js';
 import * as mistralSetup from './mistral-vibe-setup.js';
+import { configure } from './main.js';
+import { clearProviderRefusal, readProviderRefusal, recordProviderRefusal } from './provider-refusal.js';
 
 let directory: string;
 beforeEach(async () => {
@@ -355,6 +358,47 @@ it.each([true, false])('tries vaulted Zro access after local readiness reports q
   else await expect(setup(() => {}, ['zro'], { directory, squire })).rejects.toMatchObject({ code: 'quota' });
   expect(requests).toEqual(['Bearer local-limited', 'Bearer working']);
   expect(squire.runs.start).not.toHaveBeenCalled();
+  // A passing candidate replaces the local key; otherwise the installed limited key stays for the reset.
+  await expect(readZroGrant(directory)).resolves.toMatchObject({ token: working ? 'working' : 'local-limited' });
+});
+
+it('removes a Zro key the provider rejects, but not one that is only over quota', async () => {
+  const squire = (token: string) => ({
+    credentials: {
+      list: async () => [{ service: 'zro', reference: `vault://${token}`, field_names: ['api_key'] }],
+      grant: async () => ({ base_url: 'https://grant.test', token })
+    }, runs: { start: vi.fn(async () => ({ decision: 'drop' as const })), get: vi.fn() }
+  });
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) =>
+    new Response(null, { status: new Headers(init!.headers).get('authorization') === 'Bearer limited' ? 402 : 401 }));
+  await setup(() => {}, ['zro'], { directory, squire: squire('revoked') }).catch(() => {});
+  await expect(readZroGrant(directory)).rejects.toThrow();
+  await expect(setup(() => {}, ['zro'], { directory, squire: squire('limited') })).rejects.toMatchObject({ code: 'quota' });
+  await expect(readZroGrant(directory)).resolves.toMatchObject({ token: 'limited' });
+});
+
+it.each([false, true])('keeps a quota-limited Zro key when a later candidate is rejected in the same setup (limited key already local: %s)', async local => {
+  if (local) await writeZroGrant({ base_url: 'https://grant.test', token: 'limited' }, directory);
+  const tokens = local ? ['revoked'] : ['limited', 'revoked'];
+  const squire = {
+    credentials: {
+      list: async () => tokens.map(token => ({ service: 'zro', reference: `vault://${token}`, field_names: ['api_key'] })),
+      grant: async (reference: string) => ({ base_url: 'https://grant.test', token: reference.slice('vault://'.length) })
+    }, runs: { start: vi.fn(), get: vi.fn() }
+  };
+  const requests: string[] = [], installedDuringProbe: (string | undefined)[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+    const authorization = new Headers(init!.headers).get('authorization')!;
+    requests.push(authorization);
+    // The daemon reads zro.json; a candidate under test is never installed there.
+    if (authorization === 'Bearer revoked') installedDuringProbe.push((await readZroGrant(directory).catch(() => undefined))?.token);
+    return new Response(null, { status: authorization === 'Bearer limited' ? 402 : 401 });
+  });
+  await expect(setup(() => {}, ['zro'], { directory, squire })).rejects.toMatchObject({ code: 'quota' });
+  expect(requests).toEqual(['Bearer limited', 'Bearer revoked']);
+  expect(installedDuringProbe).toEqual(['limited']);
+  await expect(readZroGrant(directory)).resolves.toMatchObject({ token: 'limited' });
+  expect(squire.runs.start).not.toHaveBeenCalled();
 });
 
 it('stops credential selection immediately on cancellation', async () => {
@@ -370,4 +414,161 @@ it('stops credential selection immediately on cancellation', async () => {
   await expect(setupProviders(squire, router, { providers: ['zro'], signal: controller.signal, notify: () => {} })).rejects.toBe(cancelled);
   expect(squire.credentials.grant).toHaveBeenCalledOnce();
   expect(squire.runs.start).not.toHaveBeenCalled();
+});
+
+const ZRO_ORIGIN = 'https://zro.moonmath.ai';
+async function installLimitedVaultZro() {
+  await writeVaultEntry('zro', { api_key: 'vault-limited', origin: ZRO_ORIGIN, source: 'local' }, directory);
+  await writeZroGrant({ base_url: ZRO_ORIGIN, token: 'vault-limited' }, directory);
+  await expect(readZroGrant(directory)).resolves.toMatchObject({ token: 'vault-limited', base_url: ZRO_ORIGIN });
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+    const authorization = new Headers(init!.headers).get('authorization');
+    if (authorization === 'Bearer working') return Response.json({ model: 'deepseek-v4.1-flash', choices: [{ message: { content: 'ready' } }] });
+    return new Response(null, { status: authorization === 'Bearer rejected' ? 401 : 402 });
+  });
+}
+const zroSquire = (base_url: string) => ({
+  credentials: {
+    list: async () => [{ service: 'zro', reference: 'vault://working', field_names: ['api_key'] }],
+    grant: async () => ({ base_url, token: 'working' })
+  }, runs: { start: vi.fn(), get: vi.fn() }
+});
+
+const exportingZroSquire = (exported: 'refused' | 'rejected' | 'working') => ({
+  ...zroSquire(ZRO_ORIGIN),
+  materializeDirectVaultGrant: vi.fn(async (_provider: string, _reference: string, options: { directory?: string; stage?: boolean } = {}) => {
+    if (exported === 'refused') throw new Error('Could not export zro key to local Grunt vault (passkey approval timed out)');
+    // Like the real method: the vault is written unless the caller stages the key.
+    if (!options.stage) await writeVaultEntry('zro', { api_key: exported, origin: ZRO_ORIGIN, source: 'squire' }, options.directory);
+    return { base_url: ZRO_ORIGIN, token: exported };
+  })
+});
+
+it('replaces a quota-limited Zro vault key with an approved passkey export, and the daemon loads the replacement', async () => {
+  await installLimitedVaultZro();
+  const squire = exportingZroSquire('working');
+  await expect(setup(() => {}, ['zro'], { directory, squire, exportToVault: true })).resolves.toEqual({});
+  expect(squire.materializeDirectVaultGrant).toHaveBeenCalledOnce();
+  await expect(readZroGrant(directory)).resolves.toMatchObject({ token: 'working' });
+  await expect(readVaultEntry('zro', directory)).resolves.toMatchObject({ api_key: 'working' });
+  await expect(new Zro({ directory }).available()).resolves.toBe(true);
+  expect(squire.runs.start).not.toHaveBeenCalled();
+});
+
+it.each([
+  { name: 'passkey export approval fails', exported: 'refused' as const },
+  { name: 'the exported key fails its probe', exported: 'rejected' as const }
+])('keeps the installed quota-limited Zro vault key when $name', async ({ exported }) => {
+  await installLimitedVaultZro();
+  const squire = exportingZroSquire(exported);
+  await expect(setup(() => {}, ['zro'], { directory, squire, exportToVault: true })).rejects.toThrow();
+  expect(squire.materializeDirectVaultGrant).toHaveBeenCalledOnce();
+  await expect(readVaultEntry('zro', directory)).resolves.toMatchObject({ api_key: 'vault-limited', origin: ZRO_ORIGIN });
+  await expect(readZroGrant(directory)).resolves.toMatchObject({ token: 'vault-limited', base_url: ZRO_ORIGIN });
+  expect(squire.runs.start).not.toHaveBeenCalled();
+});
+
+it('keeps the daemon on the installed Zro key while an approved export is probed, even if setup is interrupted', async () => {
+  await installLimitedVaultZro();
+  const squire = exportingZroSquire('working');
+  const controller = new AbortController();
+  const daemonDuringProbe: (string | undefined)[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+    const authorization = new Headers(init!.headers).get('authorization');
+    if (authorization !== 'Bearer working') return new Response(null, { status: 402 });
+    // What the daemon would load right now, then setup is killed mid-probe.
+    daemonDuringProbe.push((await readZroGrant(directory).catch(() => undefined))?.token);
+    controller.abort(new Error('setup interrupted'));
+    throw controller.signal.reason;
+  });
+  await expect(setup(() => {}, ['zro'], { directory, squire, exportToVault: true, signal: controller.signal })).rejects.toThrow();
+  expect(squire.materializeDirectVaultGrant).toHaveBeenCalledWith('zro', 'vault://working', expect.objectContaining({ stage: true }));
+  expect(daemonDuringProbe).toEqual(['vault-limited']);
+  await expect(readVaultEntry('zro', directory)).resolves.toMatchObject({ api_key: 'vault-limited' });
+  await expect(readZroGrant(directory)).resolves.toMatchObject({ token: 'vault-limited' });
+});
+
+it.each([
+  { name: 'a direct key without vault export opt-in', base: ZRO_ORIGIN },
+  { name: 'a Squire egress grant', base: 'https://grant.test' }
+])('keeps the installed quota-limited Zro vault key when $name passes but cannot be loaded beside it', async ({ base }) => {
+  await installLimitedVaultZro();
+  const squire = zroSquire(base);
+  await expect(setup(() => {}, ['zro'], { directory, squire })).rejects.toThrow();
+  // Neither the vault nor the receipt changed, so the daemon still loads the limited key for the reset.
+  await expect(readZroGrant(directory)).resolves.toMatchObject({ token: 'vault-limited', base_url: ZRO_ORIGIN });
+  expect(squire.runs.start).not.toHaveBeenCalled();
+});
+
+it('stops Zro setup without a new signup when the saved key gets HTTP 403, keeps Zro off, and signs up again only with --force', async () => {
+  await writeZroGrant({ base_url: 'https://grant.test', token: 'refused' }, directory);
+  let status = 403;
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(null, { status }));
+  const squire = {
+    credentials: {
+      list: async () => [{ service: 'zro', reference: 'vault://refused', field_names: ['api_key'] }],
+      grant: async () => ({ base_url: 'https://grant.test', token: 'refused' })
+    }, runs: { start: vi.fn(async () => ({ decision: 'drop' as const })), get: vi.fn() }
+  };
+  await expect(setup(() => {}, ['zro'], { directory, squire })).rejects.toThrow('zro refused this account (HTTP 403)');
+  expect(squire.runs.start).not.toHaveBeenCalled();
+  // The daemon keeps the refused source off, and a repeat setup still starts no signup.
+  const sources = configure({ GRUNT_CONFIG_DIR: directory, GRUNT_SOURCES: 'zro' });
+  try { await expect(sources.sources[0]!.available()).resolves.toBe(false); } finally { await sources.close(); }
+  status = 401;
+  await expect(setup(() => {}, ['zro'], { directory, squire })).rejects.toThrow('usegrunt add zro --force');
+  expect(squire.runs.start).not.toHaveBeenCalled();
+  await setup(() => {}, ['zro'], { directory, squire, force: true }).catch(() => {});
+  expect(squire.runs.start).toHaveBeenCalledOnce();
+});
+
+it.each([
+  { provider: 'zro' as const, installed: true },
+  { provider: 'tokenharbor' as const, installed: false }
+])('keeps the $provider key and starts no signup when the provider answers HTTP 502 during setup', async ({ provider, installed }) => {
+  await recordDataSharingConsent(directory, [provider]);
+  if (installed) await writeZroGrant({ base_url: 'https://grant.test', token: 'working' }, directory);
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(null, { status: 502 }));
+  const squire = {
+    credentials: {
+      list: async () => [{ service: provider, reference: 'vault://working', field_names: ['api_key'] }],
+      grant: async () => ({ base_url: 'https://grant.test', token: 'working' })
+    }, runs: { start: vi.fn(), get: vi.fn() }
+  };
+  await expect(setup(() => {}, [provider], { directory, squire })).rejects.toMatchObject({ code: 'upstream' });
+  expect(squire.runs.start).not.toHaveBeenCalled();
+  // A provider fault says nothing about the key, so the installed or just-tested key stays for the daemon to retry.
+  expect(JSON.parse(await readFile(join(directory, `${provider}.json`), 'utf8'))).toMatchObject({ base_url: 'https://grant.test' });
+  await expect(readProviderRefusal(directory, provider)).resolves.toBeUndefined();
+});
+
+it('starts no background signup for a provider with a recorded ban until the person clears it', async () => {
+  await recordDataSharingConsent(directory, ['tokenharbor']);
+  await recordProviderRefusal(directory, 'tokenharbor', new Error('This account has been banned'));
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(null, { status: 401 }));
+  const squire = {
+    signup: vi.fn(),
+    credentials: { list: vi.fn(async () => []), grant: vi.fn() },
+    runs: { start: vi.fn(async () => ({ decision: 'drop' as const })), get: vi.fn() }
+  };
+  const background = () => setupFallbacks({ directory, adapters: ['tokenharbor'], squire, background: true, acquire: true, connect: async () => {}, run: async () => {}, notify: () => {} });
+  await expect(background()).resolves.toMatchObject({ unavailable: ['tokenharbor'] });
+  await expect(background()).resolves.toMatchObject({ unavailable: ['tokenharbor'] });
+  expect(squire.runs.start).not.toHaveBeenCalled();
+  await clearProviderRefusal(directory, 'tokenharbor');
+  await background();
+  expect(squire.runs.start).toHaveBeenCalledOnce();
+});
+
+it('keeps every refusal when setup runs record and clear refusals at the same time', async () => {
+  const providers = ['beatapi', 'pollinations', 'zro', 'tokenharbor', 'perch', 'darus', 'freepi', 'millionseek'];
+  await recordProviderRefusal(directory, 'kenari', new Error('banned'));
+  await Promise.all([
+    ...providers.map(provider => recordProviderRefusal(directory, provider, new SourceError('refused', 'HTTP 403', undefined, undefined, { httpStatus: 403 }))),
+    clearProviderRefusal(directory, 'kenari')
+  ]);
+  for (const provider of providers) await expect(readProviderRefusal(directory, provider)).resolves.toMatchObject({ reason: 'HTTP 403' });
+  await expect(readProviderRefusal(directory, 'kenari')).resolves.toBeUndefined();
+  await Promise.all(providers.slice(0, 4).map(provider => clearProviderRefusal(directory, provider)));
+  for (const provider of providers.slice(4)) await expect(readProviderRefusal(directory, provider)).resolves.toBeDefined();
 });

@@ -422,6 +422,12 @@ it('does not restart the daemon or report success when Kilo setup fails', async 
   await expect(wizard('kilo', actions)).rejects.toThrow('No Kilo access');
   expect(actions.installService).not.toHaveBeenCalled();
 });
+it.each([false, true])('passes --force from usegrunt add to setup so it can clear a recorded refusal (force=%s)', async force => {
+  const actions = stubActions([], { installedSources: async () => 'opencode,beatapi' });
+  await wizard('beatapi', actions, { force });
+  const options = actions.setup.mock.calls[0]![2] as { force?: boolean };
+  expect(options.force).toBe(force ? true : undefined);
+});
 it('requests a BeatAPI model upgrade on explicit add', async () => {
   const actions = stubActions([], { installedSources: async () => 'opencode,beatapi' });
   await wizard('beatapi', actions);

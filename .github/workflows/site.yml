@@ -26,7 +26,7 @@ jobs:
       - name: Validate and stage registry
         run: |
           pnpm exec tsx src/registry.ts registry/adapters.json
-          cp registry/adapters.json site/registry.json
+          pnpm exec tsx src/registry.ts registry/adapters.json --publish site/registry.json
           pnpm exec tsx src/registry.ts site/registry.json
       - name: Check the page is there
         run: |

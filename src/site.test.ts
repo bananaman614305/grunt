@@ -57,8 +57,8 @@ describe("grunt.run landing page", () => {
 
     expect(siteWorkflow).toContain('"registry/adapters.json"');
     expect(siteWorkflow).toContain("src/registry.ts registry/adapters.json");
-    expect(siteWorkflow).toContain("cp registry/adapters.json site/registry.json");
-    expect(siteWorkflow.indexOf("cp registry/adapters.json site/registry.json"))
+    expect(siteWorkflow).toContain("src/registry.ts registry/adapters.json --publish site/registry.json");
+    expect(siteWorkflow.indexOf("src/registry.ts registry/adapters.json --publish site/registry.json"))
       .toBeLessThan(siteWorkflow.indexOf("wrangler@4 pages deploy site"));
   });
 });

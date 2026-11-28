@@ -19,7 +19,7 @@ import { bundledRegistry, disabledAdapters, isDeclarativeAdapter, knownAdapters,
 import type { Registry } from '../registry.js';
 import { BROWSER_CONCURRENCY } from './parallel.js';
 import { Nvidia, writeNvidiaGrant } from './nvidia.js';
-import { Zro, writeZroGrant } from './zro.js';
+import { Zro, readZroGrant, writeZroGrant, writeZroReplacementReceipt } from './zro.js';
 import { TokenHarbor, writeTokenHarborGrant } from './tokenharbor.js';
 import { Runcrate, RuncrateVerificationError, readRuncrateGrant, validateRuncrateVerification, verifyRuncrateDirectGrant, verifyRuncrateSquireGrant, writeRuncrateGrant } from './runcrate.js';
 import type { RuncrateGrantContext, RuncrateGrantVerifier } from './runcrate.js';
@@ -46,6 +46,7 @@ import { verifyKiloAccess } from './kilo.js';
 import { DATA_SHARING_POLICIES, dataSharingPolicies, readDataSharingConsent, registryDataSharingPolicies, requiresExplicitDataSharing } from './data-sharing.js';
 import { isLocalVaultReference, localVaultReference, parseLocalVaultReference, resolveSquireGrant, writePrivateProviderGrant } from './provider-grant.js';
 import type { SquireGrantSource } from './provider-grant.js';
+import { assertProviderNotRefused, clearProviderRefusal, isAccountRefusal, readProviderRefusal, recordProviderRefusal } from './provider-refusal.js';
 import {
   credentialFingerprint,
   defaultProviderOrigin,
@@ -57,6 +58,7 @@ import {
   readVaultGrant,
   redactVaultSecrets,
   validateDirectOrigin,
+  withNamedLock,
   writeVaultEntry
 } from './vault.js';
 import type { VaultProvider } from './vault.js';
@@ -178,18 +180,28 @@ export class SetupFailure extends Error {}
 
 // The provider's own HTTP 401 or 403 to a request with the saved key.
 const rejectedStatus = (error: unknown) => error instanceof SourceError && [401, 403].includes(error.diagnostics?.httpStatus ?? 0) ? error.diagnostics!.httpStatus : undefined;
+// A provider fault (HTTP 5xx, network error or timeout) says nothing about the key.
+const transientFailure = (error: unknown) => error instanceof Error && error.name === 'TimeoutError' || error instanceof SourceError && (error.code === 'timeout'
+  || error.code === 'upstream' && (error.diagnostics?.httpStatus === undefined || error.diagnostics.httpStatus >= 500));
 // One real chat request through the source with its newly written grant. A
-// grant that does not answer is removed, so routing never counts it as connected.
+// grant the provider rejects is removed, so routing never counts it as connected.
 async function probeGrant(source: Source, location: string, caller?: AbortSignal) {
   const signal = AbortSignal.any([...(caller ? [caller] : []), AbortSignal.timeout(60000)]);
   try {
     signal.throwIfAborted();
     await source.complete({ model: source.id, cwd: location, messages: [{ role: 'user', content: 'Reply with one word: ready' }], tools: [], stream: false, maxTokens: 16 }, signal);
     signal.throwIfAborted();
-  } catch (error) { await rm(join(location, `${source.id}.json`), { force: true }); signal.throwIfAborted(); throw error; }
+  } catch (error) {
+    // A quota reply proves the key is accepted. Keep it so the daemon reports the
+    // source as limited and recovers at reset, instead of losing working access.
+    // A provider fault is transient too: keep the key and let the daemon retry it.
+    if (!(error instanceof SourceError && error.code === 'quota') && !transientFailure(error)) await rm(join(location, `${source.id}.json`), { force: true });
+    signal.throwIfAborted();
+    throw error;
+  }
 }
 
-export async function setupProviders(squire: SetupSquire, router: { addGrant(platform: string, grant: { base_url: string; token: string }): Promise<void>; addVerifiedGrant?(platform: string, grant: { base_url: string; token: string }, context?: RuncrateGrantContext): Promise<void>; hasKey?(platform: string): Promise<boolean> }, options: { providers: Provider[]; notify: (line: string) => void; signal?: AbortSignal | undefined; directory?: string; background?: boolean; exportToVault?: boolean } ) {
+export async function setupProviders(squire: SetupSquire, router: { addGrant(platform: string, grant: { base_url: string; token: string }, context?: { exported?: boolean }): Promise<void>; addVerifiedGrant?(platform: string, grant: { base_url: string; token: string }, context?: RuncrateGrantContext): Promise<void>; hasKey?(platform: string): Promise<boolean> }, options: { providers: Provider[]; notify: (line: string) => void; signal?: AbortSignal | undefined; directory?: string; background?: boolean; exportToVault?: boolean; stageExport?: boolean } ) {
   const pending: string[] = [];
   const dropped: string[] = [];
   const drop = (provider: string, reason?: string, diagnostic?: SquireDiagnostic) => {
@@ -205,9 +217,16 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
       if (error instanceof SourceError && error.code === 'cancelled' || error instanceof Error && error.name === 'AbortError') throw error;
       inconclusive ??= { error };
     };
+    // HTTP 403 or a banned account: record it and stop. Signing up again would
+    // only create more accounts for a provider that refuses this one.
+    const stopIfRefused = async (error: unknown) => {
+      options.signal?.throwIfAborted();
+      if (isAccountRefusal(error)) throw await recordProviderRefusal(options.directory ?? configRoot(), provider, error);
+    };
+    await assertProviderNotRefused(options.directory ?? configRoot(), provider);
     try {
       if (await router.hasKey?.(provider)) { options.signal?.throwIfAborted(); options.notify(`${provider}: connected`); continue; }
-    } catch (error) { rememberFailure(error); }
+    } catch (error) { await stopIfRefused(error); rememberFailure(error); }
     let triedLocalVault = false;
     if (isVaultProvider(provider)) {
       let vaulted: Awaited<ReturnType<typeof readVaultGrant>>;
@@ -226,6 +245,7 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
             options.signal?.throwIfAborted();
             options.notify(`${provider}: local vault key could not be verified as free with top-ups disabled; falling back to Squire`);
           } else {
+            await stopIfRefused(error);
             const status = rejectedStatus(error);
             if (!status) rememberFailure(error);
             else { options.signal?.throwIfAborted(); options.notify(`${provider}: local vault key rejected (HTTP ${status})`); }
@@ -244,13 +264,16 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
             ...(options.signal ? { signal: options.signal } : {}),
             ...(options.background !== undefined ? { background: options.background } : {}),
             ...(options.exportToVault !== undefined ? { exportToVault: options.exportToVault } : {}),
+            ...(options.stageExport ? { stageExport: true } : {}),
             notify: options.notify
           });
-          materialized = resolved.transport === 'direct';
+          // Only a key this call stored in the vault may be removed again on failure.
+          materialized = resolved.storedInVault;
           const keyField = apiKeyField(credential, provider);
           const secretPlaceholder = credential.field_names.length > 1 && keyField ? `\${SECRET.${keyField}}` : '${SECRET}';
           const context: RuncrateGrantContext = { reference: credential.reference, secretPlaceholder };
           if (router.addVerifiedGrant) await router.addVerifiedGrant(provider, { base_url: resolved.base_url, token: resolved.token }, context);
+          else if (resolved.exported) await router.addGrant(provider, { base_url: resolved.base_url, token: resolved.token }, { exported: true });
           else await router.addGrant(provider, { base_url: resolved.base_url, token: resolved.token });
           options.signal?.throwIfAborted();
           options.notify(resolved.transport === 'direct'
@@ -269,6 +292,7 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
             rememberFailure(error);
             continue;
           }
+          await stopIfRefused(error);
           const status = rejectedStatus(error);
           if (!status) rememberFailure(error);
           else { options.signal?.throwIfAborted(); options.notify(`${provider}: saved key rejected (HTTP ${status})`); }
@@ -855,6 +879,7 @@ export class BrowserSquire implements SetupSquire {
       pollIntervalMs?: number;
       timeoutMs?: number;
       signal?: AbortSignal;
+      stage?: boolean;
     } = {}
   ): Promise<{ base_url: string; token: string }> {
     const origin = validateDirectOrigin(provider, options.origin ?? defaultProviderOrigin(provider));
@@ -884,7 +909,7 @@ export class BrowserSquire implements SetupSquire {
     }
     const secret = extractCredentialSecret(exported.fields, provider);
     if (!secret) throw new Error(`Squire returned no usable API key field for ${provider}`);
-    await writeVaultEntry(provider, { api_key: secret, origin, source: 'squire' }, options.directory ?? configRoot());
+    if (!options.stage) await writeVaultEntry(provider, { api_key: secret, origin, source: 'squire' }, options.directory ?? configRoot());
     return { base_url: origin, token: secret };
   }
 
@@ -1308,7 +1333,7 @@ export async function bootstrapKilo(squire: SetupSquire, directory: string, noti
   if (result.dropped.length) throw new SetupFailure('no verified Kilo credential');
 }
 
-export async function setup(notify = console.log, providers: string[] = [], options: { squire?: SetupSquire; signal?: AbortSignal; directory?: string; background?: boolean; dataSharingApproved?: readonly string[]; connect?: () => Promise<void>; upgradeBeatAPI?: boolean; registry?: () => Registry; exportToVault?: boolean; verifyRuncrateGrant?: RuncrateGrantVerifier } = {}) {
+export async function setup(notify = console.log, providers: string[] = [], options: { squire?: SetupSquire; signal?: AbortSignal; directory?: string; background?: boolean; dataSharingApproved?: readonly string[]; connect?: () => Promise<void>; upgradeBeatAPI?: boolean; registry?: () => Registry; exportToVault?: boolean; verifyRuncrateGrant?: RuncrateGrantVerifier; force?: boolean } = {}) {
   const retired = providers.find(provider => disabledAdapters.has(provider));
   if (retired) throw new Error(`${retired} routing is disabled`);
   const location = options.directory ?? configRoot();
@@ -1316,6 +1341,18 @@ export async function setup(notify = console.log, providers: string[] = [], opti
   const unsupported = providers.find(id => !knownAdapters.has(id) && !localOptInAdapterIds.has(id)
     && !isDeclarativeAdapter(currentRegistry.adapters.find(adapter => adapter.id === id)));
   if (unsupported) throw new Error('Choose a supported Grunt provider');
+  // A provider that refused this account gets no new signup until the person
+  // clears the refusal with `usegrunt add <provider> --force`.
+  const refused: string[] = [];
+  for (const provider of providers) {
+    if (options.force) await clearProviderRefusal(location, provider);
+    else if (await readProviderRefusal(location, provider)) refused.push(provider);
+  }
+  if (refused.length) {
+    if (refused.length === providers.length) await assertProviderNotRefused(location, refused[0]!);
+    for (const provider of refused) notify(`${provider}: skipped; it refused this account. Run usegrunt add ${provider} --force to retry`);
+    providers = providers.filter(id => !refused.includes(id));
+  }
   const extraPolicies = registryDataSharingPolicies(currentRegistry);
   const allPolicies = [...DATA_SHARING_POLICIES, ...extraPolicies];
   const approved = [...new Set([...(options.dataSharingApproved ?? []).filter(id => !requiresExplicitDataSharing(id, extraPolicies)),
@@ -1523,15 +1560,78 @@ export async function setup(notify = console.log, providers: string[] = [], opti
     if (!providers.length) return {};
     if (providers.includes('zro')) {
       const source = new Zro({ directory: location });
+      // Each candidate is probed in memory and installed only after it answers,
+      // so the daemon never reads an unverified key. A key that only reports
+      // quota still works after reset; it stays installed until a candidate passes.
+      let limited = false, stale = false;
+      const isQuota = (error: unknown) => error instanceof SourceError && error.code === 'quota';
+      // The daemon accepts zro.json only when it matches the local vault key.
+      // A passkey-approved Squire export is staged in memory, never written to the
+      // vault before its probe, so the daemon keeps the installed key throughout.
+      // Only after it answers is it published, in steps the daemon can load after each.
+      // Any other candidate that differs from the vault key leaves the installed key.
+      // Publication holds a process lock, so overlapping setup runs cannot interleave
+      // their receipt and vault writes. The state is read again inside the lock.
+      const install = (grant: { base_url: string; token: string }, exported: boolean) => withNamedLock(location, 'zro-publish', async () => {
+        const vaulted = await readVaultGrant('zro', location).catch(() => undefined);
+        if (vaulted && credentialFingerprint(vaulted) !== credentialFingerprint(grant)) {
+          if (!exported || vaulted.source === 'env') {
+            throw new Error('Zro key verified, but the local Grunt vault holds a different zro key; the installed key was kept. Rerun setup with vault export enabled and approve the Squire passkey export, or review it with usegrunt vault');
+          }
+          // Recoverable at every step: the receipt first accepts both keys, then the vault
+          // takes the replacement, then the final receipt names only the replacement.
+          // The installed key is carried forward only if the current receipt verifies it.
+          const installed = await readZroGrant(location).catch(() => undefined);
+          const verified = installed && credentialFingerprint(installed) === credentialFingerprint(vaulted) ? vaulted : undefined;
+          await writeZroReplacementReceipt(grant, verified, location);
+          await writeVaultEntry('zro', { api_key: grant.token, origin: validateDirectOrigin('zro', grant.base_url), source: 'squire' }, location);
+        }
+        await writeZroGrant(grant, location);
+        const loaded = await readZroGrant(location).catch(() => undefined);
+        if (!loaded || credentialFingerprint(loaded) !== credentialFingerprint(grant)) {
+          throw new Error('Zro key verified but the daemon cannot load it; review the zro entry with usegrunt vault');
+        }
+      });
       try {
         const result = await setupProviders(squire, {
-          hasKey: async provider => provider === 'zro' && await source.healthCheck(options.signal),
-          addGrant: async (provider, grant) => {
+          hasKey: async provider => {
+            if (provider !== 'zro') return false;
+            if (!await source.available(options.signal)) return false;
+            const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(source.availabilityTimeoutMs)]);
+            try {
+              await source.complete({ model: 'zro', cwd: location, messages: [{ role: 'user', content: 'Reply with one word: ready' }], tools: [], stream: false, maxTokens: 16 }, signal);
+              options.signal?.throwIfAborted();
+              return true;
+            } catch (error) {
+              options.signal?.throwIfAborted();
+              if (isQuota(error)) limited = true;
+              // Quota and provider faults (HTTP 5xx, timeouts) keep the installed key and
+              // start no signup; only a key the provider rejects is stale.
+              if (isQuota(error) || transientFailure(error)) throw error;
+              stale = true;
+              return false;
+            }
+          },
+          addGrant: async (provider, grant, context) => {
             if (provider !== 'zro') throw new Error('Unexpected Zro credential');
-            await writeZroGrant(grant, location);
-            await probeGrant(source, location, options.signal);
+            const exported = context?.exported === true;
+            const candidate = new Zro({ directory: location,
+              loadGrant: async () => ({ base_url: grant.base_url, token: grant.token, free_account_verified: true, verified_at: new Date().toISOString() }) });
+            const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(60000)]);
+            try {
+              await candidate.complete({ model: 'zro', cwd: location, messages: [{ role: 'user', content: 'Reply with one word: ready' }], tools: [], stream: false, maxTokens: 16 }, signal);
+              signal.throwIfAborted();
+            } catch (error) {
+              signal.throwIfAborted();
+              if (isQuota(error) && !limited) { await install(grant, exported); limited = true; }
+              // A local key that already failed its health check is removed, never a limited one.
+              else if (!isQuota(error) && stale && !limited) await rm(join(location, 'zro.json'), { force: true });
+              throw error;
+            } finally { await candidate.close(); }
+            await install(grant, exported);
           }
-        }, { providers: ['zro'], notify, signal: options.signal, directory: location, ...(options.background !== undefined ? { background: options.background } : {}) });
+        }, { providers: ['zro'], notify, signal: options.signal, directory: location, ...(options.background !== undefined ? { background: options.background } : {}),
+          ...(options.exportToVault !== undefined ? { exportToVault: options.exportToVault } : {}), stageExport: true });
         if (result.dropped.length) throw new Error('Zro setup incomplete; rerun usegrunt setup');
       } finally { await source.close(); }
       providers = providers.filter(provider => provider !== 'zro');

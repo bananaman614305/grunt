@@ -7,6 +7,7 @@ import type { PollinationsSetupSquire } from './pollinations-setup.js';
 import { POLLINATIONS_MODEL, pollinationsGrantPath, readPollinationsGrant, writePollinationsGrant } from './pollinations.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 import { planSteps } from './fixtures/key-only-goal.js';
+import { clearProviderRefusal } from './provider-refusal.js';
 
 let directory: string;
 const grant = { base_url: 'https://trusty-squire-api.fly.dev/v1/egress/g_abcdefghijklmnop', token: 'synthetic-private-grant' };
@@ -65,19 +66,27 @@ it('captures new private access after consent, verifies server guards, and reuse
   expect(fetcher).toHaveBeenCalledTimes(3);
 });
 
-it('verifies a reused vault key through ordinary signup before writing a fresh local receipt', async () => {
+it.each([
+  { name: 'the Grunt-owned key', saved: credential },
+  // The shape Squire really lists on squire: a generic `value` field and no auth_strategy.
+  { name: "Squire's grunt-free-pollinations entry", saved: { service: 'pollinations', reference: 'vault://squire-owned', label: 'grunt-free-pollinations', field_names: ['value'], allowed_hosts: ['gen.pollinations.ai', 'enter.pollinations.ai', '*.pollinations.ai'] } },
+  { name: "Squire's default entry", saved: { service: 'pollinations', reference: 'vault://squire-default', label: 'default', field_names: ['value'], allowed_hosts: ['gen.pollinations.ai', 'enter.pollinations.ai', '*.pollinations.ai'] } }
+])('reuses $name from Squire when it passes the free-key guard, without a signup', async ({ saved: entry }) => {
   await recordDataSharingConsent(directory, ['pollinations']);
-  const browser = squire(true);
+  const browser = squire();
+  browser.credentials.list.mockResolvedValue([entry] as typeof credential[]);
   await setupPollinations({ directory, squire: browser, fetcher: metadata() });
-  expect(browser.signup).toHaveBeenCalledOnce();
-  expect(browser.signup.mock.invocationCallOrder[0]).toBeLessThan(browser.credentials.grant.mock.invocationCallOrder[0]!);
-  expect(browser.credentials.grant).toHaveBeenCalledTimes(1);
+  expect(browser.signup).not.toHaveBeenCalled();
+  expect(browser.credentials.grant).toHaveBeenCalledExactlyOnceWith(entry.reference);
+  expect(await readPollinationsGrant(directory)).toMatchObject({ key_zero_budget_verified: true, quest_pollen_only: true });
 });
 
 it('refreshes vault metadata and prefers a newly captured key over an older credential with the same label', async () => {
   const browser = squire();
   const old = { ...credential, reference: 'vault://old-unrelated' };
   browser.credentials.list.mockResolvedValueOnce([old]).mockResolvedValueOnce([old, credential]);
+  // The older key no longer works, so setup signs up and then takes the new capture.
+  browser.credentials.grant.mockRejectedValueOnce(new Error('revoked'));
   await setupPollinations({ directory, squire: browser, dataSharingApproved: ['pollinations'], fetcher: metadata() });
   expect(browser.credentials.grant).toHaveBeenCalledWith(credential.reference);
 });
@@ -122,7 +131,7 @@ it.each([{ paid: 1 }, { budget: null }, { account: ['usage', 'keys'] }, { price:
 it('invalidates an older receipt and sanitizes provider refusal without exposing grant or error secrets', async () => {
   await recordDataSharingConsent(directory, ['pollinations']);
   await writeFile(pollinationsGrantPath(directory), JSON.stringify({ ...saved(), verified_at: new Date(Date.now() - 31 * 86400000).toISOString() }), { mode: 0o600 });
-  const browser = squire(true), notify = vi.fn();
+  const browser = squire(), notify = vi.fn();
   browser.signup.mockRejectedValue(new Error(`Bearer ${grant.token} sk-private-provider-key`));
   const error = await setupPollinations({ directory, squire: browser, fetcher: metadata(), notify }).then(() => null, reason => reason as Error);
   expect(error?.message).toBe('Pollinations free signup or key guard verification did not complete; rerun usegrunt setup');
@@ -206,4 +215,16 @@ it('does not inherit stale passed approval or contact Squire when background sto
   await writePollinationsGrant(saved(), directory); const before = await readFile(pollinationsGrantPath(directory)), browser = squire(), fetcher = metadata();
   await expect(setupPollinations({ directory, squire: browser, fetcher, background: true, dataSharingApproved: ['pollinations'] })).rejects.toThrow('needs foreground setup');
   expect(await readFile(pollinationsGrantPath(directory))).toEqual(before); expect(fetcher).not.toHaveBeenCalled(); expect(browser.approveDataSharing).not.toHaveBeenCalled(); expect(browser.signup).not.toHaveBeenCalled(); expect(browser.credentials.list).not.toHaveBeenCalled(); expect(browser.credentials.grant).not.toHaveBeenCalled();
+});
+
+it('stops setup without a new signup when Pollinations answers the saved key with HTTP 403, until the refusal is cleared', async () => {
+  await recordDataSharingConsent(directory, ['pollinations']);
+  await writePollinationsGrant(saved(), directory);
+  const browser = squire(), fetcher = vi.fn<typeof fetch>(async () => new Response(null, { status: 403 }));
+  await expect(setupPollinations({ directory, squire: browser, fetcher })).rejects.toThrow('pollinations refused this account (HTTP 403)');
+  await expect(setupPollinations({ directory, squire: browser, fetcher: metadata() })).rejects.toThrow('usegrunt add pollinations --force');
+  expect(browser.signup).not.toHaveBeenCalled();
+  await clearProviderRefusal(directory, 'pollinations');
+  await setupPollinations({ directory, squire: browser, fetcher: metadata() });
+  expect(browser.signup).toHaveBeenCalledOnce();
 });

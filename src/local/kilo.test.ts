@@ -99,6 +99,29 @@ it('probes Kilo without its saved grant until setup switches to account bootstra
     expect(f.posts().at(-1)?.[0]).toBe('https://squire.test/api/gateway/chat/completions');
   } finally { await session.close(); }
 });
+it('falls back to anonymous free access once Kilo rejects the saved token with HTTP 401', async () => {
+  await writePrivateProviderGrant('kilo', { base_url: 'https://squire.test', token: 'revoked' }, directory);
+  const fetcher = vi.fn<typeof fetch>(async (url, init) => {
+    if (String(url) === `${KILO_ORIGIN}/models`) return Response.json({ data: [model()] });
+    if (String(url) === 'https://squire.test/api/gateway/chat/completions') return new Response(null, { status: 401 });
+    if (String(url) === `${KILO_ORIGIN}/chat/completions`) {
+      expect(new Headers(init?.headers).has('authorization')).toBe(false);
+      return Response.json(result());
+    }
+    throw new Error('Unexpected endpoint');
+  });
+  const source = new Kilo({ directory, fetcher }); sources.push(source);
+  const posts = () => fetcher.mock.calls.filter(([, init]) => init?.method === 'POST').map(([url]) => String(url));
+  await expect(source.complete(request(), new AbortController().signal)).resolves.toMatchObject({ text: 'Hello.' });
+  expect(posts()).toEqual(['https://squire.test/api/gateway/chat/completions', `${KILO_ORIGIN}/chat/completions`]);
+  // The rejected token is not resent on the next request.
+  await expect(source.complete(request(), new AbortController().signal)).resolves.toMatchObject({ text: 'Hello.' });
+  expect(posts().slice(2)).toEqual([`${KILO_ORIGIN}/chat/completions`]);
+});
+it('reports a Kilo HTTP 401 without a saved token as a sign-in problem, not a refusal', async () => {
+  const f = fixture({ infer: () => new Response(null, { status: 401 }) });
+  await expect(f.source.complete(request(), new AbortController().signal)).rejects.toMatchObject({ code: 'logged_out', diagnostics: { httpStatus: 401 } });
+});
 it.each([
   { isFree: false }, { id: 'kilo-auto/free' }, { context_length: 199999 }, { pricing: { prompt: '0', completion: '0.01' } },
   { pricing: { prompt: '', completion: '0' } }, { pricing: { prompt: '0', completion: '0', request: '0.01' } }, { supported_parameters: ['max_tokens'] }

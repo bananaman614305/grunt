@@ -1,6 +1,6 @@
 import { build } from 'esbuild';
 import { execFileSync } from 'node:child_process';
-import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 const { version } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
@@ -39,4 +39,6 @@ if (posthogKey) await writeFile('dist/local/telemetry-key.js', `export const POS
 await bundleDaemon('dist/local/daemon.mjs');
 
 await mkdir('dist/registry', { recursive: true });
-await copyFile('registry/adapters.json', 'dist/registry/adapters.json');
+// The packaged registry leaves out offers whose end date has passed (src/registry.ts publishedRegistry).
+const { publishedRegistry, validateRegistry } = await import('../dist/registry.js');
+await writeFile('dist/registry/adapters.json', `${JSON.stringify(validateRegistry(publishedRegistry(JSON.parse(await readFile('registry/adapters.json', 'utf8')))), null, 2)}\n`);
