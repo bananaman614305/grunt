@@ -8,7 +8,10 @@ import { lstat, realpath } from 'node:fs/promises';
 import { userTurns } from './harness.js';
 import { executable } from './multiplexer.js';
 import { ManagedOpenCodeProcess } from './managed-opencode-process.js';
-import { lengthLimited, preventReplay, replayTimeout, withObservedEnding, SourceError } from './source.js';
+import { JsonToolBridge } from './json-tool-bridge.js';
+import { compileToolSchemas } from './tool-schema.js';
+import { denyOpenCodeTools, startOpenCodeInference } from './opencode-inference.js';
+import { lengthLimited, needsFunctionTools, preventReplay, replayTimeout, withObservedEnding, SourceError } from './source.js';
 import type { ModelRequest, Source } from './source.js';
 
 export const DEFAULT_OPENCODE_MODELS = ['deepseek-v4.1-flash-free', 'big-pickle'] as const;
@@ -27,6 +30,16 @@ interface PromptAttempt { session?: string; messageID?: string; partID?: string;
 interface StoredMessage { info: { id: string; role: string }; parts: { id: string; type: string; text?: string }[] }
 interface TokenCounts { total?: number; input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } }
 interface ReplyPart { type: string; reason?: string; text?: string; tokens?: TokenCounts }
+
+function callerToolBridge(request: ModelRequest) {
+  if (!needsFunctionTools(request) && !request.messages.some(message => message.role === 'tool' || message.tool_calls?.length)) return;
+  compileToolSchemas(request.tools, 'OpenCode rejected a function tool schema');
+  return new JsonToolBridge(request);
+}
+
+function nativeAction() {
+  return preventReplay(new SourceError('upstream', 'OpenCode inference attempted a native action'), 'OpenCode native action');
+}
 
 async function waitForPreparation<T>(work: Promise<T>, signal: AbortSignal) {
   let cancel!: () => void;
@@ -65,8 +78,8 @@ function replyUsage(parts: readonly ReplyPart[], messageTokens?: TokenCounts) {
 
 export class OpenCode implements Source {
   readonly id = 'opencode';
-  // OpenCode runs its own coding tools and never returns the client's tool calls.
-  readonly supportsFunctionTools = false;
+  readonly supportsFunctionTools = true;
+  readonly jsonToolBridge = true;
   private child: ChildProcess | undefined;
   private managed: ManagedOpenCodeProcess | undefined;
   private activeRequests = 0;
@@ -102,6 +115,18 @@ export class OpenCode implements Source {
       return Boolean(result.text);
     } catch { return false; }
   }
+  private async configFile() {
+    if (this.options.configFile) {
+      try {
+        const stat = await lstat(this.options.configFile);
+        if (!stat.isFile() || stat.isSymbolicLink() || !hasOwnerMode(stat, 0o600)) throw new Error('Invalid private config');
+        return this.options.configFile;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new SourceError('logged_out', 'OpenCode private configuration is unavailable; rerun usegrunt setup');
+      }
+    }
+    return process.env.OPENCODE_CONFIG;
+  }
   private async server(): Promise<string> {
     if (this.options.url) return this.options.url.replace(/\/$/, '');
     if (this.recycling) await this.recycling;
@@ -115,17 +140,10 @@ export class OpenCode implements Source {
       const env: NodeJS.ProcessEnv = { ...process.env, OPENCODE_CONFIG_CONTENT: JSON.stringify({
         ...config, permission: { ...permission, external_directory: 'deny' }
       }) };
-      if (this.options.configFile) {
-        try {
-          const stat = await lstat(this.options.configFile);
-          if (!stat.isFile() || stat.isSymbolicLink() || !hasOwnerMode(stat, 0o600)) throw new Error('Invalid private config');
-          // Signup may create this private grant after the daemon was started.
-          // Let the CLI read it; provider values never enter this process.
-          env.OPENCODE_CONFIG = this.options.configFile;
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new SourceError('logged_out', 'OpenCode private configuration is unavailable; rerun usegrunt setup');
-        }
-      }
+      // Signup may create this private grant after the daemon was started.
+      // Let the CLI read it; provider values never enter this process.
+      const configFile = await this.configFile();
+      if (configFile) env.OPENCODE_CONFIG = configFile;
       this.shutdown.signal.throwIfAborted();
       return new Promise<string>((resolve, reject) => {
         const grouped = process.platform !== 'win32';
@@ -192,10 +210,14 @@ export class OpenCode implements Source {
     const configured = typeof this.options.models === 'function' ? this.options.models() : this.options.models;
     const models = [...new Set(scalar === undefined ? configured ?? DEFAULT_OPENCODE_MODELS : [scalar])];
     if (!models.length || models.some(model => typeof model !== 'string' || !model.trim())) throw new SourceError('upstream', 'OpenCode model pool is empty or invalid');
-    const turns = userTurns(request), cwd = await realpath(request.cwd);
-    const key = (history: string[]) => createHash('sha256').update(JSON.stringify([cwd, history])).digest('hex');
-    const prior = this.sessions.get(key(turns)) ?? (turns.length > 1 ? this.sessions.get(key(turns.slice(0, -1))) : undefined);
-    const sticky = prior && !this.busy.has(prior) ? this.sessionModels.get(prior) : undefined;
+    const bridge = callerToolBridge(request);
+    let sticky: string | undefined;
+    if (!bridge) {
+      const turns = userTurns(request), cwd = await realpath(request.cwd);
+      const key = (history: string[]) => createHash('sha256').update(JSON.stringify([cwd, history])).digest('hex');
+      const prior = this.sessions.get(key(turns)) ?? (turns.length > 1 ? this.sessions.get(key(turns.slice(0, -1))) : undefined);
+      sticky = prior && !this.busy.has(prior) ? this.sessionModels.get(prior) : undefined;
+    }
     const start = sticky && models.includes(sticky) ? models.indexOf(sticky) : this.nextModel % models.length;
     const candidates = [...models.slice(start), ...models.slice(0, start)];
     const attempt: PromptAttempt = { retryable: false };
@@ -205,7 +227,7 @@ export class OpenCode implements Source {
         if ((this.modelCooldowns.get(model) ?? 0) > Date.now()) continue;
         signal.throwIfAborted();
         if (model !== sticky) this.nextModel = (models.indexOf(model) + 1) % models.length;
-        try { return await this.completeModel(request, caller, model, signal, attempt); }
+        try { return await this.completeModel(request, caller, model, signal, attempt, bridge); }
         catch (error) {
           if (signal.aborted || !(error instanceof SourceError) || (error.code !== 'quota' && !(error instanceof UnavailableModel))) throw error;
           if (error instanceof FreeLimit) {
@@ -222,13 +244,24 @@ export class OpenCode implements Source {
       throw new SourceError('quota', 'OpenCode free models are temporarily exhausted or unavailable', retryAfter, last?.output, last?.diagnostics);
     } finally { if (attempt.session) this.busy.delete(attempt.session); }
   }
-  private async completeModel(request: ModelRequest, caller: AbortSignal, modelID: string, signal: AbortSignal, attempt: PromptAttempt) {
-    const turns = userTurns(request), prompt = request.handoffPrompt ?? turns.at(-1);
-    if (!prompt) throw new SourceError('upstream', 'No user text in this request');
-    const cwd = await realpath(request.cwd);
-    const key = (history: string[]) => createHash('sha256').update(JSON.stringify([cwd, history])).digest('hex');
-    const prior = this.sessions.get(key(turns)) ?? (turns.length > 1 ? this.sessions.get(key(turns.slice(0, -1))) : undefined);
-    const continuation = attempt.session ?? (prior && !this.busy.has(prior) ? prior : undefined);
+  private async completeModel(request: ModelRequest, caller: AbortSignal, modelID: string, signal: AbortSignal, attempt: PromptAttempt,
+    bridge?: JsonToolBridge) {
+    const expected = request.expectedFunctionCall;
+    const choice = !expected ? '' : expected.name
+      ? `Return a calls envelope. Every call must be to ${JSON.stringify(expected.name)}.\n`
+      : 'Return a calls envelope with at least one available tool call.\n';
+    let prompt: string, cwd = '', sessionKey: string | undefined, continuation: string | undefined;
+    if (bridge) prompt = choice + bridge.prompt(false, 'native OpenCode tools');
+    else {
+      const turns = userTurns(request), latest = request.handoffPrompt ?? turns.at(-1);
+      if (!latest) throw new SourceError('upstream', 'No user text in this request');
+      prompt = latest;
+      cwd = await realpath(request.cwd);
+      const key = (history: string[]) => createHash('sha256').update(JSON.stringify([cwd, history])).digest('hex');
+      sessionKey = key(turns);
+      const prior = this.sessions.get(sessionKey) ?? (turns.length > 1 ? this.sessions.get(key(turns.slice(0, -1))) : undefined);
+      continuation = attempt.session ?? (prior && !this.busy.has(prior) ? prior : undefined);
+    }
     attempt.retryable = false;
     // Reserve a continuation before any asynchronous server work, and keep the
     // reservation across quota retries of this same user turn.
@@ -239,6 +272,7 @@ export class OpenCode implements Source {
     let watching: Promise<never> | undefined;
     let guardFailed = false, dispatched = false, effectFreeReply = false, reportedProviderFailure = false, replyUsedTools = false;
     const turnSignal = AbortSignal.any([signal, events.signal]);
+    let worker: Awaited<ReturnType<typeof startOpenCodeInference>> | undefined;
     const headers = { 'Content-Type': 'application/json', 'x-opencode-directory': cwd,
       ...(process.env.OPENCODE_SERVER_PASSWORD ? { Authorization: `Basic ${Buffer.from(`${process.env.OPENCODE_SERVER_USERNAME ?? 'opencode'}:${process.env.OPENCODE_SERVER_PASSWORD}`).toString('base64')}` } : {}) };
     const check = (res: Response) => {
@@ -255,9 +289,13 @@ export class OpenCode implements Source {
       return await res.json();
     };
     try {
-      base = await waitForPreparation(this.server(), signal);
+      if (bridge) {
+        worker = await startOpenCodeInference(await this.configFile(), request.maxTokens, signal);
+        headers['x-opencode-directory'] = worker.cwd;
+        base = worker.base;
+      } else base = await waitForPreparation(this.server(), signal);
       signal.throwIfAborted();
-      if (!this.options.url) {
+      if (!bridge && !this.options.url) {
         // Personal MCP catalogs can fill the model context before a task starts.
         // Disconnect them only in our own worker instance, once per directory.
         // OpenCode's coding tools, saved login and config files stay available.
@@ -282,10 +320,9 @@ export class OpenCode implements Source {
         }
         await waitForPreparation(prepared, turnSignal);
       }
-      session = continuation ?? (await call('/session', { title: 'grunt' })).id;
+      session = continuation ?? (await call('/session', { title: 'grunt', ...(bridge ? { permission: denyOpenCodeTools } : {}) })).id;
       if (!session || !/^[a-zA-Z0-9_-]+$/.test(session)) throw new SourceError('upstream', 'OpenCode returned an invalid session');
-      attempt.session = session;
-      this.busy.add(session);
+      if (!bridge) { attempt.session = session; this.busy.add(session); }
       // OpenCode 1.18.31: subscribe before sending the message so a fast
       // permission request cannot be missed, including on an existing server.
       const stream = await this.fetcher(`${base}/event`, { headers, redirect: 'error', signal: turnSignal });
@@ -308,6 +345,8 @@ export class OpenCode implements Source {
             const data = frame.split(/\r?\n/).filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
             if (!data) continue;
             const event = JSON.parse(data);
+            const part = event.type === 'message.part.updated' ? event.properties?.part : undefined;
+            if (bridge && part?.sessionID === session && part.type === 'tool') throw nativeAction();
             const status = event.type === 'session.status' ? event.properties : undefined;
             if (status?.sessionID === session && status.status?.type === 'retry' && status.status.action?.reason === 'free_tier_limit') {
               const next = status.status.next;
@@ -317,6 +356,7 @@ export class OpenCode implements Source {
             const permission = event.properties;
             if (typeof permission?.sessionID !== 'string') throw new SourceError('upstream', 'OpenCode returned an invalid permission request');
             if (permission.sessionID !== session) continue;
+            if (bridge) throw nativeAction();
             if (typeof permission.id !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(permission.id)) {
               throw new SourceError('upstream', 'OpenCode returned an invalid permission request');
             }
@@ -332,6 +372,7 @@ export class OpenCode implements Source {
         model: { providerID: 'opencode', modelID }, parts: [{ ...(attempt.partID ? { id: attempt.partID } : {}), type: 'text', text: prompt }]
       })]);
       const parts: ReplyPart[] = reply.parts ?? [];
+      if (bridge && parts.some(part => !['text', 'reasoning', 'step-start', 'step-finish'].includes(part.type))) throw nativeAction();
       const text = parts.filter(p => p.type === 'text' && typeof p.text === 'string').map(p => p.text).join('\n');
       if (reply.info?.error) {
         reportedProviderFailure = true;
@@ -340,25 +381,43 @@ export class OpenCode implements Source {
         replyUsedTools = parts.some(part => !['text', 'reasoning', 'step-start', 'step-finish'].includes(part.type));
         const error = reply.info.error;
         if (error.name === 'ProviderAuthError' || error.data?.statusCode === 401) throw new SourceError('logged_out', 'OpenCode free model requires sign-in');
-        if (error.data?.statusCode === 429) throw new SourceError('quota', 'OpenCode free model quota exhausted', undefined, text);
+        if (error.data?.statusCode === 429) throw new SourceError('quota', 'OpenCode free model quota exhausted', undefined, bridge ? undefined : text);
         if (error.data?.statusCode === 404 || error.data?.code === 'model_not_found' || ['ModelNotFoundError', 'ProviderModelNotFoundError'].includes(error.name)) throw new UnavailableModel();
         throw new SourceError('refused', 'OpenCode provider refused the request');
       }
       const finish = reply.info?.finish ?? parts.findLast(part => part.type === 'step-finish')?.reason;
       const truncated = lengthLimited(finish);
+      const { usage, reasoningTokens } = replyUsage(parts, reply.info?.tokens);
+      const details = { completion_tokens_details: { reasoning_tokens: reasoningTokens } };
+      if (bridge) {
+        if (truncated || request.maxTokens !== undefined && usage.outputTokens !== undefined && usage.outputTokens > request.maxTokens) {
+          return withObservedEnding({ text: '', finishReason: 'length' as const, ...usage }, finish, details, false);
+        }
+        if (finish !== 'stop') throw new SourceError('upstream', 'OpenCode inference did not return a complete response');
+        const completion = bridge.parse(text);
+        if (expected && (!completion.calls?.length || expected.name && completion.calls.some(call => call.function.name !== expected.name))) {
+          throw new SourceError('upstream', 'OpenCode returned a tool envelope that did not satisfy tool choice');
+        }
+        if (!completion.text.trim() && !completion.calls?.length) throw new SourceError('upstream', 'OpenCode returned an empty tool envelope');
+        return withObservedEnding({ ...completion, ...usage }, finish, details, !!completion.calls?.length);
+      }
       if (!text && !truncated) throw new SourceError('upstream', 'OpenCode returned no assistant text');
-      this.sessions.set(key(turns), session);
+      this.sessions.set(sessionKey!, session);
       this.sessionModels.set(session, modelID);
       if (typeof reply.info?.parentID === 'string') this.sessionParents.set(session, reply.info.parentID);
-      const { usage, reasoningTokens } = replyUsage(parts, reply.info?.tokens);
       return withObservedEnding({ text, ...(truncated ? { finishReason: 'length' as const } : {}), ...usage }, finish,
-        { completion_tokens_details: { reasoning_tokens: reasoningTokens } }, parts.some(part => part.type === 'tool'));
+        details, parts.some(part => part.type === 'tool'));
     } catch (error) {
-      if ((signal.aborted || guardFailed) && session && base) await this.fetcher(`${base}/session/${session}/abort`, { method: 'POST', headers, redirect: 'error', signal: AbortSignal.timeout(2000) }).catch(() => {});
+      if (!bridge && (signal.aborted || guardFailed) && session && base) await this.fetcher(`${base}/session/${session}/abort`, { method: 'POST', headers, redirect: 'error', signal: AbortSignal.timeout(2000) }).catch(() => {});
       if (signal.aborted) {
         caller.throwIfAborted();
         if (this.shutdown.signal.aborted) throw new SourceError('cancelled', 'OpenCode request cancelled during shutdown');
-        throw replayTimeout('OpenCode request timed out', !dispatched);
+        throw replayTimeout('OpenCode request timed out', bridge ? !(error instanceof SourceError && error.replay === 'unsafe') : !dispatched);
+      }
+      if (bridge) {
+        attempt.retryable = !guardFailed && (error instanceof UnavailableModel || error instanceof SourceError && error.code === 'quota');
+        if (error instanceof SourceError) throw error;
+        throw new SourceError('upstream', 'OpenCode inference request failed');
       }
       // A free limit is never retried here, and the pending prompt is still sleeping.
       const rejection = error instanceof SourceError && [401, 403, 429].includes(error.diagnostics?.httpStatus ?? 0) && !guardFailed;
@@ -390,6 +449,7 @@ export class OpenCode implements Source {
       events.abort();
       await reader?.cancel().catch(() => {});
       await watching?.catch(() => {});
+      await worker?.close().catch(() => { throw preventReplay(undefined, 'OpenCode inference worker could not be cleaned up'); });
     }
   }
   async close() {

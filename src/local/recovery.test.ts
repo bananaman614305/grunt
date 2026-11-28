@@ -393,10 +393,10 @@ it.each(['reused', 'unavailable', 'pre-signup error'])('does not count a %s setu
   } finally { await recovery.close(); }
 });
 
-it('counts only coding-capable routes (excluding non-tool opencode and public-only freepi/goedel) and raises MAX_OPEN_ROUTES to 10', async () => {
+it('counts coding-capable routes including OpenCode and excludes public-only Free-Pi and Gödel', async () => {
   expect(MAX_OPEN_ROUTES).toBe(10);
   const dir = await directory();
-  expect(codingCapableRoute(new OpenCode(), dir)).toBe(false);
+  expect(codingCapableRoute(new OpenCode(), dir)).toBe(true);
   expect(codingCapableRoute(new FreePi({ directory: dir }), dir)).toBe(false);
   expect(codingCapableRoute(new Goedel({ directory: dir }), dir)).toBe(false);
   expect(codingCapableRoute(new Kilo({ directory: dir }), dir)).toBe(true);
