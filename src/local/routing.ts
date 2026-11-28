@@ -274,8 +274,8 @@ export class StickyRouter {
     const shortTransient = shortRetry || shortPending;
     const transientRetryAfter = shortRetry
       ? seconds
-      : shortPending && seconds !== undefined
-        ? Math.min(seconds, pendingWait, TRANSIENT_RETRY_WINDOW_SECONDS)
+      : shortPending
+        ? Math.min(seconds ?? pendingWait, pendingWait, TRANSIENT_RETRY_WINDOW_SECONDS)
         : undefined;
     // Sources that refused the request's own shape never contacted a provider and are not rate limited. Say
     // so, and when nothing is merely waiting (cooling, limited, busy, pending, failed this call), answer as an

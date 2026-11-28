@@ -323,7 +323,32 @@ it('enforces the 60s cutoff on image requests and bounds pending setup and in-fl
   expect(expiredPending.headers.get('retry-after')).toBeNull();
   expect(expiredPending.headers.get('x-grunt-pool-state')).toBe('globally_exhausted');
 
-  // An in-flight half-open trial is also bounded to 60s before flipping to HTTP 402.
+  // Pending-only pool (no other route cooldown) still sends Retry-After bounded to <= 60s, then flips to HTTP 402.
+  const onlyPendingSource = make('kilo');
+  const onlyPendingPool = new Sources([onlyPendingSource], { registry: () => kiloOnly, now: () => now });
+  pools.push(onlyPendingPool);
+  onlyPendingPool.pending.add('kilo');
+  const onlyPendingApp = createLocalApp(onlyPendingPool);
+  const onlyPendingFirst = await onlyPendingApp.request('http://127.0.0.1:8788/v1/chat/completions', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'grunt', messages: request.messages })
+  });
+  expect(onlyPendingFirst.status).toBe(429);
+  expect(Number(onlyPendingFirst.headers.get('retry-after'))).toBe(60);
+  now += 25_000;
+  const onlyPendingMid = await onlyPendingApp.request('http://127.0.0.1:8788/v1/chat/completions', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'grunt', messages: request.messages })
+  });
+  expect(onlyPendingMid.status).toBe(429);
+  expect(Number(onlyPendingMid.headers.get('retry-after'))).toBe(35);
+  now += 36_000;
+  const onlyPendingExpired = await onlyPendingApp.request('http://127.0.0.1:8788/v1/chat/completions', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'grunt', messages: request.messages })
+  });
+  expect(onlyPendingExpired.status).toBe(402);
+  expect(onlyPendingExpired.headers.get('x-should-retry')).toBe('false');
+  expect(onlyPendingExpired.headers.get('retry-after')).toBeNull();
+
+  // An in-flight half-open trial is also bounded to 60s with Retry-After before flipping to HTTP 402.
   const trialSource = make('kilo');
   const trialPool = new Sources([trialSource], { registry: () => kiloOnly, now: () => now });
   pools.push(trialPool);
@@ -343,12 +368,15 @@ it('enforces the 60s cutoff on image requests and bounds pending setup and in-fl
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'grunt', messages: request.messages })
   });
   expect(whileTrialFresh.status).toBe(429);
+  expect(Number(whileTrialFresh.headers.get('retry-after'))).toBeGreaterThan(0);
+  expect(Number(whileTrialFresh.headers.get('retry-after'))).toBeLessThanOrEqual(60);
   now += 61_000;
   const whileTrialStale = await trialApp.request('http://127.0.0.1:8788/v1/chat/completions', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'grunt', messages: request.messages })
   });
   expect(whileTrialStale.status).toBe(402);
   expect(whileTrialStale.headers.get('x-should-retry')).toBe('false');
+  expect(whileTrialStale.headers.get('retry-after')).toBeNull();
   finishTrial({ text: 'recovered' });
   await inFlight;
 });
