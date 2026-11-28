@@ -53,19 +53,6 @@ export async function readZroGrant(location = directory(), env: NodeJS.ProcessEn
     return saved;
   } finally { await file.close(); }
 }
-// Credential fingerprint recorded in the installed zro.json, without checking it
-// against the vault. Undefined when no readable receipt is installed.
-export async function readZroReceiptFingerprint(location = directory()): Promise<string | undefined> {
-  try {
-    const file = await openPrivateFile(join(location, 'zro.json'), constants.O_RDONLY | constants.O_NOFOLLOW);
-    try {
-      const raw = JSON.parse(await file.readFile('utf8')) as Record<string, unknown> | null;
-      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
-      if (isCredentialFingerprint(raw.credential_sha256)) return raw.credential_sha256;
-      return validate(raw).credential_sha256;
-    } finally { await file.close(); }
-  } catch { return undefined; }
-}
 // Called after Squire has confirmed Free plan, no purchased balance and no payment method.
 // This is a setup receipt, not a guarantee that an externally upgraded account stays free.
 export async function writeZroGrant(grant: FreeApiGrant, location = directory(), env: NodeJS.ProcessEnv = process.env) {

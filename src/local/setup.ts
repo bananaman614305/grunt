@@ -19,7 +19,7 @@ import { bundledRegistry, disabledAdapters, isDeclarativeAdapter, knownAdapters,
 import type { Registry } from '../registry.js';
 import { BROWSER_CONCURRENCY } from './parallel.js';
 import { Nvidia, writeNvidiaGrant } from './nvidia.js';
-import { Zro, readZroGrant, readZroReceiptFingerprint, writeZroGrant } from './zro.js';
+import { Zro, readZroGrant, writeZroGrant } from './zro.js';
 import { TokenHarbor, writeTokenHarborGrant } from './tokenharbor.js';
 import { Runcrate, RuncrateVerificationError, readRuncrateGrant, validateRuncrateVerification, verifyRuncrateDirectGrant, verifyRuncrateSquireGrant, writeRuncrateGrant } from './runcrate.js';
 import type { RuncrateGrantContext, RuncrateGrantVerifier } from './runcrate.js';
@@ -55,13 +55,12 @@ import {
   isVaultProvider,
   listVaultEntries,
   providerAllowedRequestOrigins,
-  readVaultEntry,
   readVaultGrant,
   redactVaultSecrets,
   validateDirectOrigin,
   writeVaultEntry
 } from './vault.js';
-import type { VaultEntry, VaultProvider } from './vault.js';
+import type { VaultProvider } from './vault.js';
 import {
   ensureEmbeddedSignupSession,
   guardedSignupChoice,
@@ -201,7 +200,7 @@ async function probeGrant(source: Source, location: string, caller?: AbortSignal
   }
 }
 
-export async function setupProviders(squire: SetupSquire, router: { addGrant(platform: string, grant: { base_url: string; token: string }): Promise<void>; addVerifiedGrant?(platform: string, grant: { base_url: string; token: string }, context?: RuncrateGrantContext): Promise<void>; hasKey?(platform: string): Promise<boolean> }, options: { providers: Provider[]; notify: (line: string) => void; signal?: AbortSignal | undefined; directory?: string; background?: boolean; exportToVault?: boolean } ) {
+export async function setupProviders(squire: SetupSquire, router: { addGrant(platform: string, grant: { base_url: string; token: string }, context?: { exported?: boolean }): Promise<void>; addVerifiedGrant?(platform: string, grant: { base_url: string; token: string }, context?: RuncrateGrantContext): Promise<void>; hasKey?(platform: string): Promise<boolean> }, options: { providers: Provider[]; notify: (line: string) => void; signal?: AbortSignal | undefined; directory?: string; background?: boolean; exportToVault?: boolean; stageExport?: boolean } ) {
   const pending: string[] = [];
   const dropped: string[] = [];
   const drop = (provider: string, reason?: string, diagnostic?: SquireDiagnostic) => {
@@ -264,6 +263,7 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
             ...(options.signal ? { signal: options.signal } : {}),
             ...(options.background !== undefined ? { background: options.background } : {}),
             ...(options.exportToVault !== undefined ? { exportToVault: options.exportToVault } : {}),
+            ...(options.stageExport ? { stageExport: true } : {}),
             notify: options.notify
           });
           // Only a key this call stored in the vault may be removed again on failure.
@@ -272,6 +272,7 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
           const secretPlaceholder = credential.field_names.length > 1 && keyField ? `\${SECRET.${keyField}}` : '${SECRET}';
           const context: RuncrateGrantContext = { reference: credential.reference, secretPlaceholder };
           if (router.addVerifiedGrant) await router.addVerifiedGrant(provider, { base_url: resolved.base_url, token: resolved.token }, context);
+          else if (resolved.exported) await router.addGrant(provider, { base_url: resolved.base_url, token: resolved.token }, { exported: true });
           else await router.addGrant(provider, { base_url: resolved.base_url, token: resolved.token });
           options.signal?.throwIfAborted();
           options.notify(resolved.transport === 'direct'
@@ -877,6 +878,7 @@ export class BrowserSquire implements SetupSquire {
       pollIntervalMs?: number;
       timeoutMs?: number;
       signal?: AbortSignal;
+      stage?: boolean;
     } = {}
   ): Promise<{ base_url: string; token: string }> {
     const origin = validateDirectOrigin(provider, options.origin ?? defaultProviderOrigin(provider));
@@ -906,7 +908,7 @@ export class BrowserSquire implements SetupSquire {
     }
     const secret = extractCredentialSecret(exported.fields, provider);
     if (!secret) throw new Error(`Squire returned no usable API key field for ${provider}`);
-    await writeVaultEntry(provider, { api_key: secret, origin, source: 'squire' }, options.directory ?? configRoot());
+    if (!options.stage) await writeVaultEntry(provider, { api_key: secret, origin, source: 'squire' }, options.directory ?? configRoot());
     return { base_url: origin, token: secret };
   }
 
@@ -1563,32 +1565,23 @@ export async function setup(notify = console.log, providers: string[] = [], opti
       let limited = false, stale = false;
       const isQuota = (error: unknown) => error instanceof SourceError && error.code === 'quota';
       // The daemon accepts zro.json only when it matches the local vault key.
-      // Setup never writes the vault here. Only a passkey-approved Squire export
-      // replaces the vault key, and it does so before this check, so a candidate
-      // that differs from the vault key was not approved and the installed key stays.
-      const install = async (grant: { base_url: string; token: string }) => {
+      // A passkey-approved Squire export is staged in memory, never written to the
+      // vault before its probe, so the daemon keeps the installed key throughout.
+      // Only after it answers is it published: vault entry first, then zro.json.
+      // Any other candidate that differs from the vault key leaves the installed key.
+      const install = async (grant: { base_url: string; token: string }, exported: boolean) => {
         const vaulted = await readVaultGrant('zro', location).catch(() => undefined);
         if (vaulted && credentialFingerprint(vaulted) !== credentialFingerprint(grant)) {
-          throw new Error('Zro key verified, but the local Grunt vault holds a different zro key; the installed key was kept. Rerun setup with vault export enabled and approve the Squire passkey export, or review it with usegrunt vault');
+          if (!exported || vaulted.source === 'env') {
+            throw new Error('Zro key verified, but the local Grunt vault holds a different zro key; the installed key was kept. Rerun setup with vault export enabled and approve the Squire passkey export, or review it with usegrunt vault');
+          }
+          await writeVaultEntry('zro', { api_key: grant.token, origin: validateDirectOrigin('zro', grant.base_url), source: 'squire' }, location);
         }
         await writeZroGrant(grant, location);
         const loaded = await readZroGrant(location).catch(() => undefined);
         if (!loaded || credentialFingerprint(loaded) !== credentialFingerprint(grant)) {
           throw new Error('Zro key verified but the daemon cannot load it; review the zro entry with usegrunt vault');
         }
-      };
-      // A passkey-approved export writes the vault before its key is probed, and a
-      // failed probe deletes that entry. Afterwards, put back the vault entry that
-      // the installed zro.json was verified against.
-      const snapshot = await readVaultEntry('zro', location);
-      const entryFingerprint = (entry?: VaultEntry) => entry && credentialFingerprint({ base_url: entry.origin, token: entry.api_key });
-      const restoreZroVault = async () => {
-        const current = await readVaultEntry('zro', location).catch(() => undefined);
-        const receipt = await readZroReceiptFingerprint(location);
-        if (receipt !== undefined && entryFingerprint(current) === receipt) return;
-        if (entryFingerprint(current) === entryFingerprint(snapshot)) return;
-        if (snapshot) await writeVaultEntry('zro', { api_key: snapshot.api_key, origin: snapshot.origin, source: snapshot.source }, location);
-        else await deleteVaultEntry('zro', location);
       };
       try {
         const result = await setupProviders(squire, {
@@ -1610,8 +1603,9 @@ export async function setup(notify = console.log, providers: string[] = [], opti
               return false;
             }
           },
-          addGrant: async (provider, grant) => {
+          addGrant: async (provider, grant, context) => {
             if (provider !== 'zro') throw new Error('Unexpected Zro credential');
+            const exported = context?.exported === true;
             const candidate = new Zro({ directory: location,
               loadGrant: async () => ({ base_url: grant.base_url, token: grant.token, free_account_verified: true, verified_at: new Date().toISOString() }) });
             const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(60000)]);
@@ -1620,20 +1614,17 @@ export async function setup(notify = console.log, providers: string[] = [], opti
               signal.throwIfAborted();
             } catch (error) {
               signal.throwIfAborted();
-              if (isQuota(error) && !limited) { await install(grant); limited = true; }
+              if (isQuota(error) && !limited) { await install(grant, exported); limited = true; }
               // A local key that already failed its health check is removed, never a limited one.
               else if (!isQuota(error) && stale && !limited) await rm(join(location, 'zro.json'), { force: true });
               throw error;
             } finally { await candidate.close(); }
-            await install(grant);
+            await install(grant, exported);
           }
         }, { providers: ['zro'], notify, signal: options.signal, directory: location, ...(options.background !== undefined ? { background: options.background } : {}),
-          ...(options.exportToVault !== undefined ? { exportToVault: options.exportToVault } : {}) });
+          ...(options.exportToVault !== undefined ? { exportToVault: options.exportToVault } : {}), stageExport: true });
         if (result.dropped.length) throw new Error('Zro setup incomplete; rerun usegrunt setup');
-      } finally {
-        await source.close();
-        await restoreZroVault();
-      }
+      } finally { await source.close(); }
       providers = providers.filter(provider => provider !== 'zro');
       if (!providers.length) return {};
     }

@@ -11,9 +11,14 @@ import type { ModelRequest, Source } from './source.js';
 // and can get the provider to ban them all, so setup records the refusal here,
 // the daemon stops routing to the source, and no new signup starts until the
 // person clears it with `usegrunt add <provider> --force`.
-const FILE = 'refused-providers.json';
+// Each provider has its own marker file, written by atomic rename and cleared by
+// removal, so concurrent setup runs never rewrite another provider's record.
+const DIRECTORY = 'refused-providers';
 export interface ProviderRefusal { reason: string; http_status?: number; refused_at: string }
-type Store = { version: 1; providers: Record<string, ProviderRefusal> };
+const markerPath = (directory: string, provider: string) => {
+  if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(provider) || provider.includes('..')) throw new Error('Invalid provider id');
+  return join(directory, DIRECTORY, `${provider}.json`);
+};
 
 export function isAccountRefusal(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
@@ -46,25 +51,17 @@ export async function bannedResponse(response: Response): Promise<boolean> {
   return /\bbanned\b/i.test(Buffer.concat(chunks).toString('utf8'));
 }
 
-async function readStore(directory: string): Promise<Store> {
-  try {
-    const raw = JSON.parse(await readFile(join(directory, FILE), 'utf8')) as Partial<Store> | null;
-    if (raw && raw.version === 1 && raw.providers && typeof raw.providers === 'object' && !Array.isArray(raw.providers)) return raw as Store;
-  } catch { /* Missing or unreadable: nothing is refused. */ }
-  return { version: 1, providers: {} };
-}
-async function writeStore(directory: string, store: Store) {
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  const temporary = join(directory, `${FILE}.${randomUUID()}.tmp`);
-  try {
-    await writeFile(temporary, JSON.stringify(store), { mode: 0o600, flag: 'wx' });
-    await rename(temporary, join(directory, FILE));
-  } finally { await rm(temporary, { force: true }); }
-}
-
 export async function readProviderRefusal(directory: string, provider: string): Promise<ProviderRefusal | undefined> {
-  const refusal = (await readStore(directory)).providers[provider];
-  return refusal && typeof refusal.reason === 'string' && typeof refusal.refused_at === 'string' ? refusal : undefined;
+  const path = markerPath(directory, provider);
+  try {
+    const refusal = JSON.parse(await readFile(path, 'utf8')) as Partial<ProviderRefusal> | null;
+    if (refusal && typeof refusal.reason === 'string' && typeof refusal.refused_at === 'string') return refusal as ProviderRefusal;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    // An unreadable or damaged marker still blocks signup until the person clears it.
+    return { reason: 'unreadable refusal record', refused_at: new Date(0).toISOString() };
+  }
+  return { reason: 'unreadable refusal record', refused_at: new Date(0).toISOString() };
 }
 // Records the refusal and returns the error that stops setup for this provider.
 export async function recordProviderRefusal(directory: string, provider: string, error: unknown): Promise<ProviderRefusedError> {
@@ -75,17 +72,18 @@ export async function recordProviderRefusal(directory: string, provider: string,
     ...(status !== undefined ? { http_status: status } : {}),
     refused_at: new Date().toISOString()
   };
-  const store = await readStore(directory);
-  store.providers[provider] = refusal;
-  await writeStore(directory, store);
+  const path = markerPath(directory, provider);
+  await mkdir(join(directory, DIRECTORY), { recursive: true, mode: 0o700 });
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, JSON.stringify(refusal), { mode: 0o600, flag: 'wx' });
+    await rename(temporary, path);
+  } finally { await rm(temporary, { force: true }); }
   return new ProviderRefusedError(provider, refusal);
 }
 export async function clearProviderRefusal(directory: string, provider: string): Promise<boolean> {
-  const store = await readStore(directory);
-  if (!store.providers[provider]) return false;
-  delete store.providers[provider];
-  await writeStore(directory, store);
-  return true;
+  try { await rm(markerPath(directory, provider)); return true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error; }
 }
 // Throws when the person has not cleared a recorded refusal for this provider.
 export async function assertProviderNotRefused(directory: string, provider: string) {

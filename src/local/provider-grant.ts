@@ -49,12 +49,16 @@ export interface SquireGrantSource {
       pollIntervalMs?: number;
       timeoutMs?: number;
       signal?: AbortSignal;
+      // Return the approved key without writing the local vault, so the caller can verify it first.
+      stage?: boolean;
     }
   ): Promise<{ base_url: string; token: string }>;
 }
 export interface ResolvedSquireGrant extends FreeApiGrant {
   transport: 'direct' | 'egress';
   storedInVault: boolean;
+  // A passkey-approved export that was staged rather than written to the vault.
+  exported?: boolean;
 }
 function name(provider: Provider) {
   if (provider !== 'runcrate' && provider !== 'kilo' && provider !== 'goedel' && provider !== 'crowllm' && provider !== 'fikra' && provider !== 'openference' && provider !== 'darus' && provider !== 'aperture-ai' && provider !== 'millionseek' && provider !== 'ifm') throw new Error('Invalid private provider');
@@ -114,6 +118,7 @@ export async function resolveSquireGrant(
     signal?: AbortSignal;
     background?: boolean;
     exportToVault?: boolean;
+    stageExport?: boolean;
     notify?: (line: string) => void;
     onApproval?: (info: { approvalId: string; approvalUrl: string }) => Promise<void> | void;
   } = {}
@@ -138,12 +143,15 @@ export async function resolveSquireGrant(
         ...(options.directory ? { directory: options.directory } : {}),
         ...(options.signal ? { signal: options.signal } : {}),
         waitForApproval: !options.background,
+        ...(options.stageExport ? { stage: true } : {}),
         onApproval: info => {
           if (options.onApproval) return options.onApproval(info);
           options.notify?.(`${provider}: confirm Squire passkey export at ${info.approvalUrl} to store key in local Grunt vault`);
         }
       });
-      return { base_url: direct.base_url, token: direct.token, transport: 'direct', storedInVault: true };
+      return options.stageExport
+        ? { base_url: direct.base_url, token: direct.token, transport: 'direct', storedInVault: false, exported: true }
+        : { base_url: direct.base_url, token: direct.token, transport: 'direct', storedInVault: true };
     } catch {
       options.signal?.throwIfAborted();
     }

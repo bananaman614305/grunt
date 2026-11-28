@@ -434,12 +434,12 @@ const zroSquire = (base_url: string) => ({
   }, runs: { start: vi.fn(), get: vi.fn() }
 });
 
-// Like the real method, a passkey-approved export writes the vault before the key is probed.
 const exportingZroSquire = (exported: 'refused' | 'rejected' | 'working') => ({
   ...zroSquire(ZRO_ORIGIN),
-  materializeDirectVaultGrant: vi.fn(async (_provider: string, _reference: string, options: { directory?: string } = {}) => {
+  materializeDirectVaultGrant: vi.fn(async (_provider: string, _reference: string, options: { directory?: string; stage?: boolean } = {}) => {
     if (exported === 'refused') throw new Error('Could not export zro key to local Grunt vault (passkey approval timed out)');
-    await writeVaultEntry('zro', { api_key: exported, origin: ZRO_ORIGIN, source: 'squire' }, options.directory);
+    // Like the real method: the vault is written unless the caller stages the key.
+    if (!options.stage) await writeVaultEntry('zro', { api_key: exported, origin: ZRO_ORIGIN, source: 'squire' }, options.directory);
     return { base_url: ZRO_ORIGIN, token: exported };
   })
 });
@@ -466,6 +466,26 @@ it.each([
   await expect(readVaultEntry('zro', directory)).resolves.toMatchObject({ api_key: 'vault-limited', origin: ZRO_ORIGIN });
   await expect(readZroGrant(directory)).resolves.toMatchObject({ token: 'vault-limited', base_url: ZRO_ORIGIN });
   expect(squire.runs.start).not.toHaveBeenCalled();
+});
+
+it('keeps the daemon on the installed Zro key while an approved export is probed, even if setup is interrupted', async () => {
+  await installLimitedVaultZro();
+  const squire = exportingZroSquire('working');
+  const controller = new AbortController();
+  const daemonDuringProbe: (string | undefined)[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+    const authorization = new Headers(init!.headers).get('authorization');
+    if (authorization !== 'Bearer working') return new Response(null, { status: 402 });
+    // What the daemon would load right now, then setup is killed mid-probe.
+    daemonDuringProbe.push((await readZroGrant(directory).catch(() => undefined))?.token);
+    controller.abort(new Error('setup interrupted'));
+    throw controller.signal.reason;
+  });
+  await expect(setup(() => {}, ['zro'], { directory, squire, exportToVault: true, signal: controller.signal })).rejects.toThrow();
+  expect(squire.materializeDirectVaultGrant).toHaveBeenCalledWith('zro', 'vault://working', expect.objectContaining({ stage: true }));
+  expect(daemonDuringProbe).toEqual(['vault-limited']);
+  await expect(readVaultEntry('zro', directory)).resolves.toMatchObject({ api_key: 'vault-limited' });
+  await expect(readZroGrant(directory)).resolves.toMatchObject({ token: 'vault-limited' });
 });
 
 it.each([
@@ -538,4 +558,17 @@ it('starts no background signup for a provider with a recorded ban until the per
   await clearProviderRefusal(directory, 'tokenharbor');
   await background();
   expect(squire.runs.start).toHaveBeenCalledOnce();
+});
+
+it('keeps every refusal when setup runs record and clear refusals at the same time', async () => {
+  const providers = ['beatapi', 'pollinations', 'zro', 'tokenharbor', 'perch', 'darus', 'freepi', 'millionseek'];
+  await recordProviderRefusal(directory, 'kenari', new Error('banned'));
+  await Promise.all([
+    ...providers.map(provider => recordProviderRefusal(directory, provider, new SourceError('refused', 'HTTP 403', undefined, undefined, { httpStatus: 403 }))),
+    clearProviderRefusal(directory, 'kenari')
+  ]);
+  for (const provider of providers) await expect(readProviderRefusal(directory, provider)).resolves.toMatchObject({ reason: 'HTTP 403' });
+  await expect(readProviderRefusal(directory, 'kenari')).resolves.toBeUndefined();
+  await Promise.all(providers.slice(0, 4).map(provider => clearProviderRefusal(directory, provider)));
+  for (const provider of providers.slice(4)) await expect(readProviderRefusal(directory, provider)).resolves.toBeDefined();
 });

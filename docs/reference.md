@@ -912,7 +912,7 @@ after current approval without creating an account or capturing a provider key.
 
 If a provider answers a saved key with HTTP 403, or says the account is banned,
 setup stops for that provider instead of signing up again. It records the refusal
-in `refused-providers.json` in Grunt's configuration directory, and the daemon
+in `refused-providers/<provider>.json` in Grunt's configuration directory, and the daemon
 stops routing to that source. Setup starts no new signup for it until you run
 `usegrunt add <provider> --force`, which clears the refusal and retries.
 
