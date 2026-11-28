@@ -16,9 +16,9 @@ afterEach(async () => {
   for (const clean of cleanups.splice(0)) await clean();
 });
 
-async function localApp(routes: Source[]) {
+async function localApp(routes: Source[], options: { maxEvents?: number } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'grunt-observe-'));
-  const store = await DiagnosticsStore.open({ directory, runtimeVersion: '1.2.3' });
+  const store = await DiagnosticsStore.open({ directory, runtimeVersion: '1.2.3', ...options });
   const sources = new Sources(routes);
   sources.setDiagnostics(store);
   cleanups.push(async () => { await sources.close(); await store.close(); await rm(directory, { recursive: true, force: true }); });
@@ -141,4 +141,32 @@ it('uses the existing journal for recent history and the same local response for
   expect((await app.request(`${host}/v1/observe?limit=-1`)).status).toBe(400);
   expect((await app.request(`${host}/v1/observe`, { headers: { Origin: 'https://external.example' } })).status).toBe(403);
   expect((await app.request('http://external.example/v1/observe')).status).toBe(403);
+});
+
+it('shows a request completed across separate batches when incidents fill the journal', async () => {
+  const maxEvents = 50;
+  const fixture: Source = { id: 'fixture', available: async () => true, complete: async () => ({ text: 'response' }) };
+  const { app, store } = await localApp([fixture], { maxEvents });
+  const at = Date.now() - 100;
+  store.record({ version: 1, id: randomUUID(), requestId: randomUUID(), type: 'request.finish', at,
+    kind: 'user', actor: 'client', outcome: 'failed' });
+  for (let i = 1; i < maxEvents; i++) {
+    store.record({ version: 1, id: randomUUID(), requestId: randomUUID(), type: 'transport.finish', at,
+      kind: 'diagnostic', outcome: 'failed' });
+  }
+  const fullJournal = (await store.list()).events;
+  expect(fullJournal).toHaveLength(maxEvents);
+  expect(fullJournal.every(event => event.outcome === 'failed')).toBe(true);
+
+  const requestId = randomUUID(), startedAt = at + 10, endedAt = at + 20;
+  store.record({ version: 1, id: randomUUID(), requestId, type: 'request.start', at: startedAt, kind: 'user', actor: 'client' });
+  await store.flush();
+  store.record({ version: 1, id: randomUUID(), requestId, type: 'request.finish', at: endedAt,
+    kind: 'user', actor: 'client', outcome: 'passed' });
+  await store.flush();
+
+  const response = await app.request(`${host}/v1/observe?limit=1`);
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ completed: [{ id: requestId, outcome: 'passed', startedAt, endedAt }] });
+  expect((await store.list()).events).toHaveLength(maxEvents);
 });
