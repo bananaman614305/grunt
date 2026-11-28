@@ -58,6 +58,7 @@ import {
   readVaultGrant,
   redactVaultSecrets,
   validateDirectOrigin,
+  withNamedLock,
   writeVaultEntry
 } from './vault.js';
 import type { VaultProvider } from './vault.js';
@@ -1569,7 +1570,9 @@ export async function setup(notify = console.log, providers: string[] = [], opti
       // vault before its probe, so the daemon keeps the installed key throughout.
       // Only after it answers is it published, in steps the daemon can load after each.
       // Any other candidate that differs from the vault key leaves the installed key.
-      const install = async (grant: { base_url: string; token: string }, exported: boolean) => {
+      // Publication holds a process lock, so overlapping setup runs cannot interleave
+      // their receipt and vault writes. The state is read again inside the lock.
+      const install = (grant: { base_url: string; token: string }, exported: boolean) => withNamedLock(location, 'zro-publish', async () => {
         const vaulted = await readVaultGrant('zro', location).catch(() => undefined);
         if (vaulted && credentialFingerprint(vaulted) !== credentialFingerprint(grant)) {
           if (!exported || vaulted.source === 'env') {
@@ -1577,7 +1580,10 @@ export async function setup(notify = console.log, providers: string[] = [], opti
           }
           // Recoverable at every step: the receipt first accepts both keys, then the vault
           // takes the replacement, then the final receipt names only the replacement.
-          await writeZroReplacementReceipt(grant, vaulted, location);
+          // The installed key is carried forward only if the current receipt verifies it.
+          const installed = await readZroGrant(location).catch(() => undefined);
+          const verified = installed && credentialFingerprint(installed) === credentialFingerprint(vaulted) ? vaulted : undefined;
+          await writeZroReplacementReceipt(grant, verified, location);
           await writeVaultEntry('zro', { api_key: grant.token, origin: validateDirectOrigin('zro', grant.base_url), source: 'squire' }, location);
         }
         await writeZroGrant(grant, location);
@@ -1585,7 +1591,7 @@ export async function setup(notify = console.log, providers: string[] = [], opti
         if (!loaded || credentialFingerprint(loaded) !== credentialFingerprint(grant)) {
           throw new Error('Zro key verified but the daemon cannot load it; review the zro entry with usegrunt vault');
         }
-      };
+      });
       try {
         const result = await setupProviders(squire, {
           hasKey: async provider => {

@@ -75,11 +75,13 @@ export async function writeZroGrant(grant: FreeApiGrant, location = directory(),
 // that accepts either the installed key or its replacement. Setup then writes the
 // vault entry and the final receipt. Stopping after any step leaves the daemon a
 // key it can load: the installed key before the vault write, the replacement after.
-export async function writeZroReplacementReceipt(replacement: FreeApiGrant, installed: FreeApiGrant, location = directory()) {
+// `installed` is carried forward only when the current receipt verifies it; otherwise
+// the receipt names the replacement alone and never authorizes an unverified key.
+export async function writeZroReplacementReceipt(replacement: FreeApiGrant, installed: FreeApiGrant | undefined, location = directory()) {
   const value = validate({ ...replacement, free_account_verified: true, verified_at: new Date().toISOString() });
   validateDirectOrigin('zro', value.base_url);
   await persistReceipt({ base_url: value.base_url, credential_source: 'vault', credential_sha256: value.credential_sha256,
-    previous_sha256: credentialFingerprint(installed), free_account_verified: true, verified_at: value.verified_at }, location);
+    ...(installed ? { previous_sha256: credentialFingerprint(installed) } : {}), free_account_verified: true, verified_at: value.verified_at }, location);
 }
 async function persistReceipt(persisted: unknown, location: string) {
   const temporary = join(location, `zro.${randomUUID()}.tmp`);
