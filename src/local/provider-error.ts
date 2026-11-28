@@ -1,11 +1,10 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { SafeDiagnosticMetadata } from './diagnostics.js';
+import { TRANSIENT_RETRY_WINDOW_SECONDS } from './quota-policy.js';
 import { SourceError } from './source.js';
 import type { ErrorCode } from './source.js';
 
-// Waits at or below this threshold are treated as short transient rate limits (HTTP 429).
-// Longer waits or pools with zero recoverable routes fail fast as global exhaustion (HTTP 402).
-export const TRANSIENT_RETRY_WINDOW_SECONDS = 60;
+export { TRANSIENT_RETRY_WINDOW_SECONDS } from './quota-policy.js';
 
 export type ProviderFailureCause =
   | 'transient'

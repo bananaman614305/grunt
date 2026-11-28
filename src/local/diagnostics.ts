@@ -208,7 +208,7 @@ export function diagnosticFetch(fetcher: typeof fetch, source: string, endpointL
 export interface DiagnosticHealth { enabled: true; available: boolean; queued: number; droppedEvents: number; lastWriteAt?: number; error?: 'storage_unavailable' | 'write_failed' | 'queue_full' }
 export interface DiagnosticListOptions { after?: string; limit?: number; source?: string; requestId?: string; outcome?: DiagnosticEvent['outcome']; includeDetails?: boolean }
 export interface DiagnosticList { events: StoredDiagnosticEvent[]; nextCursor: string | null; streamId: string | null }
-export interface DiagnosticAttemptSummary { total: number; succeeded: number; failed: number; cancelled: number; inputTokens: number; outputTokens: number; unknownInput: number; unknownOutput: number }
+export interface DiagnosticAttemptSummary { total: number; succeeded: number; failed: number; cancelled: number; inputTokens: number; outputTokens: number; reasoningTokens: number; unknownInput: number; unknownOutput: number; unknownReasoning: number }
 export interface DiagnosticSummary {
   streamId: string | null;
   window: { since: number; until: number };
@@ -226,7 +226,7 @@ function serializeDiagnosticWriter(key: string, write: () => Promise<void>) {
   void pending.finally(() => { if (diagnosticWriters.get(key) === pending) diagnosticWriters.delete(key); }).catch(() => {});
   return pending;
 }
-const attemptSummary = (): DiagnosticAttemptSummary => ({ total: 0, succeeded: 0, failed: 0, cancelled: 0, inputTokens: 0, outputTokens: 0, unknownInput: 0, unknownOutput: 0 });
+const attemptSummary = (): DiagnosticAttemptSummary => ({ total: 0, succeeded: 0, failed: 0, cancelled: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, unknownInput: 0, unknownOutput: 0, unknownReasoning: 0 });
 
 const evictionPriority = "CASE WHEN incident=1 THEN 2 WHEN type='route.skip' THEN 0 ELSE 1 END";
 const diagnosticBatchSize = 64;
@@ -600,6 +600,7 @@ export class DiagnosticsStore {
         summary.total++; if (row.outcome === 'passed') summary.succeeded++; else if (row.outcome === 'cancelled') summary.cancelled++; else summary.failed++;
         if (row.inputTokens === undefined) summary.unknownInput++; else summary.inputTokens += row.inputTokens;
         if (row.outputTokens === undefined) summary.unknownOutput++; else summary.outputTokens += row.outputTokens;
+        if (row.reasoningTokens === undefined) summary.unknownReasoning++; else summary.reasoningTokens += row.reasoningTokens;
       }
     }
     result.providers = [...providers].map(([source, stats]) => ({ source, ...stats }));

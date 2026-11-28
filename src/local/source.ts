@@ -1,7 +1,7 @@
 export type ErrorCode = 'not_installed' | 'logged_out' | 'quota' | 'timeout' | 'upstream' | 'refused' | 'cancelled';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { providerQuotaPolicy, scheduledQuotaRefill } from './quota-policy.js';
-import type { SellerQuota } from './quota-policy.js';
+import type { ObservedQuota, SellerQuota } from './quota-policy.js';
 import { randomUUID } from 'node:crypto';
 import { currentDiagnosticContext, diagnosticFinishReasons, providerFinishReasons, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticsStore, SafeDiagnosticMetadata, DiagnosticContext, DiagnosticEvent } from './diagnostics.js';
@@ -245,6 +245,7 @@ export interface Source {
   available(signal?: AbortSignal): Promise<boolean>;
   acceptsRequest?(request: ModelRequest): boolean;
   quotaWindow?(): QuotaWindow | undefined;
+  quotaObserved?(): ObservedQuota | undefined;
   sellerQuota?(): SellerQuota | undefined;
   healthCheck?(signal?: AbortSignal): Promise<boolean>;
   complete(request: ModelRequest, signal: AbortSignal, output?: () => void, beforeNativeWork?: () => void): Promise<Completion>;
@@ -479,6 +480,8 @@ export class Sources {
       if (refillAt !== undefined) row.scheduledQuotaRefillAt = refillAt;
       const window = source?.quotaWindow?.();
       if (window) row.quotaWindow = { ...window };
+      const observed = source?.quotaObserved?.();
+      if (observed) row.quotaObserved = { ...observed };
       const advertised = source?.sellerQuota?.();
       if (advertised) row.sellerQuota = { ...advertised };
       const entry = maintenance?.[row.id];

@@ -1,7 +1,7 @@
 import { installedConfigRoot } from './service-migration.js';
 import { hasOwnerMode, openPrivateFile } from './private-file.js';
 import { gruntEnv } from '../brand.js';
-import { providerQuotaPolicy, scheduledQuotaRefill, sellerQuota } from './quota-policy.js';
+import { observedQuota, providerQuotaPolicy, scheduledQuotaRefill, sellerQuota } from './quota-policy.js';
 import { Chalk } from 'chalk';
 import { stripVTControlCharacters } from 'node:util';
 import { constants } from 'node:fs';
@@ -244,6 +244,8 @@ export function parseStatus(value: unknown): PoolSnapshot {
     const window = source.quotaWindow as { startedAt?: unknown; resetAt?: unknown } | null | undefined;
     if (number(window?.startedAt) && number(window?.resetAt) && window.resetAt > window.startedAt
       && window.resetAt - window.startedAt <= 31 * 86400000) result.quotaWindow = { startedAt: window.startedAt, resetAt: window.resetAt };
+    const observed = observedQuota(source.quotaObserved);
+    if (observed) result.quotaObserved = observed;
     if (source.maintenance !== undefined) result.maintenance = parseMaintenance(source.maintenance);
     if (source.modelKind !== undefined) {
       if (source.modelKind !== 'registry') throw new Error('Invalid local source status');

@@ -301,6 +301,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
     const { HARNESSES } = await import('./harnesses.js');
     try { await statusCommand(process.argv.slice(3), { harnesses: HARNESSES }); }
     catch (error) { console.error(error instanceof Error ? error.message : 'Could not read grunt status'); process.exitCode = 1; }
+  } else if (process.argv[2] === 'ui' || process.argv[2] === 'dashboard') {
+    try { const { uiCommand } = await import('./ui-server.js'); await uiCommand(process.argv.slice(3)); }
+    catch (error) { console.error(error instanceof Error ? error.message : 'Could not start the local Grunt UI'); process.exitCode = 1; }
   } else if (process.argv[2] === 'observe') {
     try { const { observeCommand } = await import('./observe-cli.js'); await observeCommand(process.argv.slice(3)); }
     catch (error) { console.error(error instanceof Error ? error.message : 'Could not observe the local Grunt daemon'); process.exitCode = 1; }
@@ -324,7 +327,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
       await vaultCommand(process.argv.slice(3));
     } catch (error) { console.error(error instanceof Error ? error.message : 'Grunt vault command failed'); process.exitCode = 1; }
   } else if (['--help', '-h'].includes(process.argv[2] ?? '')) {
-    console.log('Usage: usegrunt [setup | update | add <provider> | vault <list|set|export|remove> | status [--watch] [--json] [--port <port>] | observe [--limit <N>] [--json] [--port <port>] | efficiency metrics [--port <port>] [--since <epoch-ms>] [--until <epoch-ms>] | execution-host <serve|tick|status> --config <private-policy.json>]\n\nRun setup to connect free sources, vault to manage direct local API keys, update to refresh the installed daemon, status --watch to view the pool.\nRun observe --help for request, attempt, and daemon diagnostics.');
+    console.log('Usage: usegrunt [setup | update | add <provider> | vault <list|set|export|remove> | status [--watch] [--json] [--port <port>] | ui [--port <port>] [--ui-port <port>] [--no-open] [--bind <ip> | --tailscale] [--snapshot <file.html>] | observe [--limit <N>] [--json] [--port <port>] | efficiency metrics [--port <port>] [--since <epoch-ms>] [--until <epoch-ms>] | execution-host <serve|tick|status> --config <private-policy.json>]\n\nRun setup to connect free sources, vault to manage direct local API keys, update to refresh the installed daemon, status --watch for the terminal view, or ui (alias dashboard) for the local web console.\nRun observe --help for request, attempt, and daemon diagnostics.');
   } else if (['setup', 'add'].includes(process.argv[2] ?? '') || (!process.argv[2] && basename(process.argv[1]) === 'usegrunt' && process.env.GRUNT_DAEMON !== '1')) {
     const { wizard } = await import('./wizard.js');
     try {
