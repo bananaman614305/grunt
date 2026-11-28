@@ -37,7 +37,17 @@ describe('Free-Pi guarded official API', () => {
     expect(f.calls).toEqual(['/client-version', '/me/stats', '/v1/chat/completions', '/me/stats']);
     await f.source.complete(request(), AbortSignal.timeout(1000)); expect(f.calls).toHaveLength(8);
   });
-  it.each(['credit_usd', 'credit_credits', 'bonus_credits', 'bonus_wallet_credits', 'premium_credits', 'premium_bought_credits', 'premium_gifted_credits', 'premium_expiring_credits', 'regular_wallet_credits'])('blocks spendable %s before POST', async key => {
+  it('allows provider-granted bonus balances when nothing was purchased', async () => {
+    const f = fixture({ account: { ...account(), bonus_credits: 1000, bonus_wallet_credits: 1000 } });
+    await f.source.complete(request(), AbortSignal.timeout(1000)); expect(f.calls).toContain('/v1/chat/completions');
+    expect(() => assertFreePiAccount({ ...account(), bonus_credits: -1 }, now)).toThrow();
+    expect(() => assertFreePiAccount({ ...account(), bonus_wallet_credits: '1000' }, now)).toThrow();
+  });
+  it.each(['credit_usd', 'credit_credits', 'premium_credits', 'premium_bought_credits', 'premium_gifted_credits', 'premium_expiring_credits', 'regular_wallet_credits'])('still blocks a purchased or premium %s balance beside a bonus', async key => {
+    const f = fixture({ account: { ...account(), bonus_credits: 1000, bonus_wallet_credits: 1000, [key]: 1 } });
+    await expect(f.source.complete(request(), AbortSignal.timeout(1000))).rejects.toMatchObject({ code: 'refused' }); expect(f.calls).not.toContain('/v1/chat/completions');
+  });
+  it.each(['credit_usd', 'credit_credits', 'premium_credits', 'premium_bought_credits', 'premium_gifted_credits', 'premium_expiring_credits', 'regular_wallet_credits'])('blocks spendable %s before POST', async key => {
     const f = fixture({ account: { ...account(), [key]: 1 } });
     await expect(f.source.complete(request(), AbortSignal.timeout(1000))).rejects.toMatchObject({ code: 'refused' }); expect(f.calls).not.toContain('/v1/chat/completions');
   });

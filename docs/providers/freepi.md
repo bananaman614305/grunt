@@ -29,9 +29,11 @@ quota. The qualified account reported 15,000 credits / $1.125 daily, resetting a
 DeepSeek probes did not consume this allowance.
 
 Every request checks `/me/stats` immediately before inference: all seven
-mandatory spendable wallet fields and any of the two recognized optional
-wallets must equal zero. Missing mandatory fields, nonzero paid/earned/gifted
-balances, unknown spending controls, guest accounts, exhausted allowance or an
+mandatory wallet fields must be present, and every purchased, premium, USD or
+other recognized wallet must equal zero. Free-Pi's own granted bonus balances
+(`bonus_credits`, `bonus_wallet_credits`, such as a return bonus) may be
+nonzero because nothing was bought. Missing mandatory fields, nonzero paid or
+premium balances, unknown spending controls, guest accounts, exhausted allowance or an
 unverifiable reset stop the route. The same checks run after inference. A
 successful request that consumes the final free allowance may return its result;
 the next preflight stops at the reported reset. Generic 429s retain provider
