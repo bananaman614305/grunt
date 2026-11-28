@@ -335,5 +335,110 @@ describe('DeclarativeApp end-to-end inside real bwrap', () => {
     })).rejects.toThrow();
 
     expect(await isDeclarativeAppBackedOff(adapter.id, configDir)).toBe(true);
+
+    // Subsequent immediate retry is rejected under the lock by durable backoff without launching Squire.
+    const secondSignup = vi.fn(async () => {});
+    await expect(setupDeclarativeApp(adapter, {
+      directory: configDir,
+      squire: { signup: secondSignup },
+      notify: () => {},
+      background: false,
+      backend,
+      fetcher: async () => new Response(archiveBytes, { status: 200 })
+    })).rejects.toThrow(/backed off/i);
+    expect(secondSignup).not.toHaveBeenCalled();
+  });
+
+  it('serializes concurrent setup calls so only one login runs and persists backoff before login starts', async () => {
+    const backend = await detectSandboxBackend();
+    if (!backend || backend.kind !== 'bwrap') return;
+
+    const configDir = await makeTemp('grunt-dapp-lock-');
+    const cliScript = [
+      '#!/usr/bin/env node',
+      'const fs = require("node:fs");',
+      'const path = require("node:path");',
+      'const cp = require("node:child_process");',
+      'const tokenPath = path.join(process.env.HOME, "auth.json");',
+      'const args = process.argv.slice(2);',
+      'if (args[0] === "login") {',
+      '  cp.spawnSync("xdg-open", ["https://auth.lock.example/pair"], { stdio: "ignore" });',
+      '  setTimeout(() => { fs.writeFileSync(tokenPath, JSON.stringify({ ok: true })); process.exit(0); }, 150);',
+      '} else if (args[0] === "hang") {',
+      '  console.log("https://auth.lock.example/hang");',
+      '  setInterval(() => {}, 1000);',
+      '}'
+    ].join('\n') + '\n';
+    const archiveBytes = await packCliTarGz('lock-cli', cliScript);
+
+    const adapter: DeclarativeAppAdapter = {
+      id: 'lock-app',
+      kind: 'agent',
+      tier: 'experimental',
+      weight: 0.01,
+      modalities: ['text'],
+      install: DECLARATIVE_APP_INSTALL,
+      declarativeApp: {
+        execution: 'delegated',
+        installer: {
+          type: 'archive',
+          urls: { 'linux-x64': 'https://releases.lock.example/lock-cli.tar.gz', 'linux-arm64': 'https://releases.lock.example/lock-cli.tar.gz' },
+          bin: 'lock-cli'
+        },
+        auth: { type: 'browser-url', command: ['login'], allowedOrigins: ['https://auth.lock.example'], authFile: 'auth.json' },
+        transport: { type: 'oneshot-exec', args: ['{{prompt}}'], promptInput: 'arg', output: { format: 'plain' } },
+        disclosure: 'Prompts go to Lock App.',
+        policyVersion: '2026-11-27',
+        policyUrl: 'https://auth.lock.example/privacy'
+      }
+    };
+    await recordDataSharingConsent(configDir, [adapter.id], [declarativeAppDataSharingPolicy(adapter)]);
+
+    // Launch two concurrent setups: only one browser login may run, and backoff must already be
+    // persisted on disk while the login is in flight (before squire.signup resolves).
+    let backedOffDuringLogin = false;
+    const signup = vi.fn(async () => {
+      backedOffDuringLogin = await isDeclarativeAppBackedOff(adapter.id, configDir);
+    });
+    const runSetup = () => setupDeclarativeApp(adapter, {
+      directory: configDir,
+      squire: { signup },
+      notify: () => {},
+      background: false,
+      backend,
+      fetcher: async () => new Response(archiveBytes, { status: 200 })
+    });
+    await Promise.all([runSetup(), runSetup()]);
+    expect(signup).toHaveBeenCalledTimes(1);
+    expect(backedOffDuringLogin).toBe(true);
+    // Once login succeeds, backoff is cleared under the same lock.
+    expect(await isDeclarativeAppBackedOff(adapter.id, configDir)).toBe(false);
+
+    // Mid-login interruption (abort) leaves durable backoff persisted on disk.
+    const abortDir = await makeTemp('grunt-dapp-abort-');
+    const hangAdapter: DeclarativeAppAdapter = {
+      ...adapter,
+      id: 'hang-app',
+      declarativeApp: {
+        ...adapter.declarativeApp,
+        auth: { type: 'browser-url', command: ['hang'], allowedOrigins: ['https://auth.lock.example'], authFile: 'auth.json' }
+      }
+    };
+    await recordDataSharingConsent(abortDir, [hangAdapter.id], [declarativeAppDataSharingPolicy(hangAdapter)]);
+    const controller = new AbortController();
+    await expect(setupDeclarativeApp(hangAdapter, {
+      directory: abortDir,
+      signal: controller.signal,
+      squire: {
+        signup: async () => {
+          controller.abort(new Error('interrupted'));
+        }
+      },
+      notify: () => {},
+      background: false,
+      backend,
+      fetcher: async () => new Response(archiveBytes, { status: 200 })
+    })).rejects.toThrow();
+    expect(await isDeclarativeAppBackedOff(hangAdapter.id, abortDir)).toBe(true);
   });
 });

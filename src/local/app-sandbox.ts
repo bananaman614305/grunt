@@ -1,12 +1,11 @@
 import { spawn, execFile } from 'node:child_process';
-import type { ChildProcess } from 'node:child_process';
+import type { ChildProcess, StdioOptions } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { constants, existsSync } from 'node:fs';
-import { access, chmod, lstat, mkdir, mkdtemp, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
-import { createServer } from 'node:net';
-import type { Server } from 'node:net';
+import { constants, existsSync, openSync } from 'node:fs';
+import { access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { Socket } from 'node:net';
 import { homedir } from 'node:os';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { configRoot } from '../brand.js';
 import { ID_PATTERN, safePublicHttpsUrl } from '../registry.js';
@@ -20,12 +19,13 @@ const MAX_ARCHIVE_BYTES = 128 * 1024 * 1024;
 const MAX_ARCHIVE_UNCOMPRESSED_BYTES = 256 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES = 2000;
 const MAX_REDIRECTS = 5;
+const MAX_OPENER_BYTES = 16 * 1024;
 
 export const SANDBOX_HOME = '/sandbox/home';
 export const SANDBOX_PKG = '/sandbox/pkg';
 export const SANDBOX_WORK = '/sandbox/work';
 export const SANDBOX_OPENERS = '/sandbox/openers';
-export const SANDBOX_OPENER_SOCK = '/sandbox/opener.sock';
+export const SANDBOX_OPENER_PIPE = '/sandbox/opener.pipe';
 
 export interface AppSandboxPaths {
   appsRoot: string;
@@ -241,14 +241,21 @@ export async function requireSandboxBackend(): Promise<SandboxBackend> {
   return backend;
 }
 
+export interface RuntimeMount {
+  hostPath: string;
+  mountPath: string;
+  kind: 'file' | 'dir';
+  pathDir?: string;
+}
+
 export interface SandboxMountSpec {
   mode: 'install' | 'auth' | 'run';
   pkgDir: string;
   workDir: string;
   homeDir?: string;
   openerDir?: string;
-  openerSocketPath?: string;
-  extraRuntimePrefixes?: { hostDir: string; mountPath: string; binSubdir?: string }[];
+  openerPipePath?: string;
+  extraRuntimeMounts?: RuntimeMount[];
   env?: Record<string, string>;
 }
 
@@ -256,7 +263,7 @@ function escapeSeatbelt(value: string): string {
   return value.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
 }
 
-/** Generate a macOS Seatbelt profile that hides host $HOME and limits writes to the app sandbox. */
+/** Generate a macOS Seatbelt profile that hides host $HOME and limits reads/writes to exact sandbox paths. */
 export function buildMacOsSandboxProfile(spec: SandboxMountSpec, hostHome = homedir()): string {
   const realHostHome = escapeSeatbelt(resolve(hostHome));
   const pkg = escapeSeatbelt(resolve(spec.pkgDir));
@@ -276,19 +283,14 @@ export function buildMacOsSandboxProfile(spec: SandboxMountSpec, hostHome = home
   if (spec.openerDir) {
     lines.push(`(allow file-read* (subpath "${escapeSeatbelt(resolve(spec.openerDir))}"))`);
   }
-  if (spec.openerSocketPath) {
-    lines.push(`(allow file-read* file-write* (literal "${escapeSeatbelt(resolve(spec.openerSocketPath))}"))`);
+  if (spec.openerPipePath) {
+    lines.push(`(allow file-read* file-write* (literal "${escapeSeatbelt(resolve(spec.openerPipePath))}"))`);
   }
-  for (const rt of spec.extraRuntimePrefixes ?? []) {
-    lines.push(`(allow file-read* (subpath "${escapeSeatbelt(resolve(rt.hostDir))}"))`);
+  for (const rt of spec.extraRuntimeMounts ?? []) {
+    const matcher = rt.kind === 'file' ? 'literal' : 'subpath';
+    lines.push(`(allow file-read* (${matcher} "${escapeSeatbelt(resolve(rt.hostPath))}"))`);
   }
   return lines.join('\n') + '\n';
-}
-
-export interface RuntimePrefix {
-  hostDir: string;
-  mountPath: string;
-  binSubdir?: string;
 }
 
 export function sandboxPathsFor(backend: SandboxBackend, pkgDir: string, workDir: string): { pkg: string; work: string } {
@@ -297,38 +299,106 @@ export function sandboxPathsFor(backend: SandboxBackend, pkgDir: string, workDir
     : { pkg: SANDBOX_PKG, work: SANDBOX_WORK };
 }
 
-export async function collectHostRuntimePrefixes(needsUv = false): Promise<{
-  prefixes: RuntimePrefix[];
+async function resolveNpmPackageDir(realNode: string): Promise<{ npmPkgDir: string; npmCliRel: string; hostNpmCli: string } | undefined> {
+  const candidates = [
+    join(dirname(realNode), 'npm'),
+    join(dirname(dirname(realNode)), 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js')
+  ];
+  for (const candidate of candidates) {
+    try {
+      const realNpm = await realpath(candidate);
+      // Standard npm layout: <npmPkgDir>/bin/npm-cli.js
+      if (basename(realNpm) !== 'npm-cli.js' || basename(dirname(realNpm)) !== 'bin') continue;
+      const npmPkgDir = dirname(dirname(realNpm));
+      const pkgJson = JSON.parse(await readFile(join(npmPkgDir, 'package.json'), 'utf8')) as { name?: unknown };
+      if (pkgJson.name !== 'npm') continue;
+      return { npmPkgDir, npmCliRel: join('bin', 'npm-cli.js'), hostNpmCli: realNpm };
+    } catch { /* try next */ }
+  }
+  return undefined;
+}
+
+/**
+ * Collect minimal read-only runtime mounts.
+ * Never mounts parent directories (like $HOME or ~/.local/bin) wholesale:
+ * - node and uv are mounted as exact single files.
+ * - npm is mounted only during npm installation and restricted to its verified npm package directory.
+ */
+export async function collectHostRuntimeMounts(options: {
+  needsNpm?: boolean;
+  needsUv?: boolean;
+  nodePath?: string;
+  uvPath?: string;
+} = {}): Promise<{
+  mounts: RuntimeMount[];
   nodeBin: string;
   hostNodeBin: string;
+  npmCliPath?: string;
+  hostNpmCliPath?: string;
   uvBin?: string;
   hostUvBin?: string;
 }> {
-  const prefixes: RuntimePrefix[] = [];
-  const realNode = await realpath(process.execPath);
-  const nodePrefix = dirname(dirname(realNode));
+  const mounts: RuntimeMount[] = [];
+  const realNode = await realpath(options.nodePath ?? process.execPath);
   let nodeBin = realNode;
-  if (!nodePrefix.startsWith('/usr/') && nodePrefix !== '/usr') {
-    const rel = relative(nodePrefix, realNode);
-    prefixes.push({ hostDir: nodePrefix, mountPath: '/opt/grunt-rt/node', binSubdir: dirname(rel) });
-    nodeBin = join('/opt/grunt-rt/node', rel);
+  if (!realNode.startsWith('/usr/')) {
+    nodeBin = '/opt/grunt-rt/node/bin/node';
+    mounts.push({
+      hostPath: realNode,
+      mountPath: nodeBin,
+      kind: 'file',
+      pathDir: '/opt/grunt-rt/node/bin'
+    });
   }
+
+  let npmCliPath: string | undefined;
+  let hostNpmCliPath: string | undefined;
+  if (options.needsNpm) {
+    const resolvedNpm = await resolveNpmPackageDir(realNode);
+    if (resolvedNpm) {
+      hostNpmCliPath = resolvedNpm.hostNpmCli;
+      if (resolvedNpm.npmPkgDir.startsWith('/usr/')) {
+        npmCliPath = resolvedNpm.hostNpmCli;
+      } else {
+        mounts.push({
+          hostPath: resolvedNpm.npmPkgDir,
+          mountPath: '/opt/grunt-rt/npm',
+          kind: 'dir'
+        });
+        npmCliPath = join('/opt/grunt-rt/npm', resolvedNpm.npmCliRel);
+      }
+    }
+  }
+
   let uvBin: string | undefined;
   let hostUvBin: string | undefined;
-  if (needsUv) {
-    const realUv = await resolveExecutableOnPath('uv');
+  if (options.needsUv) {
+    const realUv = options.uvPath ? await realpath(options.uvPath) : await resolveExecutableOnPath('uv');
     if (realUv) {
       hostUvBin = realUv;
       if (!realUv.startsWith('/usr/')) {
-        const uvDir = dirname(realUv);
-        prefixes.push({ hostDir: uvDir, mountPath: '/opt/grunt-rt/uv' });
-        uvBin = join('/opt/grunt-rt/uv', relative(uvDir, realUv));
+        uvBin = '/opt/grunt-rt/uv/uv';
+        mounts.push({
+          hostPath: realUv,
+          mountPath: uvBin,
+          kind: 'file',
+          pathDir: '/opt/grunt-rt/uv'
+        });
       } else {
         uvBin = realUv;
       }
     }
   }
-  return { prefixes, nodeBin, hostNodeBin: realNode, ...(uvBin ? { uvBin } : {}), ...(hostUvBin ? { hostUvBin } : {}) };
+
+  return {
+    mounts,
+    nodeBin,
+    hostNodeBin: realNode,
+    ...(npmCliPath ? { npmCliPath } : {}),
+    ...(hostNpmCliPath ? { hostNpmCliPath } : {}),
+    ...(uvBin ? { uvBin } : {}),
+    ...(hostUvBin ? { hostUvBin } : {})
+  };
 }
 
 /**
@@ -337,6 +407,7 @@ export async function collectHostRuntimePrefixes(needsUv = false): Promise<{
  * - Mounts apps/<id>/pkg RO during auth/run, RW only during staging install.
  * - Mounts apps/<id>/home RW during auth/run, omitted during staging install.
  * - Mounts resolved /etc/resolv.conf RO so systemd-resolved DNS works.
+ * - Mounts only exact runtime files (never parent directories wholesale).
  */
 export async function buildBwrapInvocation(
   program: string,
@@ -373,8 +444,8 @@ export async function buildBwrapInvocation(
     bwrapArgs.push('--ro-bind', resolve(spec.openerDir), SANDBOX_OPENERS);
     pathEntries.push(SANDBOX_OPENERS);
   }
-  if (spec.openerSocketPath) {
-    bwrapArgs.push('--bind', resolve(spec.openerSocketPath), SANDBOX_OPENER_SOCK);
+  if (spec.openerPipePath) {
+    bwrapArgs.push('--bind', resolve(spec.openerPipePath), SANDBOX_OPENER_PIPE);
   }
 
   // Package directory: RW only during install, RO forever at runtime.
@@ -391,10 +462,13 @@ export async function buildBwrapInvocation(
   // Empty per-request / staging work directory.
   bwrapArgs.push('--bind', resolve(spec.workDir), SANDBOX_WORK);
 
-  // Runtime prefixes (e.g. fnm node, ~/.local/bin/uv) bound RO at neutral paths.
-  for (const rt of spec.extraRuntimePrefixes ?? []) {
-    bwrapArgs.push('--ro-bind', resolve(rt.hostDir), rt.mountPath);
-    pathEntries.push(rt.binSubdir ? join(rt.mountPath, rt.binSubdir) : rt.mountPath);
+  // Exact runtime files/packages bound RO at neutral paths.
+  if (spec.extraRuntimeMounts?.length) {
+    bwrapArgs.push('--tmpfs', '/opt');
+    for (const rt of spec.extraRuntimeMounts) {
+      bwrapArgs.push('--ro-bind', resolve(rt.hostPath), rt.mountPath);
+      if (rt.pathDir) pathEntries.push(rt.pathDir);
+    }
   }
   pathEntries.push('/usr/local/bin', '/usr/bin', '/bin');
 
@@ -407,10 +481,10 @@ export async function spawnSandboxed(
   program: string,
   args: string[],
   spec: SandboxMountSpec,
-  options: { stdio?: ['pipe' | 'ignore', 'pipe' | 'ignore', 'pipe' | 'ignore']; backend?: SandboxBackend } = {}
+  options: { stdio?: StdioOptions; backend?: SandboxBackend } = {}
 ): Promise<ChildProcess> {
   const backend = options.backend ?? await requireSandboxBackend();
-  const stdio = options.stdio ?? ['pipe', 'pipe', 'pipe'];
+  const stdio: StdioOptions = options.stdio ?? ['pipe', 'pipe', 'pipe'];
   if (backend.kind === 'bwrap') {
     const built = await buildBwrapInvocation(program, args, spec);
     return spawn(backend.binary, built.args, { cwd: built.cwd, env: built.env, stdio, detached: true });
@@ -422,14 +496,14 @@ export async function spawnSandboxed(
     ...(spec.openerDir ? [resolve(spec.openerDir)] : []),
     join(resolve(spec.pkgDir), 'node_modules', '.bin'),
     join(resolve(spec.pkgDir), 'bin'),
-    ...(spec.extraRuntimePrefixes ?? []).map(rt => rt.binSubdir ? join(resolve(rt.hostDir), rt.binSubdir) : resolve(rt.hostDir)),
+    ...(spec.extraRuntimeMounts ?? []).filter(rt => rt.kind === 'file').map(rt => dirname(resolve(rt.hostPath))),
     '/opt/homebrew/bin',
     '/usr/local/bin',
     '/usr/bin',
     '/bin'
   ];
   const env = stripSandboxEnv(
-    { ...(spec.env ?? {}), ...(spec.openerSocketPath ? { GRUNT_OPENER_SOCK: resolve(spec.openerSocketPath) } : {}) },
+    { ...(spec.env ?? {}), ...(spec.openerPipePath ? { GRUNT_OPENER_PIPE: resolve(spec.openerPipePath) } : {}) },
     home,
     pathEntries,
     resolve(spec.workDir)
@@ -437,62 +511,72 @@ export async function spawnSandboxed(
   return spawn(backend.binary, ['-p', profile, program, ...args], { cwd: resolve(spec.workDir), env, stdio, detached: true });
 }
 
-export interface OpenerBridge {
+export interface OpenerPipe {
   openerDir: string;
-  socketPath: string;
+  pipePath: string;
+  onFd3Data(chunk: Buffer): void;
   close(): Promise<void>;
 }
 
 /**
- * Host-owned Unix socket + read-only open/xdg-open shims.
- * Works even when a CLI invokes xdg-open with stdio: 'ignore' and never persists URLs to disk.
+ * Host-owned pipe capture for open/xdg-open shims:
+ * - Captures URLs written directly to inherited host pipe FD 3 (when child preserves FD 3).
+ * - Falls back to a host-owned kernel named pipe (FIFO) FD when a CLI spawns xdg-open with
+ *   stdio: 'ignore' and close_fds=true (Node/Python/Go).
+ * Never uses Unix domain sockets and never persists URLs to disk.
  */
-export async function createOpenerBridge(
+export async function createOpenerPipe(
   scratchDir: string,
-  nodeBinInSandbox: string,
   onUrl: (url: string) => void
-): Promise<OpenerBridge> {
+): Promise<OpenerPipe> {
   const dir = await mkdtemp(join(scratchDir, 'openers-'));
   const openerDir = join(dir, 'bin');
   await mkdir(openerDir, { mode: 0o700 });
-  const socketPath = join(dir, 'opener.sock');
+  const pipePath = join(dir, 'opener.pipe');
+  await execFileAsync('mkfifo', ['-m', '600', pipePath]);
+
   const shimScript = [
-    `#!${nodeBinInSandbox}`,
-    'const net = require("node:net");',
-    `const sock = process.env.GRUNT_OPENER_SOCK || ${JSON.stringify(SANDBOX_OPENER_SOCK)};`,
-    'const target = process.argv[2] || "";',
-    'if (!target) process.exit(0);',
-    'const client = net.createConnection(sock, () => { client.end(target.slice(0, 4096) + "\\n"); });',
-    'client.on("error", () => process.exit(0));',
-    'setTimeout(() => process.exit(0), 2000).unref();'
+    '#!/bin/sh',
+    '[ -n "$1" ] || exit 0',
+    'if { printf \'%.4096s\\n\' "$1" >&3; } 2>/dev/null; then exit 0; fi',
+    `PIPE="\${GRUNT_OPENER_PIPE:-${SANDBOX_OPENER_PIPE}}"`,
+    '[ -p "$PIPE" ] && printf \'%.4096s\\n\' "$1" > "$PIPE" 2>/dev/null || true'
   ].join('\n') + '\n';
   for (const name of ['open', 'xdg-open', 'x-www-browser', 'www-browser']) {
     await writeFile(join(openerDir, name), shimScript, { mode: 0o755, flag: 'wx' });
   }
-  const server: Server = createServer(conn => {
+
+  let totalBytes = 0;
+  const makeLineConsumer = () => {
     let buf = '';
-    conn.on('data', chunk => {
-      buf += chunk.toString('utf8');
-      if (buf.length > 8192) { conn.destroy(); return; }
+    return (chunk: Buffer) => {
+      if (totalBytes >= MAX_OPENER_BYTES) return;
+      const remaining = MAX_OPENER_BYTES - totalBytes;
+      const slice = chunk.length > remaining ? chunk.subarray(0, remaining) : chunk;
+      totalBytes += slice.length;
+      buf += slice.toString('utf8');
       let idx: number;
       while ((idx = buf.indexOf('\n')) !== -1) {
-        const line = buf.slice(0, idx).trim();
+        const line = buf.slice(0, idx).replace(/\r$/, '').trim();
         buf = buf.slice(idx + 1);
         if (line) onUrl(line);
       }
-    });
-    conn.on('error', () => {});
-  });
-  await new Promise<void>((resolveListen, rejectListen) => {
-    server.once('error', rejectListen);
-    server.listen(socketPath, () => resolveListen());
-  });
-  await chmod(socketPath, 0o600);
+    };
+  };
+
+  const onFifoData = makeLineConsumer();
+  const onFd3Data = makeLineConsumer();
+  const fifoFd = openSync(pipePath, constants.O_RDWR | constants.O_NONBLOCK);
+  const fifoStream = new Socket({ fd: fifoFd, readable: true, writable: false });
+  fifoStream.on('data', chunk => onFifoData(chunk as Buffer));
+  fifoStream.on('error', () => {});
+
   return {
     openerDir,
-    socketPath,
+    pipePath,
+    onFd3Data,
     close: async () => {
-      await new Promise<void>(r => server.close(() => r()));
+      fifoStream.destroy();
       await rm(dir, { recursive: true, force: true });
     }
   };
@@ -502,13 +586,28 @@ export async function runSandboxedCommand(
   program: string,
   args: string[],
   spec: SandboxMountSpec,
-  options: { signal: AbortSignal; timeoutMs: number; maxOutputBytes?: number; stdin?: string; onLine?: (line: string, stream: 'stdout' | 'stderr') => void; backend?: SandboxBackend }
+  options: {
+    signal: AbortSignal;
+    timeoutMs: number;
+    maxOutputBytes?: number;
+    stdin?: string;
+    onLine?: (line: string, stream: 'stdout' | 'stderr') => void;
+    onOpenerData?: (chunk: Buffer) => void;
+    backend?: SandboxBackend;
+  }
 ): Promise<{ stdout: string; stderr: string; code: number | null }> {
   options.signal.throwIfAborted();
+  const stdio: StdioOptions = options.onOpenerData
+    ? [options.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe', 'pipe']
+    : [options.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'];
   const child = await spawnSandboxed(program, args, spec, {
-    stdio: [options.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+    stdio,
     ...(options.backend ? { backend: options.backend } : {})
   });
+  if (options.onOpenerData && child.stdio[3]) {
+    child.stdio[3].on('data', chunk => options.onOpenerData!(chunk as Buffer));
+    child.stdio[3].on('error', () => {});
+  }
   const limit = options.maxOutputBytes ?? 4 * 1024 * 1024;
   return await new Promise((resolveResult, reject) => {
     let stdout = '', stderr = '', bytes = 0, failure: unknown;
@@ -658,26 +757,31 @@ export async function installDeclarativeApp(
     try {
       const backend = options.backend ?? await requireSandboxBackend();
       const visible = sandboxPathsFor(backend, stagingPkg, stagingWork);
-      const { prefixes, nodeBin, hostNodeBin, uvBin, hostUvBin } = await collectHostRuntimePrefixes(installer.type === 'uv');
-      const effectiveNodeBin = backend.kind === 'sandbox-exec' ? hostNodeBin : nodeBin;
-      const effectiveUvBin = backend.kind === 'sandbox-exec' ? hostUvBin : uvBin;
+      const runtime = await collectHostRuntimeMounts({
+        needsNpm: installer.type === 'npm',
+        needsUv: installer.type === 'uv'
+      });
+      const effectiveNodeBin = backend.kind === 'sandbox-exec' ? runtime.hostNodeBin : runtime.nodeBin;
+      const effectiveNpmCli = backend.kind === 'sandbox-exec' ? runtime.hostNpmCliPath : runtime.npmCliPath;
+      const effectiveUvBin = backend.kind === 'sandbox-exec' ? runtime.hostUvBin : runtime.uvBin;
       const spec: SandboxMountSpec = {
         mode: 'install',
         pkgDir: stagingPkg,
         workDir: stagingWork,
-        extraRuntimePrefixes: prefixes
+        extraRuntimeMounts: runtime.mounts
       };
 
       let binaryRelPath: string;
       if (installer.type === 'npm') {
+        if (!effectiveNpmCli) throw new SourceError('not_installed', `${id} requires npm alongside Node.js`);
         const pkgSpec = installer.version ? `${installer.package}@${installer.version}` : installer.package;
-        const npmBin = join(dirname(effectiveNodeBin), 'npm');
         const npmArgs = [
+          effectiveNpmCli,
           'install', '--prefix', visible.pkg, '--no-audit', '--no-fund', '--package-lock=false',
           ...(installer.allowPostinstall ? [] : ['--ignore-scripts']),
           pkgSpec
         ];
-        const res = await runSandboxedCommand(npmBin, npmArgs, spec, {
+        const res = await runSandboxedCommand(effectiveNodeBin, npmArgs, spec, {
           signal: options.signal, timeoutMs: 300000, maxOutputBytes: 4 * 1024 * 1024, backend
         });
         if (res.code !== 0) throw new SourceError('not_installed', `${id} npm installation failed`);

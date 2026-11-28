@@ -16,8 +16,8 @@ import type { Adapter, DeclarativeAppAdapter, DeclarativeAppAuth, DeclarativeApp
 import { openAcpClient } from './acp-client.js';
 import {
   appSandboxPaths,
-  collectHostRuntimePrefixes,
-  createOpenerBridge,
+  collectHostRuntimeMounts,
+  createOpenerPipe,
   installDeclarativeApp,
   installerFingerprint,
   prepareAppDirectories,
@@ -29,7 +29,7 @@ import {
   withAppLock,
   writeAppState
 } from './app-sandbox.js';
-import type { SandboxBackend, SandboxMountSpec } from './app-sandbox.js';
+import type { DeclarativeAppState, SandboxBackend, SandboxMountSpec } from './app-sandbox.js';
 import { declarativeAppDataSharingPolicy, readDataSharingConsent } from './data-sharing.js';
 import { observeAttemptDispatch } from './diagnostics.js';
 import { userTurns } from './harness.js';
@@ -145,14 +145,14 @@ async function checkAppAuth(
     try {
       const resolvedBackend = backend ?? await requireSandboxBackend();
       const visible = sandboxPathsFor(resolvedBackend, paths.pkg, reqDir);
-      const { prefixes } = await collectHostRuntimePrefixes(adapter.declarativeApp.installer.type === 'uv');
+      const { mounts } = await collectHostRuntimeMounts({ needsUv: adapter.declarativeApp.installer.type === 'uv' });
       const binInSandbox = join(visible.pkg, binaryRelPath);
       const res = await runSandboxedCommand(binInSandbox, auth.statusArgs, {
         mode: 'run',
         pkgDir: paths.pkg,
         homeDir: paths.home,
         workDir: reqDir,
-        extraRuntimePrefixes: prefixes,
+        extraRuntimeMounts: mounts,
         ...(adapter.declarativeApp.env ? { env: adapter.declarativeApp.env } : {})
       }, { signal, timeoutMs: 15000, maxOutputBytes: 256 * 1024, backend: resolvedBackend });
       if (res.code !== 0) return false;
@@ -306,13 +306,13 @@ export class DeclarativeApp implements Source {
     try {
       const backend = this.options.backend ?? await requireSandboxBackend();
       const visible = sandboxPathsFor(backend, paths.pkg, reqDir);
-      const { prefixes } = await collectHostRuntimePrefixes(adapter.declarativeApp.installer.type === 'uv');
+      const { mounts } = await collectHostRuntimeMounts({ needsUv: adapter.declarativeApp.installer.type === 'uv' });
       const spec: SandboxMountSpec = {
         mode: 'run',
         pkgDir: paths.pkg,
         homeDir: paths.home,
         workDir: reqDir,
-        extraRuntimePrefixes: prefixes,
+        extraRuntimeMounts: mounts,
         ...(adapter.declarativeApp.env ? { env: adapter.declarativeApp.env } : {})
       };
       const binInSandbox = join(visible.pkg, binaryRelPath);
@@ -482,71 +482,96 @@ export async function setupDeclarativeApp(
   }
   const signal = AbortSignal.any([AbortSignal.timeout(600000), ...(caller ? [caller] : [])]);
 
-  const { paths, state } = await installDeclarativeApp(adapter.id, adapter.declarativeApp.installer, {
+  const { paths, state: installedState } = await installDeclarativeApp(adapter.id, adapter.declarativeApp.installer, {
     directory,
     signal,
     ...(options.fetcher ? { fetcher: options.fetcher } : {}),
     ...(options.backend ? { backend: options.backend } : {})
   });
 
-  // Strict single-login reuse: if already authenticated, never re-run login.
-  if (await checkAppAuth(adapter, directory, state.binaryRelPath, signal, options.backend)) {
-    notify(`${adapter.id}: sandboxed app reused existing login`);
-    return;
-  }
+  const currentNow = () => (options.now ?? Date.now)();
 
-  const auth = adapter.declarativeApp.auth;
-  if (auth.type === 'none') {
-    notify(`${adapter.id}: sandboxed app ready (no login required)`);
-    return;
-  }
-  if (options.background) {
-    throw new Error(`${adapter.id} requires foreground browser sign-in`);
-  }
-  if (!squire.signup) {
-    throw new Error(`${adapter.id} requires browser-capable Trusty Squire`);
-  }
+  // Hold the per-app lock across auth recheck, backoff check, pre-login attempt
+  // persistence, browser login, post-login verification, and final state update.
+  await withAppLock(`${resolve(directory)}:${adapter.id}`, async () => {
+    const state = (await readAppState(adapter.id, directory)) ?? installedState;
 
-  await options.connect?.();
-  const backend = options.backend ?? await requireSandboxBackend();
-  const loginWork = await mkdtemp(join(paths.tmp, 'login-'));
-  const lifetime = new AbortController();
-  const loginSignal = AbortSignal.any([signal, lifetime.signal]);
-  const { prefixes, nodeBin, hostNodeBin } = await collectHostRuntimePrefixes(adapter.declarativeApp.installer.type === 'uv');
+    // Strict single-login reuse: recheck under the lock so concurrent setup calls
+    // never launch a second login.
+    if (await checkAppAuth(adapter, directory, state.binaryRelPath, signal, options.backend)) {
+      notify(`${adapter.id}: sandboxed app reused existing login`);
+      return;
+    }
 
-  let pairing: Promise<void> | undefined;
-  let capturedUrl: string | undefined;
-  let capturedCode: string | undefined;
-  let failure: Error | undefined;
+    const auth = adapter.declarativeApp.auth;
+    if (auth.type === 'none') {
+      notify(`${adapter.id}: sandboxed app ready (no login required)`);
+      return;
+    }
+    if (state.signupBackoffUntil !== undefined && state.signupBackoffUntil > currentNow()) {
+      throw new Error(`${adapter.id} sign-in is backed off until ${new Date(state.signupBackoffUntil).toISOString()}`);
+    }
+    if (options.background) {
+      throw new Error(`${adapter.id} requires foreground browser sign-in`);
+    }
+    if (!squire.signup) {
+      throw new Error(`${adapter.id} requires browser-capable Trusty Squire`);
+    }
 
-  const maybeStartBrowser = () => {
-    if (pairing || !capturedUrl) return;
-    if (auth.type === 'device-code' && !capturedCode) return;
-    const url = capturedUrl;
-    const code = capturedCode;
-    const goal = [
-      `Complete the ${adapter.declarativeApp.name ?? adapter.id} CLI sign-in started by Grunt using this user's existing account or a free account.`,
-      ...(code ? [`Enter the verification code ${code}.`] : []),
-      ...(adapter.hints ? [adapter.hints] : []),
-      'Do not add a payment method, pay, top up, or switch to a paid plan. Authorize only this CLI sign-in and finish.'
-    ].join(' ');
-    pairing = squire.signup!(adapter.id, url, goal, code ? { user_code: code } : undefined);
-    void pairing.catch(err => {
-      failure = err instanceof Error ? err : new Error(`${adapter.id} browser sign-in failed`);
-      lifetime.abort();
-    });
-  };
+    await options.connect?.();
+    const backend = options.backend ?? await requireSandboxBackend();
 
-  const handleCandidateUrl = (raw: string) => {
-    const valid = validateAuthUrl(raw, auth);
-    if (!valid || capturedUrl) return;
-    capturedUrl = valid.href;
-    maybeStartBrowser();
-  };
+    // Persist the attempt and backoff window BEFORE starting the login CLI so even
+    // a hard interruption (SIGKILL/abort) cannot bypass backoff.
+    const attemptAt = currentNow();
+    const attemptState: DeclarativeAppState = {
+      version: 1,
+      installerFingerprint: state.installerFingerprint,
+      installedAt: state.installedAt,
+      binaryRelPath: state.binaryRelPath,
+      lastSignupAttemptAt: attemptAt,
+      signupBackoffUntil: attemptAt + SIGNUP_BACKOFF_MS,
+      lastSignupFailure: 'in_progress'
+    };
+    await writeAppState(adapter.id, attemptState, directory);
 
-  const bridge = await createOpenerBridge(paths.tmp, backend.kind === 'sandbox-exec' ? hostNodeBin : nodeBin, handleCandidateUrl);
-  try {
-    await withAppLock(`${resolve(directory)}:${adapter.id}`, async () => {
+    const loginWork = await mkdtemp(join(paths.tmp, 'login-'));
+    const lifetime = new AbortController();
+    const loginSignal = AbortSignal.any([signal, lifetime.signal]);
+    const { mounts } = await collectHostRuntimeMounts({ needsUv: adapter.declarativeApp.installer.type === 'uv' });
+
+    let pairing: Promise<void> | undefined;
+    let capturedUrl: string | undefined;
+    let capturedCode: string | undefined;
+    let failure: Error | undefined;
+
+    const maybeStartBrowser = () => {
+      if (pairing || !capturedUrl) return;
+      if (auth.type === 'device-code' && !capturedCode) return;
+      const url = capturedUrl;
+      const code = capturedCode;
+      const goal = [
+        `Complete the ${adapter.declarativeApp.name ?? adapter.id} CLI sign-in started by Grunt using this user's existing account or a free account.`,
+        ...(code ? [`Enter the verification code ${code}.`] : []),
+        ...(adapter.hints ? [adapter.hints] : []),
+        'Do not add a payment method, pay, top up, or switch to a paid plan. Authorize only this CLI sign-in and finish.'
+      ].join(' ');
+      pairing = squire.signup!(adapter.id, url, goal, code ? { user_code: code } : undefined);
+      void pairing.catch(err => {
+        failure = err instanceof Error ? err : new Error(`${adapter.id} browser sign-in failed`);
+        lifetime.abort();
+      });
+    };
+
+    const handleCandidateUrl = (raw: string) => {
+      const valid = validateAuthUrl(raw, auth);
+      if (!valid || capturedUrl) return;
+      capturedUrl = valid.href;
+      maybeStartBrowser();
+    };
+
+    const opener = await createOpenerPipe(paths.tmp, handleCandidateUrl);
+    try {
       const visible = sandboxPathsFor(backend, paths.pkg, loginWork);
       const binInSandbox = join(visible.pkg, state.binaryRelPath);
       const spec: SandboxMountSpec = {
@@ -554,9 +579,9 @@ export async function setupDeclarativeApp(
         pkgDir: paths.pkg,
         homeDir: paths.home,
         workDir: loginWork,
-        openerDir: bridge.openerDir,
-        openerSocketPath: bridge.socketPath,
-        extraRuntimePrefixes: prefixes,
+        openerDir: opener.openerDir,
+        openerPipePath: opener.pipePath,
+        extraRuntimeMounts: mounts,
         ...(adapter.declarativeApp.env ? { env: adapter.declarativeApp.env } : {})
       };
       const result = await runSandboxedCommand(binInSandbox, auth.command, spec, {
@@ -564,6 +589,7 @@ export async function setupDeclarativeApp(
         timeoutMs: 600000,
         maxOutputBytes: 256 * 1024,
         backend,
+        onOpenerData: opener.onFd3Data,
         onLine(line) {
           const clean = stripAnsi(line);
           const urls = clean.match(/https:\/\/[^\s"'<>`]+/g) ?? [];
@@ -580,29 +606,30 @@ export async function setupDeclarativeApp(
       if (failure) throw failure;
       if (result.code !== 0 || !pairing) throw new Error(`${adapter.id} CLI login did not complete`);
       await pairing;
-    });
-    if (!(await checkAppAuth(adapter, directory, state.binaryRelPath, signal, options.backend))) {
-      throw new Error(`${adapter.id} login completed but status check still reports signed out`);
+
+      if (!(await checkAppAuth(adapter, directory, state.binaryRelPath, signal, backend))) {
+        throw new Error(`${adapter.id} login completed but status check still reports signed out`);
+      }
+      await writeAppState(adapter.id, {
+        version: 1,
+        installerFingerprint: state.installerFingerprint,
+        installedAt: state.installedAt,
+        binaryRelPath: state.binaryRelPath
+      }, directory);
+      notify(`${adapter.id}: sandboxed app connected`);
+    } catch (err) {
+      const failedAt = currentNow();
+      await writeAppState(adapter.id, {
+        ...attemptState,
+        lastSignupAttemptAt: attemptAt,
+        signupBackoffUntil: Math.max(attemptState.signupBackoffUntil ?? 0, failedAt + SIGNUP_BACKOFF_MS),
+        lastSignupFailure: 'signup_failed'
+      }, directory).catch(() => {});
+      throw err;
+    } finally {
+      lifetime.abort();
+      await opener.close();
+      await rm(loginWork, { recursive: true, force: true }).catch(() => {});
     }
-    await writeAppState(adapter.id, {
-      version: 1,
-      installerFingerprint: state.installerFingerprint,
-      installedAt: state.installedAt,
-      binaryRelPath: state.binaryRelPath
-    }, directory);
-    notify(`${adapter.id}: sandboxed app connected`);
-  } catch (err) {
-    const attemptAt = (options.now ?? Date.now)();
-    await writeAppState(adapter.id, {
-      ...state,
-      lastSignupAttemptAt: attemptAt,
-      signupBackoffUntil: attemptAt + SIGNUP_BACKOFF_MS,
-      lastSignupFailure: 'signup_failed'
-    }, directory).catch(() => {});
-    throw err;
-  } finally {
-    lifetime.abort();
-    await bridge.close();
-    await rm(loginWork, { recursive: true, force: true }).catch(() => {});
-  }
+  });
 }
