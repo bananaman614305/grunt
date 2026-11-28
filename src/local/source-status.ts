@@ -173,6 +173,9 @@ export class SourceStatus {
   setSetupFailure(id: string, reason: string | undefined) {
     const entry = this.entry(id);
     delete entry.needsHumanVerification;
+    // A route just opened: the 'unavailable' probe taken before its signup is
+    // stale, so the next request probes again instead of reusing it.
+    if (reason === undefined && entry.available === false) delete entry.availabilityCheckedAt;
     // Browser diagnostics can append page text. Only use fixed local classifications.
     switch (reason?.split(';', 1)[0]) {
       case undefined: case 'cancelled': case 'quota exhausted': delete entry.setupFailure; break;
