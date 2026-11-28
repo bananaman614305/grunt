@@ -17,9 +17,9 @@ It refuses to run while the repository is private and does not upload artifacts
 or use Actions caches. Static site deployment and npm publication remain separate
 from CI; their workflows are not enabled by turning CI on.
 
-`site/` is served directly on Cloudflare Pages (`https://grunt.run`), including
-`site/registry.json` (the published form of `registry/adapters.json`) and a `200`
-rewrite from `/v1/registry` to `/registry.json`. There is no Grunt gateway
+`site/` is served directly on GitHub Pages (`https://grunt.run`), including
+`registry.json` (the published form of `registry/adapters.json`) and an
+identical static copy at `/v1/registry` for older daemons. There is no Grunt gateway
 server, SQLite admin backend, custom web dashboard, Jev, billing, roster
 service, worker tooling or monorepo.
 
@@ -1269,9 +1269,9 @@ The static registry is maintained in `registry/adapters.json`. Its published
 form goes to `site/registry.json` (and the npm package's `dist/registry/adapters.json`):
 an adapter whose `expires` day has passed is left out, and the rest of its tier is
 scaled to keep the tier weight. `tsx src/registry.ts registry/adapters.json --publish site/registry.json`
-writes it. Cloudflare Pages serves it directly at
-`https://grunt.run/registry.json` (with `/v1/registry` rewritten to
-`/registry.json` as HTTP `200`). A shipped adapter id, an entry whose `install`
+writes it. GitHub Pages serves it directly at
+`https://grunt.run/registry.json` (with an identical static copy at
+`/v1/registry` for older daemons). A shipped adapter id, an entry whose `install`
 is `declarative:openai` (with a strictly validated `declarative`
 OpenAI-compatible config), or an entry whose `install` is `npm:<package>`, goes
 in `adapters`; any other id goes in a top-level `candidates` list of providers

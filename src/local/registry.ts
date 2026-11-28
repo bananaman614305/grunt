@@ -7,7 +7,7 @@ import type { Registry } from '../registry.js';
 
 // The slow router loop (docs/router.md): re-read the registry, then open routes.
 export const REGISTRY_INTERVAL = 6 * 60 * 60 * 1000;
-// Static registry hosted on Cloudflare Pages with a raw GitHub fallback.
+// Static registry hosted on GitHub Pages with a raw GitHub fallback.
 export const REGISTRY_URLS = [
   'https://grunt.run/registry.json',
   'https://raw.githubusercontent.com/bananaman614305/grunt/main/registry/adapters.json'
