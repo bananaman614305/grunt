@@ -496,7 +496,9 @@ export async function spawnSandboxed(
     ...(spec.openerDir ? [resolve(spec.openerDir)] : []),
     join(resolve(spec.pkgDir), 'node_modules', '.bin'),
     join(resolve(spec.pkgDir), 'bin'),
-    ...(spec.extraRuntimeMounts ?? []).filter(rt => rt.kind === 'file').map(rt => dirname(resolve(rt.hostPath))),
+    ...(spec.extraRuntimeMounts ?? []).flatMap(rt =>
+      rt.kind === 'file' ? [dirname(resolve(rt.hostPath))] : rt.pathDir ? [resolve(rt.hostPath)] : []
+    ),
     '/opt/homebrew/bin',
     '/usr/local/bin',
     '/usr/bin',
@@ -730,6 +732,10 @@ export function installerFingerprint(installer: DeclarativeAppInstaller): string
   return JSON.stringify(installer);
 }
 
+function shellQuote(value: string): string {
+  return `'${value.replaceAll('\'', '\'\\\'\'')}'`;
+}
+
 /**
  * Install a declarative app into a disposable staging directory (with NO auth home or project mounted),
  * verify the resulting binary stays inside staging, then atomically promote staging -> apps/<id>/pkg.
@@ -737,7 +743,7 @@ export function installerFingerprint(installer: DeclarativeAppInstaller): string
 export async function installDeclarativeApp(
   id: string,
   installer: DeclarativeAppInstaller,
-  options: { directory?: string; signal: AbortSignal; fetcher?: typeof fetch; backend?: SandboxBackend }
+  options: { directory?: string; signal: AbortSignal; fetcher?: typeof fetch; backend?: SandboxBackend; npmRegistryUrl?: string }
 ): Promise<{ paths: AppSandboxPaths; state: DeclarativeAppState }> {
   const directory = options.directory ?? configRoot();
   return withAppLock(`${resolve(directory)}:${id}`, async () => {
@@ -764,16 +770,36 @@ export async function installDeclarativeApp(
       const effectiveNodeBin = backend.kind === 'sandbox-exec' ? runtime.hostNodeBin : runtime.nodeBin;
       const effectiveNpmCli = backend.kind === 'sandbox-exec' ? runtime.hostNpmCliPath : runtime.npmCliPath;
       const effectiveUvBin = backend.kind === 'sandbox-exec' ? runtime.hostUvBin : runtime.uvBin;
-      const spec: SandboxMountSpec = {
-        mode: 'install',
-        pkgDir: stagingPkg,
-        workDir: stagingWork,
-        extraRuntimeMounts: runtime.mounts
-      };
+      const installMounts = [...runtime.mounts];
 
       let binaryRelPath: string;
       if (installer.type === 'npm') {
-        if (!effectiveNpmCli) throw new SourceError('not_installed', `${id} requires npm alongside Node.js`);
+        if (!effectiveNpmCli || !runtime.hostNpmCliPath) throw new SourceError('not_installed', `${id} requires npm alongside Node.js`);
+        // Put thin launchers for the exact mounted npm/npx ahead of system PATH so
+        // lifecycle scripts (e.g. postinstall) invoke the same npm version as the installer.
+        const npmLauncherDir = join(stagingRoot, 'npm-bin');
+        await mkdir(npmLauncherDir, { mode: 0o700 });
+        await writeFile(
+          join(npmLauncherDir, 'npm'),
+          `#!/bin/sh\nexec ${shellQuote(effectiveNodeBin)} ${shellQuote(effectiveNpmCli)} "$@"\n`,
+          { mode: 0o755, flag: 'wx' }
+        );
+        const hostNpxCli = join(dirname(runtime.hostNpmCliPath), 'npx-cli.js');
+        if (existsSync(hostNpxCli)) {
+          const effectiveNpxCli = join(dirname(effectiveNpmCli), 'npx-cli.js');
+          await writeFile(
+            join(npmLauncherDir, 'npx'),
+            `#!/bin/sh\nexec ${shellQuote(effectiveNodeBin)} ${shellQuote(effectiveNpxCli)} "$@"\n`,
+            { mode: 0o755, flag: 'wx' }
+          );
+        }
+        installMounts.push({
+          hostPath: npmLauncherDir,
+          mountPath: '/opt/grunt-rt/npm-bin',
+          kind: 'dir',
+          pathDir: '/opt/grunt-rt/npm-bin'
+        });
+
         const pkgSpec = installer.version ? `${installer.package}@${installer.version}` : installer.package;
         const npmArgs = [
           effectiveNpmCli,
@@ -781,12 +807,28 @@ export async function installDeclarativeApp(
           ...(installer.allowPostinstall ? [] : ['--ignore-scripts']),
           pkgSpec
         ];
-        const res = await runSandboxedCommand(effectiveNodeBin, npmArgs, spec, {
+        const res = await runSandboxedCommand(effectiveNodeBin, npmArgs, {
+          mode: 'install',
+          pkgDir: stagingPkg,
+          workDir: stagingWork,
+          extraRuntimeMounts: installMounts,
+          env: {
+            npm_config_cache: join(visible.work, 'npm-cache'),
+            npm_config_update_notifier: 'false',
+            ...(options.npmRegistryUrl ? { npm_config_registry: options.npmRegistryUrl } : {})
+          }
+        }, {
           signal: options.signal, timeoutMs: 300000, maxOutputBytes: 4 * 1024 * 1024, backend
         });
         if (res.code !== 0) throw new SourceError('not_installed', `${id} npm installation failed`);
         binaryRelPath = join('node_modules', '.bin', installer.bin);
       } else if (installer.type === 'uv') {
+        const spec: SandboxMountSpec = {
+          mode: 'install',
+          pkgDir: stagingPkg,
+          workDir: stagingWork,
+          extraRuntimeMounts: installMounts
+        };
         if (!effectiveUvBin) throw new SourceError('not_installed', `${id} requires uv to be installed on PATH`);
         const pkgSpec = installer.version ? `${installer.package}==${installer.version}` : installer.package;
         const res = await runSandboxedCommand(effectiveUvBin, ['tool', 'install', '--no-config', '--force', pkgSpec], {
@@ -803,6 +845,12 @@ export async function installDeclarativeApp(
         if (res.code !== 0) throw new SourceError('not_installed', `${id} uv installation failed`);
         binaryRelPath = join('bin', installer.bin);
       } else {
+        const spec: SandboxMountSpec = {
+          mode: 'install',
+          pkgDir: stagingPkg,
+          workDir: stagingWork,
+          extraRuntimeMounts: installMounts
+        };
         const platform = currentPlatform();
         const url = platform ? installer.urls[platform] : undefined;
         if (!url) throw new SourceError('not_installed', `${id} has no archive for platform ${platform ?? process.platform}`);

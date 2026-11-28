@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -231,6 +232,95 @@ describe('app-sandbox', () => {
     } finally {
       await rm(hostCanaryPath, { force: true });
       await rm(homeRtRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('runs npm postinstall scripts with the exact mounted npm version on PATH inside real bwrap', async () => {
+    const backend = await detectSandboxBackend();
+    if (!backend || backend.kind !== 'bwrap') return;
+
+    const runtime = await collectHostRuntimeMounts({ needsNpm: true });
+    if (!runtime.hostNpmCliPath) return;
+    const expectedNpmVersion = execFileSync(runtime.hostNodeBin, [runtime.hostNpmCliPath, '--version'], { encoding: 'utf8' }).trim();
+
+    // Build an offline npm tarball whose postinstall script records `npm --version` and `which npm`.
+    const pkgWork = await makeTemp('grunt-npm-postinstall-');
+    const pkgDir = join(pkgWork, 'package');
+    await mkdir(pkgDir, { recursive: true });
+    await writeFile(join(pkgDir, 'package.json'), JSON.stringify({
+      name: 'demo-postinstall',
+      version: '1.0.0',
+      bin: { 'demo-postinstall': 'cli.js' },
+      scripts: {
+        postinstall: 'node -e "const cp=require(\'node:child_process\'),fs=require(\'node:fs\');fs.writeFileSync(\'postinstall.json\',JSON.stringify({version:cp.execFileSync(\'npm\',[\'--version\'],{encoding:\'utf8\'}).trim(),which:cp.execFileSync(\'which\',[\'npm\'],{encoding:\'utf8\'}).trim()}))"'
+      }
+    }));
+    await writeFile(join(pkgDir, 'cli.js'), '#!/usr/bin/env node\nconsole.log("ok");\n', { mode: 0o755 });
+    const tarballPath = join(pkgWork, 'demo-postinstall-1.0.0.tgz');
+    execFileSync('tar', ['-czf', tarballPath, '-C', pkgWork, 'package']);
+    const tarballBytes = await readFile(tarballPath);
+    const shasum = createHash('sha1').update(tarballBytes).digest('hex');
+
+    const server = createServer((req, res) => {
+      if (req.url === '/demo-postinstall') {
+        const addr = server.address();
+        const port = typeof addr === 'object' && addr ? addr.port : 0;
+        const meta = {
+          name: 'demo-postinstall',
+          'dist-tags': { latest: '1.0.0' },
+          versions: {
+            '1.0.0': {
+              name: 'demo-postinstall',
+              version: '1.0.0',
+              bin: { 'demo-postinstall': 'cli.js' },
+              scripts: {
+                postinstall: 'node -e "const cp=require(\'node:child_process\'),fs=require(\'node:fs\');fs.writeFileSync(\'postinstall.json\',JSON.stringify({version:cp.execFileSync(\'npm\',[\'--version\'],{encoding:\'utf8\'}).trim(),which:cp.execFileSync(\'which\',[\'npm\'],{encoding:\'utf8\'}).trim()}))"'
+              },
+              dist: {
+                shasum,
+                tarball: `http://127.0.0.1:${port}/demo-postinstall-1.0.0.tgz`
+              }
+            }
+          }
+        };
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(meta));
+        return;
+      }
+      if (req.url === '/demo-postinstall-1.0.0.tgz') {
+        res.writeHead(200, { 'content-type': 'application/octet-stream' });
+        res.end(tarballBytes);
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+
+    await new Promise<void>(resolveListen => server.listen(0, '127.0.0.1', () => resolveListen()));
+    try {
+      const addr = server.address();
+      const port = typeof addr === 'object' && addr ? addr.port : 0;
+      const configDir = await makeTemp('grunt-npm-cfg-');
+      const installed = await installDeclarativeApp('npm-postinstall-app', {
+        type: 'npm',
+        package: 'demo-postinstall',
+        version: '1.0.0',
+        bin: 'demo-postinstall',
+        allowPostinstall: true
+      }, {
+        directory: configDir,
+        signal: AbortSignal.timeout(30000),
+        backend,
+        npmRegistryUrl: `http://127.0.0.1:${port}`
+      });
+      expect(installed.state.binaryRelPath).toBe(join('node_modules', '.bin', 'demo-postinstall'));
+      const recorded = JSON.parse(
+        await readFile(join(installed.paths.pkg, 'node_modules', 'demo-postinstall', 'postinstall.json'), 'utf8')
+      ) as { version: string; which: string };
+      expect(recorded.version).toBe(expectedNpmVersion);
+      expect(recorded.which).toBe('/opt/grunt-rt/npm-bin/npm');
+    } finally {
+      await new Promise<void>(r => server.close(() => r()));
     }
   });
 });
