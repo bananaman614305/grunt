@@ -12,6 +12,7 @@ import { SourceError } from './source.js';
 import { readVaultEntry, writeVaultEntry } from './vault.js';
 import * as mistralSetup from './mistral-vibe-setup.js';
 import { configure } from './main.js';
+import { clearProviderRefusal, readProviderRefusal, recordProviderRefusal } from './provider-refusal.js';
 
 let directory: string;
 beforeEach(async () => {
@@ -498,5 +499,43 @@ it('stops Zro setup without a new signup when the saved key gets HTTP 403, keeps
   await expect(setup(() => {}, ['zro'], { directory, squire })).rejects.toThrow('usegrunt add zro --force');
   expect(squire.runs.start).not.toHaveBeenCalled();
   await setup(() => {}, ['zro'], { directory, squire, force: true }).catch(() => {});
+  expect(squire.runs.start).toHaveBeenCalledOnce();
+});
+
+it.each([
+  { provider: 'zro' as const, installed: true },
+  { provider: 'tokenharbor' as const, installed: false }
+])('keeps the $provider key and starts no signup when the provider answers HTTP 502 during setup', async ({ provider, installed }) => {
+  await recordDataSharingConsent(directory, [provider]);
+  if (installed) await writeZroGrant({ base_url: 'https://grant.test', token: 'working' }, directory);
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(null, { status: 502 }));
+  const squire = {
+    credentials: {
+      list: async () => [{ service: provider, reference: 'vault://working', field_names: ['api_key'] }],
+      grant: async () => ({ base_url: 'https://grant.test', token: 'working' })
+    }, runs: { start: vi.fn(), get: vi.fn() }
+  };
+  await expect(setup(() => {}, [provider], { directory, squire })).rejects.toMatchObject({ code: 'upstream' });
+  expect(squire.runs.start).not.toHaveBeenCalled();
+  // A provider fault says nothing about the key, so the installed or just-tested key stays for the daemon to retry.
+  expect(JSON.parse(await readFile(join(directory, `${provider}.json`), 'utf8'))).toMatchObject({ base_url: 'https://grant.test' });
+  await expect(readProviderRefusal(directory, provider)).resolves.toBeUndefined();
+});
+
+it('starts no background signup for a provider with a recorded ban until the person clears it', async () => {
+  await recordDataSharingConsent(directory, ['tokenharbor']);
+  await recordProviderRefusal(directory, 'tokenharbor', new Error('This account has been banned'));
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(null, { status: 401 }));
+  const squire = {
+    signup: vi.fn(),
+    credentials: { list: vi.fn(async () => []), grant: vi.fn() },
+    runs: { start: vi.fn(async () => ({ decision: 'drop' as const })), get: vi.fn() }
+  };
+  const background = () => setupFallbacks({ directory, adapters: ['tokenharbor'], squire, background: true, acquire: true, connect: async () => {}, run: async () => {}, notify: () => {} });
+  await expect(background()).resolves.toMatchObject({ unavailable: ['tokenharbor'] });
+  await expect(background()).resolves.toMatchObject({ unavailable: ['tokenharbor'] });
+  expect(squire.runs.start).not.toHaveBeenCalled();
+  await clearProviderRefusal(directory, 'tokenharbor');
+  await background();
   expect(squire.runs.start).toHaveBeenCalledOnce();
 });

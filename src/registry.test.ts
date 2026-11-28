@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DECLARATIVE_OPENAI_INSTALL, adapterErrors, bundledRegistry, disabledAdapters, imageAdapters, isDeclarativeAdapter, knownAdapters, validateRegistry } from './registry.js';
+import { DECLARATIVE_OPENAI_INSTALL, adapterErrors, bundledRegistry, disabledAdapters, imageAdapters, isDeclarativeAdapter, knownAdapters, publishedRegistry, validateRegistry } from './registry.js';
 import type { Adapter } from './registry.js';
 import { PROMOTIONAL_PROVIDERS } from './local/promotional-api.js';
 import { recommendedAdapters, scoutRetired } from './local/routing.js';
@@ -113,13 +113,14 @@ it('ignores unknown adapter code and starts a route pass after every sync, chang
   expect(sync.enabled.map(adapter => adapter.id)).toEqual(['opencode']);
   await sync.sync(); expect(sync.enabled.map(adapter => adapter.id)).toEqual(['kilo']);
 });
-it('keeps site/registry.json synced byte-for-byte with registry/adapters.json', async () => {
+it('keeps site/registry.json synced byte-for-byte with the published form of registry/adapters.json', async () => {
   const [adaptersBytes, siteBytes] = await Promise.all([
     readFile(new URL('../registry/adapters.json', import.meta.url)),
     readFile(new URL('../site/registry.json', import.meta.url)),
   ]);
-  expect(Buffer.compare(siteBytes, adaptersBytes)).toBe(0);
-  expect(siteBytes.equals(adaptersBytes)).toBe(true);
+  // Ended offers are left out when published; with none ended, the bytes match the source.
+  const published = Buffer.from(`${JSON.stringify(publishedRegistry(JSON.parse(adaptersBytes.toString('utf8'))), null, 2)}\n`);
+  expect(siteBytes.equals(published)).toBe(true);
 });
 
 it('reaches the raw GitHub fallback if the primary static registry fails', async () => {
@@ -349,4 +350,25 @@ it.each([
   ['declarative on npm adapter', { install: 'npm:some-pkg' }]
 ])('rejects invalid declarative adapter: %s', (_label, patch) => {
   expect(adapterErrors({ ...validDeclarative, ...patch }).length).toBeGreaterThan(0);
+});
+
+it('leaves ended offers out of the published registry and the packaged copy', async () => {
+  const now = Date.parse('2026-11-28T12:00:00Z');
+  const ends: Record<string, string> = { zro: '2026-11-27', tokenharbor: '2026-11-28' };
+  const registry = { ...structuredClone(bundledRegistry), adapters: bundledRegistry.adapters.map(adapter =>
+    ends[adapter.id] ? { ...structuredClone(adapter), expires: ends[adapter.id] } : structuredClone(adapter)) };
+  expect(validateRegistry(registry).adapters.map(adapter => adapter.id)).toEqual(expect.arrayContaining(['zro', 'tokenharbor']));
+  const published = validateRegistry(publishedRegistry(registry, now));
+  expect(published.adapters.map(adapter => adapter.id)).not.toContain('zro');
+  // An offer is still published through its last day.
+  expect(published.adapters.map(adapter => adapter.id)).toContain('tokenharbor');
+  expect(published.adapters).toHaveLength(registry.adapters.length - 1);
+  // The site workflow writes site/registry.json through the same filter.
+  const path = await directory();
+  await writeFile(join(path, 'in.json'), JSON.stringify({ ...registry, adapters: registry.adapters.map(adapter => adapter.id === 'zro' ? { ...adapter, expires: '2020-01-01' } : adapter) }));
+  const { execFileSync } = await import('node:child_process');
+  execFileSync(process.execPath, ['--import', 'tsx', 'src/registry.ts', join(path, 'in.json'), '--publish', join(path, 'out.json')]);
+  const written = JSON.parse(await readFile(join(path, 'out.json'), 'utf8')) as { adapters: Adapter[] };
+  expect(written.adapters.map(adapter => adapter.id)).not.toContain('zro');
+  expect(written.adapters.map(adapter => adapter.id)).toContain('tokenharbor');
 });

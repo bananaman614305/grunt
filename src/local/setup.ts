@@ -180,8 +180,11 @@ export class SetupFailure extends Error {}
 
 // The provider's own HTTP 401 or 403 to a request with the saved key.
 const rejectedStatus = (error: unknown) => error instanceof SourceError && [401, 403].includes(error.diagnostics?.httpStatus ?? 0) ? error.diagnostics!.httpStatus : undefined;
+// A provider fault (HTTP 5xx, network error or timeout) says nothing about the key.
+const transientFailure = (error: unknown) => error instanceof Error && error.name === 'TimeoutError' || error instanceof SourceError && (error.code === 'timeout'
+  || error.code === 'upstream' && (error.diagnostics?.httpStatus === undefined || error.diagnostics.httpStatus >= 500));
 // One real chat request through the source with its newly written grant. A
-// grant that does not answer is removed, so routing never counts it as connected.
+// grant the provider rejects is removed, so routing never counts it as connected.
 async function probeGrant(source: Source, location: string, caller?: AbortSignal) {
   const signal = AbortSignal.any([...(caller ? [caller] : []), AbortSignal.timeout(60000)]);
   try {
@@ -191,7 +194,8 @@ async function probeGrant(source: Source, location: string, caller?: AbortSignal
   } catch (error) {
     // A quota reply proves the key is accepted. Keep it so the daemon reports the
     // source as limited and recovers at reset, instead of losing working access.
-    if (!(error instanceof SourceError && error.code === 'quota')) await rm(join(location, `${source.id}.json`), { force: true });
+    // A provider fault is transient too: keep the key and let the daemon retry it.
+    if (!(error instanceof SourceError && error.code === 'quota') && !transientFailure(error)) await rm(join(location, `${source.id}.json`), { force: true });
     signal.throwIfAborted();
     throw error;
   }
@@ -1590,8 +1594,21 @@ export async function setup(notify = console.log, providers: string[] = [], opti
         const result = await setupProviders(squire, {
           hasKey: async provider => {
             if (provider !== 'zro') return false;
-            try { return (stale = !await source.healthCheck(options.signal)) === false; }
-            catch (error) { if (isQuota(error)) limited = true; throw error; }
+            if (!await source.available(options.signal)) return false;
+            const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(source.availabilityTimeoutMs)]);
+            try {
+              await source.complete({ model: 'zro', cwd: location, messages: [{ role: 'user', content: 'Reply with one word: ready' }], tools: [], stream: false, maxTokens: 16 }, signal);
+              options.signal?.throwIfAborted();
+              return true;
+            } catch (error) {
+              options.signal?.throwIfAborted();
+              if (isQuota(error)) limited = true;
+              // Quota and provider faults (HTTP 5xx, timeouts) keep the installed key and
+              // start no signup; only a key the provider rejects is stale.
+              if (isQuota(error) || transientFailure(error)) throw error;
+              stale = true;
+              return false;
+            }
           },
           addGrant: async (provider, grant) => {
             if (provider !== 'zro') throw new Error('Unexpected Zro credential');

@@ -15,7 +15,9 @@ const credential = { service: 'beatapi', label: 'grunt', reference: 'vault://syn
 const modelList = (ids: readonly string[] = BEATAPI_MODELS) => Response.json({ data: ids.map(id => ({ id })) });
 const freeUsage = () => Response.json({ data: { object: 'usage', credit_balance: 2, credits_settled: 0 } });
 function fixture() {
-  const squire = { signup: vi.fn(async () => {}), call: vi.fn(async () => ({ credentials: [credential] })), credentials: { list: vi.fn(async () => []), grant: vi.fn(async () => ({ base_url: 'https://trusty-squire-api.fly.dev/v1/egress/g_abcdefghijklmnop', token: 'synthetic-secret-grant' })) }, approveDataSharing: vi.fn() };
+  // Squire lists the Grunt key once a signup has run; a saved key is covered by its own tests.
+  const signup = vi.fn(async (..._args: unknown[]) => {});
+  const squire = { signup, call: vi.fn(async (..._args: unknown[]) => ({ credentials: signup.mock.calls.length ? [credential] : [] as typeof credential[] })), credentials: { list: vi.fn(async () => []), grant: vi.fn(async () => ({ base_url: 'https://trusty-squire-api.fly.dev/v1/egress/g_abcdefghijklmnop', token: 'synthetic-secret-grant' })) }, approveDataSharing: vi.fn() };
   const fetcher = vi.fn(async (input: Parameters<typeof fetch>[0]) => String(input).endsWith('/v1/models') ? modelList() : freeUsage());
   return { squire, fetcher };
 }
@@ -41,9 +43,11 @@ it('provisions a new DeepSeek-only receipt when GLM is unavailable', async () =>
 it('refuses an unlabeled or substituted capture', async () => {
   const f = fixture(); f.squire.call.mockResolvedValueOnce({ credentials: [] }).mockResolvedValueOnce({ credentials: [{ ...credential, label: 'personal' }] });
   await expect(setupBeatAPI({ directory, ...f })).rejects.toThrow('verification did not complete');
+  // The saved key no longer works, so setup signs up; the capture then names a different key.
+  f.squire.credentials.grant.mockRejectedValueOnce(new Error('revoked'));
   f.squire.call.mockResolvedValueOnce({ credentials: [credential] }).mockResolvedValueOnce({ credentials: [{ ...credential, reference: 'vault://other-beatapi' }] });
   await expect(setupBeatAPI({ directory, ...f })).rejects.toThrow('verification did not complete');
-  expect(f.squire.credentials.grant).not.toHaveBeenCalled();
+  expect(f.squire.credentials.grant).toHaveBeenCalledExactlyOnceWith(credential.reference);
 });
 it('refuses a new receipt if the captured key can reach another model', async () => {
   const f = fixture(); f.fetcher.mockImplementation(async input => String(input).endsWith('/v1/models')
@@ -170,4 +174,13 @@ it.each([
   await rm(beatapiGrantPath(directory));
   await setupBeatAPI({ directory, ...f });
   expect(f.squire.signup).toHaveBeenCalledOnce();
+});
+
+it("reuses a saved Grunt-owned BeatAPI key in Squire's real summary shape when it passes the free checks, without a signup", async () => {
+  const f = fixture();
+  f.squire.call.mockResolvedValue({ credentials: [credential] });
+  await setupBeatAPI({ directory, ...f });
+  expect(f.squire.signup).not.toHaveBeenCalled();
+  expect(f.squire.credentials.grant).toHaveBeenCalledExactlyOnceWith(credential.reference);
+  expect(await readBeatAPIGrant(directory)).toMatchObject({ version: 2, lifetime_paid: 0, models: BEATAPI_MODELS });
 });
