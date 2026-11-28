@@ -233,6 +233,7 @@ function serializeDiagnosticWriter(key: string, write: () => Promise<void>) {
 const attemptSummary = (): DiagnosticAttemptSummary => ({ total: 0, succeeded: 0, failed: 0, cancelled: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, unknownInput: 0, unknownOutput: 0, unknownReasoning: 0 });
 
 const evictionPriority = "CASE WHEN incident=1 THEN 2 WHEN type='route.skip' THEN 0 ELSE 1 END";
+const requestLifecycleMarkers = "type IN ('request.start','request.finish')";
 const diagnosticBatchSize = 64;
 const maxInFlightRequests = 64;
 const maxInFlightEvents = 64;
@@ -276,12 +277,18 @@ async function initializeIncidentRetention(tx: Transaction) {
 
 async function pruneDiagnosticEvents(tx: Transaction, cutoff: number, maxEvents: number) {
   await tx.execute({ sql: 'DELETE FROM diagnostic_events WHERE at<?', args: [cutoff] });
+  // Reserve room inside the raw cap for recent starts and finishes, including
+  // starts that commit before their finish. Leave room for other events.
+  const lifecycleReserve = Math.min(1024, Math.max(0, maxEvents - 1), Math.max(2, Math.floor(maxEvents / 10)));
   await tx.execute({ sql: `
     DELETE FROM diagnostic_events WHERE seq IN (
-      SELECT seq FROM diagnostic_events ORDER BY ${evictionPriority},seq
+      SELECT seq FROM diagnostic_events WHERE seq NOT IN (
+        SELECT seq FROM diagnostic_events WHERE ${requestLifecycleMarkers} ORDER BY seq DESC LIMIT ?
+      )
+      ORDER BY ${evictionPriority},seq
       LIMIT max(0,(SELECT count(*) FROM diagnostic_events)-?)
     )
-  `, args: [maxEvents] });
+  `, args: [lifecycleReserve, maxEvents] });
 }
 
 export class DiagnosticsStore {
@@ -343,6 +350,7 @@ export class DiagnosticsStore {
           CREATE INDEX IF NOT EXISTS diagnostic_events_request ON diagnostic_events(request_id,seq);
           CREATE INDEX IF NOT EXISTS diagnostic_events_time ON diagnostic_events(at);
           CREATE INDEX IF NOT EXISTS diagnostic_events_source ON diagnostic_events(source,seq);
+          CREATE INDEX IF NOT EXISTS diagnostic_events_request_lifecycle ON diagnostic_events(seq) WHERE ${requestLifecycleMarkers};
           ${diagnosticMetricSchema}`);
         const tx = await db!.transaction('write');
         try {

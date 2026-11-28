@@ -223,7 +223,7 @@ it.each([50, 49])('restores the newest failed trace after a separate flush under
   value.record(start);
   value.record(dispatch);
   await value.flush();
-  expect((await value.trace(requestId)).events.map(row => row.id)).toEqual(olderCount === 50 ? [] : [dispatch.id]);
+  expect((await value.trace(requestId)).events.map(row => row.id)).toEqual([start.id]);
   expect((await value.list()).events).toHaveLength(50);
 
   for (const row of [failure, attemptFinish, finish]) value.record(row);
@@ -254,7 +254,7 @@ it.each([false, true])('restores a trace under incident pressure only when it ne
   const attemptFinish = event({ requestId, attemptId, outcome: retry ? 'cancelled' : 'passed' });
   for (const row of [start, dispatch, attemptFinish]) value.record(row);
   await value.flush();
-  expect((await value.list()).events.map(row => row.id)).toEqual(older.map(row => row.id));
+  expect((await value.list()).events.map(row => row.id)).toEqual([...older.slice(1), start].map(row => row.id));
 
   const next = { requestId, attemptId: randomUUID() };
   const fallback = retry ? [event({ ...next, type: 'attempt.start' }), event(next)] : [];
@@ -263,7 +263,7 @@ it.each([false, true])('restores a trace under incident pressure only when it ne
   const rows = (await value.list()).events;
   expect(rows.map(row => row.id)).toEqual((retry
     ? [...older.slice(6), start, dispatch, attemptFinish, ...fallback, finish]
-    : older).map(row => row.id));
+    : [...older.slice(2), start, finish]).map(row => row.id));
   if (retry) expect(buildRecoveryAudit(rows, { since: finish.at, until: finish.at + 1 })).toMatchObject({ passed: 1, classified: 1 });
 });
 
