@@ -34,12 +34,22 @@ function servingNow(snapshot: PoolSnapshot, observation: Observation | null) {
       incomplete = true;
       continue;
     }
+    // Observation also uses waiting_for_output at attempt start and dequeue.
+    // receiving_output already requires an attempt.progress event.
+    if (request.state === 'waiting_for_output') {
+      const dispatches = Array.isArray(attempt.dispatches) ? attempt.dispatches : null;
+      if (dispatches?.length === 0) continue;
+      if (!Number.isFinite(dispatches?.at(-1)?.at)) {
+        incomplete = true;
+        continue;
+      }
+    }
     const model = isDiagnosticModel(attempt.model) ? attempt.model : 'unknown';
     serving.add(`${attempt.provider} / ${model}`);
   }
   if (serving.size) return [...serving].join(', ') + (incomplete ? ' (some route details unavailable)' : '');
   if (incomplete || (!inFlight && snapshot.activeRequests > 0)) return 'unknown (live route details unavailable)';
-  return inFlight ? 'none (requests queued, routing, or finishing)' : 'idle';
+  return inFlight ? 'none (requests queued, in preflight, or finishing)' : 'idle';
 }
 
 function formatQuota(quota: RemainingUsage) {

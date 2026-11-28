@@ -5,7 +5,11 @@ import { fileURLToPath } from 'node:url';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, expect, it } from 'vitest';
+import { serve } from '@hono/node-server';
+import { afterEach, expect, it, onTestFinished } from 'vitest';
+import { createLocalApp } from './api.js';
+import { DiagnosticsStore, observeAttemptDispatch } from './diagnostics.js';
+import { Sources } from './source.js';
 
 const execute = promisify(execFile);
 const entry = fileURLToPath(new URL('./main.ts', import.meta.url));
@@ -66,6 +70,51 @@ it('prints a single plain snapshot for a piped watch command', async () => {
   expect(paths).toEqual(['GET /v1/status']);
 });
 
+it('lists a route only after provider dispatch while a real loopback request is pending', async () => {
+  const preflight = Promise.withResolvers<void>(), dispatch = Promise.withResolvers<void>();
+  const dispatched = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+  const directory = await mkdtemp(join(tmpdir(), 'grunt-status-dispatch-'));
+  onTestFinished(() => rm(directory, { recursive: true, force: true }));
+  const store = await DiagnosticsStore.open({ directory });
+  const sources = new Sources([{ id: 'fixture', available: async () => true, complete: async () => {
+    preflight.resolve();
+    await dispatch.promise;
+    observeAttemptDispatch({ model: 'fixture/flash' });
+    dispatched.resolve();
+    await finish.promise;
+    return { text: 'fixture reply' };
+  } }]);
+  sources.setDiagnostics(store);
+  onTestFinished(async () => { await sources.close(); await store.close(); });
+  let port = 0;
+  const app = createLocalApp(sources, { cwd: directory, get port() { return port; } });
+  const server = serve({ hostname: '127.0.0.1', port: 0, fetch: app.fetch });
+  onTestFinished(() => new Promise<void>(resolve => server.close(() => resolve())));
+  await new Promise<void>(resolve => server.once('listening', resolve));
+  port = (server.address() as { port: number }).port;
+  const turn = fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(15_000),
+    body: JSON.stringify({ model: 'grunt', messages: [{ role: 'user', content: 'A fixture request' }] })
+  });
+  const earlyReply = turn.then(response => { throw new Error(`Grunt answered early (HTTP ${response.status})`); });
+  const status = () => cli(['status', '--port', String(port)]);
+  try {
+    await Promise.race([preflight.promise, earlyReply]);
+    expect((await status()).stdout).toContain('Serving now: none (requests queued, in preflight, or finishing)');
+
+    dispatch.resolve();
+    await Promise.race([dispatched.promise, earlyReply]);
+    expect((await status()).stdout).toContain('Serving now: fixture / fixture/flash');
+
+    finish.resolve();
+    expect((await turn).status).toBe(200);
+  } finally {
+    dispatch.resolve();
+    finish.resolve();
+    await turn.then(response => response.text()).catch(() => undefined);
+  }
+}, 20_000);
+
 it('reports concurrent live routes, measured zero, estimates, and separate cooldown and reset times', async () => {
   const now = Date.now();
   const retryAt = now + 60_000;
@@ -89,7 +138,7 @@ it('reports concurrent live routes, measured zero, estimates, and separate coold
     inFlight: [
       { kind: 'user', state: 'waiting_for_output', caller: 'private caller', attempts: [
         { provider: 'failed-route', model: 'old-model', endedAt: now },
-        { provider: 'kilo', model: 'particle/flash:free', endedAt: null }
+        { provider: 'kilo', model: 'particle/flash:free', endedAt: null, dispatches: [{ at: now }] }
       ] },
       { kind: 'user', state: 'receiving_output', attempts: [{ provider: 'perch', model: 'perch-flash', endedAt: null }] },
       { kind: 'user', state: 'queued', attempts: [{ provider: 'queued-route', model: 'queued-model', endedAt: null }] },
