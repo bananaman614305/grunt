@@ -1480,11 +1480,12 @@ export async function setup(notify = console.log, providers: string[] = [], opti
       providers = providers.filter(provider => provider !== 'ifm');
     }
     if (providers.includes('freepi')) {
-      await setupFreePi({ directory: location, squire: { signup: async (service, url, instructions) => {
+      await setupFreePi({ directory: location, squire: { signup: async (service, url, instructions, facts) => {
         const signup = (squire as SetupSquire & Partial<Pick<BrowserSquire, 'signup'>>).signup;
         if (!signup) throw new Error('Free-Pi requires browser-capable Trusty Squire');
         if (options.connect) await options.connect(); else await owned?.connect();
-        await signup.call(squire, service, url, instructions);
+        // The device code is a fact Squire types; dropping it left the field empty.
+        await signup.call(squire, service, url, instructions, facts);
       } }, notify, background: options.background ?? false, ...(options.signal ? { signal: options.signal } : {}) });
       providers = providers.filter(provider => provider !== 'freepi');
     }
