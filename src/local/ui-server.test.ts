@@ -151,13 +151,13 @@ describe('daemon reasoningTokens and quotaObserved additions', () => {
     const store = await DiagnosticsStore.open({ directory: dir, now: () => start + 10000 });
     closers.push(() => store.close());
 
-    // Simulate a pre-upgrade SQLite bucket row missing reasoningTokens and unknownReasoning keys.
+    // Simulate a pre-upgrade SQLite bucket row (2 historical attempts) missing reasoningTokens and unknownReasoning keys.
     const rawDb = createClient({ url: pathToFileURL(join(dir, 'diagnostics.db')).href });
     const legacyDims = { type: 'attempt.finish', kind: 'user', source: 'darus', outcome: 'passed' };
     const legacyBucket = {
       hour,
       dimensions: legacyDims,
-      count: 1,
+      count: 2,
       durationCount: 0,
       durationSumMs: 0,
       durationMaxMs: 0,
@@ -173,23 +173,24 @@ describe('daemon reasoningTokens and quotaObserved additions', () => {
     });
     rawDb.close();
 
-    // Reading legacy row before any new writes defaults missing reasoning keys to 0.
+    // Reading legacy attempt bucket preserves its historical count as unknownReasoning.
     const before = await store.metrics({ since: hour, until: start + 10000 });
     const legacyRead = before.buckets.find(b => b.dimensions.type === 'attempt.finish')!;
     expect(legacyRead.reasoningTokens).toBe(0);
-    expect(legacyRead.unknownReasoning).toBe(0);
+    expect(legacyRead.unknownReasoning).toBe(2);
 
-    // Recording new events in the same hour merges cleanly via coalesce without producing NULL.
+    // Recording new events in the same hour merges cleanly onto the legacy bucket (2 legacy unknown + 1 new unknown = 3).
     store.record({ version: 1, id: randomUUID(), requestId: randomUUID(), at: start + 1000, type: 'attempt.finish', kind: 'user', source: 'darus', outcome: 'passed', inputTokens: 500, outputTokens: 120, reasoningTokens: 45 });
     store.record({ version: 1, id: randomUUID(), requestId: randomUUID(), at: start + 2000, type: 'attempt.finish', kind: 'user', source: 'darus', outcome: 'passed', inputTokens: 300, outputTokens: 80 });
     await store.flush();
 
     const metrics = await store.metrics({ since: hour, until: start + 10000 });
     const bucket = metrics.buckets.find(b => b.dimensions.type === 'attempt.finish')!;
+    expect(bucket.count).toBe(4);
     expect(bucket.inputTokens).toBe(900);
     expect(bucket.outputTokens).toBe(240);
     expect(bucket.reasoningTokens).toBe(45);
-    expect(bucket.unknownReasoning).toBe(1);
+    expect(bucket.unknownReasoning).toBe(3);
     expect(JSON.stringify(metrics)).not.toMatch(/finishReason|hadToolCalls/);
 
     const summary = await store.summary({ since: start });
@@ -405,13 +406,28 @@ describe('UI snapshot aggregation and 3-tier remaining usage', () => {
     expect(snap1h.routes[0]?.remaining).toMatchObject({ tier: 'estimate', used: 250000, remaining: 350000, limit: 600000 });
     expect(snap24h.routes[0]?.remaining).toMatchObject({ tier: 'estimate', used: 250000, remaining: 350000, limit: 600000 });
 
-    // Incomplete coverage (started after UTC midnight, or dropped events) falls back to unknown.
+    // Quiet period after window open: diagnostics started before UTC midnight, first event recorded at 04:00 UTC (retainedFrom > utcDayStart).
+    const snapQuietMorning = await collectUiSnapshot({
+      daemonPort: 8788, window: '1h',
+      fetcher: windowedFetcher({ retainedFrom: earlierHour }),
+      now: () => now
+    });
+    expect(snapQuietMorning.routes[0]?.remaining).toMatchObject({ tier: 'estimate', used: 250000, remaining: 350000, limit: 600000 });
+
+    // Incomplete coverage (started after UTC midnight, pruned deduplication floor, or dropped events) falls back to unknown.
     const snapLateStart = await collectUiSnapshot({
       daemonPort: 8788, window: '24h',
       fetcher: windowedFetcher({ startedAt: utcDayStart + 3600000 }),
       now: () => now
     });
     expect(snapLateStart.routes[0]?.remaining.tier).toBe('unknown');
+
+    const snapPrunedFloor = await collectUiSnapshot({
+      daemonPort: 8788, window: '24h',
+      fetcher: windowedFetcher({ deduplicationFloor: utcDayStart + 3600000 }),
+      now: () => now
+    });
+    expect(snapPrunedFloor.routes[0]?.remaining.tier).toBe('unknown');
 
     const snapDropped = await collectUiSnapshot({
       daemonPort: 8788, window: '24h',

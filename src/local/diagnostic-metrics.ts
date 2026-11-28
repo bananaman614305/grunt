@@ -85,9 +85,11 @@ export async function recordDiagnosticMetrics(tx: Transaction, events: Diagnosti
   if (overflowEvents) await setMeta(tx, 'overflow_events', Number(await getMeta(tx, 'overflow_events') ?? 0) + overflowEvents);
   for (const bucket of grouped.values()) await tx.execute({ sql: aggregateUpsert, args: [bucket.hour, JSON.stringify(bucket.dimensions), JSON.stringify(bucket)] });
 }
-const sums = ['count', 'durationCount', 'durationSumMs', 'inputTokens', 'outputTokens', 'reasoningTokens', 'unknownInput', 'unknownOutput', 'unknownReasoning'];
+const sums = ['count', 'durationCount', 'durationSumMs', 'inputTokens', 'outputTokens', 'reasoningTokens', 'unknownInput', 'unknownOutput'];
+const legacyUnknownReasoningExpr = "CASE WHEN json_extract(data,'$.dimensions.type')='attempt.finish' THEN coalesce(json_extract(data,'$.count'),0) ELSE 0 END";
 const updates = [
   ...sums.map(key => "'$." + key + "',coalesce(json_extract(data,'$." + key + "'),0)+coalesce(json_extract(excluded.data,'$." + key + "'),0)"),
+  "'$.unknownReasoning',coalesce(json_extract(data,'$.unknownReasoning')," + legacyUnknownReasoningExpr + ")+coalesce(json_extract(excluded.data,'$.unknownReasoning'),0)",
   "'$.durationMaxMs',max(coalesce(json_extract(data,'$.durationMaxMs'),0),coalesce(json_extract(excluded.data,'$.durationMaxMs'),0))",
   ...Array.from({ length: DIAGNOSTIC_LATENCY_BOUNDS_MS.length + 1 }, (_, i) => "'$.durationHistogram[" + i + "]',coalesce(json_extract(data,'$.durationHistogram[" + i + "]'),0)+coalesce(json_extract(excluded.data,'$.durationHistogram[" + i + "]'),0)"),
 ];
@@ -136,10 +138,11 @@ export async function readDiagnosticMetrics(db: Client | undefined, streamId: st
   const args: InValue[] = [Math.max(alignedSince, hour(now - retentionMs)), until];
   result.buckets = (await db.execute({ sql: 'SELECT data FROM diagnostic_metric_hours WHERE hour>=? AND hour<? ORDER BY hour,series', args })).rows.map(row => {
     const parsed = JSON.parse(String(row.data)) as Partial<DiagnosticMetricBucket>;
+    const legacyUnknownReasoning = parsed.dimensions?.type === 'attempt.finish' && typeof parsed.count === 'number' ? parsed.count : 0;
     return {
       ...parsed,
       reasoningTokens: typeof parsed.reasoningTokens === 'number' ? parsed.reasoningTokens : 0,
-      unknownReasoning: typeof parsed.unknownReasoning === 'number' ? parsed.unknownReasoning : 0
+      unknownReasoning: typeof parsed.unknownReasoning === 'number' ? parsed.unknownReasoning : legacyUnknownReasoning
     } as DiagnosticMetricBucket;
   });
   return result;

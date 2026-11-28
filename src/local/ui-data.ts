@@ -281,9 +281,8 @@ function requiredPolicyWindowStart(source: SourceSnapshot, rawObserved: Observed
 function hasCompletePolicyCoverage(metrics: DiagnosticMetrics | null, windowStart: number, alignedStart: number, now: number): boolean {
   if (!metrics || !metrics.coverage.available) return false;
   if (metrics.window.alignedSince > alignedStart) return false;
-  const { startedAt, retainedFrom, deduplicationFloor, droppedEvents, droppedLateEvents, overflowEvents } = metrics.coverage;
+  const { startedAt, deduplicationFloor, droppedEvents, droppedLateEvents, overflowEvents } = metrics.coverage;
   if (startedAt === null || startedAt > windowStart) return false;
-  if (retainedFrom !== null && retainedFrom > alignedStart) return false;
   if (deduplicationFloor > windowStart) return false;
   if (droppedEvents > 0 || droppedLateEvents > 0 || overflowEvents > 0) return false;
   const retentionMs = metrics.limits.retentionDays * 86400000;
