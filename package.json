@@ -12,16 +12,13 @@
     ]
   },
   "scripts": {
-    "dev": "tsx src/server.ts",
     "build": "node scripts/build.mjs",
-    "start": "node dist/server.js",
     "test": "vitest run",
     "benchmark:efficiency": "tsx src/local/efficiency-benchmark.ts",
     "benchmark:workload": "tsx src/local/workload-benchmark.ts",
     "benchmark:metadata": "tsx scripts/metadata-benchmark.ts",
     "lint": "eslint src && tsc --noEmit",
-    "local": "tsx src/local/main.ts",
-    "admin:collector": "tsx src/admin/collector.ts"
+    "local": "tsx src/local/main.ts"
   },
   "dependencies": {
     "@clack/prompts": "^1.9.0",

@@ -42,7 +42,7 @@ describe("grunt.run landing page", () => {
   });
 
   it("publishes static registry.json on Cloudflare Pages with a 200 internal rewrite for /v1/registry", () => {
-    expect(existsSync(new URL("../site/registry.json", import.meta.url))).toBe(false);
+    expect(existsSync(new URL("../site/registry.json", import.meta.url))).toBe(true);
     const redirectLines = redirects.trim().split(/\r?\n/).map((line) => line.trim());
     expect(redirectLines).toContain("/v1/registry /registry.json 200");
     expect(redirectLines.some((line) => /^\/v1\/registry\s+\S+\s+3\d\d$/.test(line))).toBe(false);

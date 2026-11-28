@@ -1,8 +1,7 @@
 import { build } from 'esbuild';
 import { execFileSync } from 'node:child_process';
-import { copyFile, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { basename } from 'node:path';
 
 const { version } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
 // The write-only PostHog project key for release builds (docs/router.md#4-usage-telemetry).
@@ -40,10 +39,4 @@ if (posthogKey) await writeFile('dist/local/telemetry-key.js', `export const POS
 await bundleDaemon('dist/local/daemon.mjs');
 
 await mkdir('dist/registry', { recursive: true });
-await mkdir('dist/admin-public', { recursive: true });
-const adminFiles = (await readdir('site/admin')).filter(name => ['index.html', 'admin.css', 'admin.js'].includes(name) || name.startsWith('adoption.'));
-await Promise.all([
-  copyFile('registry/adapters.json', 'dist/registry/adapters.json'),
-  ...adminFiles.map(name => copyFile(`site/admin/${name}`, `dist/admin-public/${name}`)),
-  ...['site/grunt.svg', 'site/favicon.svg'].map(path => copyFile(path, `dist/${basename(path)}`)),
-]);
+await copyFile('registry/adapters.json', 'dist/registry/adapters.json');

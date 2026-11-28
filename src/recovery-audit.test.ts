@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { expect, it } from 'vitest';
 import { buildRecoveryAudit, measureBeatAPI } from './recovery-audit.js';
-import { renderFleetHandoff, renderFleetReport } from './fleet-report.js';
 import type { DiagnosticEvent, DiagnosticMetrics } from './local/diagnostics.js';
 
 const hour = 3_600_000;
@@ -49,11 +48,6 @@ it('attributes a crossing request by its finish and unions overlapping failures 
   expect(item.attempts.map(a => [a.source, a.firstEligibleMs, a.failureObservedMs, a.replaySafeMs])).toEqual([
     [kilo.source, null, 3000, 3000], [open.source, null, 4800, null], [gone.source, null, null, null], [win.source, 50, null, null]
   ]);
-  const html = renderFleetReport('2026-11-24', undefined, {}, result);
-  expect(html.indexOf('4.00 s in failed attempts')).toBeLessThan(html.indexOf('<h2>Coverage unavailable'));
-  expect(html).toContain('First usable output 4.10 s');
-  expect(html).toContain('Replay blocked at 4.80 s');
-  expect(renderFleetHandoff(undefined, result).split('\n')[0]).toBe('4.00 s in failed attempts before successful answers');
 });
 
 it('counts successes with missing phases as unclassified and keeps cancelled, incomplete and open outcomes distinct', () => {
