@@ -1159,6 +1159,20 @@ export class BrowserSquire implements SetupSquire {
       }
       // An unsure drive often waits on an empty email field it was given a value
       // for. When it offers that field, fill the supplied email once.
+      // Squire types a fact only into a field its key names, and a device code's
+      // field is named by the page ('Code shown in your terminal'). Offer the
+      // supplied code under that field's own label once.
+      const userCode = this.signupFacts.get(provider)?.user_code;
+      const codeRow = userCode && result.status === 'low_confidence' && Array.isArray(observed.safe_table)
+        ? observed.safe_table.find((row): row is unknown[] => Array.isArray(row) && row[1] === 't'
+          && /\bcode\b/i.test(fieldLabel(row).replace(/[-_]/g, ' ')) && !usedTerms.has(`field:${fieldLabel(row)}`)) : undefined;
+      if (userCode && codeRow) {
+        const label = fieldLabel(codeRow);
+        usedTerms.add(`field:${label}`);
+        facts[label] = userCode;
+        this.signupFacts.set(provider, { ...this.signupFacts.get(provider), [label]: userCode });
+        continue;
+      }
       const suppliedEmail = this.signupFacts.get(provider)?.email;
       const emailTarget = suppliedEmail && result.status === 'low_confidence' && !usedTerms.has('fact:email')
         && Object.entries(object(result.options)).find(([key, label]) => /^k/.test(key) && typeof label === 'string'

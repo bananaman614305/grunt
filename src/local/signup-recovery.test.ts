@@ -137,3 +137,19 @@ it('stops at once when Squire waits on verification mail this session may not re
     await squire.close();
   }
 });
+
+it('offers a supplied device code under the page code field label once', async () => {
+  const squire = new BrowserSquire({ directory, background: true });
+  const drives: Args[] = [];
+  vi.spyOn(squire, 'call').mockImplementation(async (name, args) => {
+    if (name !== 'operate_drive') return {};
+    drives.push(structuredClone(args));
+    return drives.length < 3
+      ? { ...unsure({ WAIT: 'Wait' }), observation: { url: 'https://cli.example.test/device', safe_table: [['e1', 't', '@code-shown-in-your-terminal|w=9|ph=ABCD-EFGH'], ['e2', 'b', '@approve']] } }
+      : { status: 'complete', session_id: 'tab' };
+  });
+  await squire.signup('omi', 'https://cli.example.test/device', 'Approve the CLI sign-in', { user_code: 'ABCD-EFGH' });
+  expect(drives[0]!.facts).not.toHaveProperty('code-shown-in-your-terminal');
+  expect(drives[1]!.facts).toMatchObject({ 'code-shown-in-your-terminal': 'ABCD-EFGH', user_code: 'ABCD-EFGH' });
+  await squire.close();
+});
