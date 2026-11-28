@@ -211,7 +211,7 @@ export function start(env = process.env) {
       const ids: string[] = [];
       for (const adapter of recommendedAdapters(registry)) {
         const source = sources.sources.find(source => source.id === adapter.id);
-        if (source && routable(source.id) && await configuredAccess(source) === false) ids.push(source.id);
+        if (source && routable(source.id) && sources.needsSignup(source.id) && await configuredAccess(source) === false && sources.needsSignup(source.id)) ids.push(source.id);
       }
       return ids;
     },

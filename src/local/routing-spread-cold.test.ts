@@ -161,9 +161,9 @@ it('reports the age of the last check and whether routing could admit the source
     expect(row('kilo').routable).toBe(false);
     await sources.complete(ask('warm', false), AbortSignal.timeout(2000));
     const { state } = row('kilo');
-    expect(row('kilo')).toMatchObject({ checkedAgoSeconds: 0, routable: true });
+    expect(row('kilo')).toMatchObject({ checkedAgoSeconds: 0, routable: true, probeFresh: true });
     clock += 31_000;
-    expect(row('kilo')).toMatchObject({ checkedAgoSeconds: 31, routable: false, state });
-    expect(row('livekit').routable).toBe(false);
+    expect(row('kilo')).toMatchObject({ checkedAgoSeconds: 31, routable: true, probeFresh: false, state });
+    expect(row('livekit')).toMatchObject({ routable: true, probeFresh: false });
   } finally { await sources.close(); }
 });

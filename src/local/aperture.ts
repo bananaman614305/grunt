@@ -6,6 +6,7 @@ import { readPromotionalStream } from './promotional-api.js';
 import { calendarQuotaDelay } from './quota-policy.js';
 import { nousQuotaDelay, readQuotaError } from './quota-timing.js';
 import { readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
+import { classifyHttpFailure } from './provider-error.js';
 import { emitStreamText, lengthLimited, truncatedCompletion, withObservedEnding, SourceError } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 
@@ -56,8 +57,13 @@ export class Aperture implements Source {
     if (response.status === 429 && (body.code === 'daily_quota_exceeded' || error.code === 'daily_quota_exceeded')) {
       retry ??= calendarQuotaDelay(this.id, this.now);
     }
-    throw new SourceError(response.status === 401 ? 'logged_out' : [402, 429].includes(response.status) ? 'quota' : response.status === 403 ? 'refused' : 'upstream',
-      `Aperture returned HTTP ${response.status}`, retry, undefined, { httpStatus: response.status, transport: 'http', httpMethod: endpoint === 'chat.completions' ? 'POST' : 'GET', endpointLabel: endpoint });
+    throw classifyHttpFailure({
+      source: 'Aperture',
+      status: response.status,
+      ...(retry === undefined ? {} : { retryAfter: retry }),
+      httpMethod: endpoint === 'chat.completions' ? 'POST' : 'GET',
+      endpointLabel: endpoint
+    });
   }
   private async freeGrant(caller?: AbortSignal) {
     const directory = this.options.directory ?? configRoot();

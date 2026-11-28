@@ -208,6 +208,8 @@ web_search = "disabled"
 name = "grunt"
 base_url = "http://127.0.0.1:${port}/v1"
 wire_api = "responses"
+# Grunt manages provider failover itself; disable client retries so global exhaustion stops immediately.
+request_max_retries = 0
 `);
 }
 const openCodeProvider = (port: number) => ({ name: 'grunt', npm: '@ai-sdk/openai-compatible', options: { baseURL: `http://127.0.0.1:${port}/v1`, apiKey: 'local' }, models: { grunt: { name: 'grunt', tool_call: true, limit: { context: 128000, output: 8192 } } } });

@@ -8,6 +8,8 @@ import { currentDiagnosticContext, recordAttemptFailure, sanitizeSafeDiagnosticM
 import type { DiagnosticEvent, DiagnosticsStore } from './diagnostics.js';
 import { routingFailureSignature, toolFailureSignature, currentRoutingWorkload, localRequestRefusal, nextRoutingPerformance, afterRoutingSuccess, toolHold, recoveryDeadline, mergeRoutingBackoff, nextRoutingBackoff, ROUTING_HISTORY_TTL_MS } from './routing-history.js';
 import type { RoutingHistory, RoutingPerformance, RoutingWorkload, RoutingProfile, RoutingBackoff } from './routing-history.js';
+import { TRANSIENT_RETRY_WINDOW_SECONDS, classifySourceError, formatResetCountdown, withAvailabilityFailureCapture } from './provider-error.js';
+import type { ProviderFailureCause } from './provider-error.js';
 
 // Negative admission evidence may delay discovery, never authorize dispatch.
 // Share one bounded window across routing, model-list and recovery metadata reads.
@@ -16,6 +18,18 @@ export const AVAILABILITY_NEGATIVE_MS = 30000;
 export const AVAILABILITY_POSITIVE_MS = 30000;
 
 export type SourceState = 'unknown' | 'available' | 'ready' | 'answering' | 'connecting' | 'verifying' | 'approval' | 'limited' | 'error' | 'disabled' | 'unavailable';
+export type PoolState = 'idle' | 'working' | 'switching' | 'transient_error' | 'provider_exhausted' | 'globally_exhausted';
+export interface PoolStateInfo {
+  state: PoolState;
+  detail: string;
+  earliestResetAt?: number;
+  switchingFrom?: string;
+  switchingTo?: string;
+  exhaustedCount: number;
+  readyCount: number;
+  unconfiguredCount: number;
+  errorCount: number;
+}
 export interface SourceSnapshot {
   id: string;
   state: SourceState;
@@ -24,10 +38,12 @@ export interface SourceSnapshot {
   active: number;
   lastReplyMs?: number;
   lastSuccessAt?: number;
-  // Age in whole seconds of the last admission or reply evidence, and whether it is fresh enough for routing to admit
-  // the source without a new check. Content-free; `state` keeps its meaning and neither is a dispatch guarantee.
+  // Age in whole seconds of the last admission or reply evidence. `routable` reports
+  // whether this route is currently eligible to receive a request; `probeFresh` reports
+  // whether its cached admission probe is still fresh enough to skip a new check.
   checkedAgoSeconds?: number;
   routable?: boolean;
+  probeFresh?: boolean;
   retryAt?: number;
   supportsFunctionTools?: boolean;
   quotaWindow?: QuotaWindow;
@@ -35,10 +51,12 @@ export interface SourceSnapshot {
   scheduledQuotaRefillAt?: number;
   sellerQuota?: SellerQuota;
   errorCode?: ErrorCode;
+  failureCause?: ProviderFailureCause;
+  httpStatus?: number;
   detail?: string;
   maintenance?: MaintenanceEntry;
 }
-export interface PoolSnapshot { version: 1; updatedAt: number; sources: SourceSnapshot[]; activeRequests: number }
+export interface PoolSnapshot { version: 1; updatedAt: number; poolState?: PoolState; pool?: PoolStateInfo; sources: SourceSnapshot[]; activeRequests: number }
 interface Observation {
   state: 'unknown' | 'available' | 'ready' | 'limited' | 'error' | 'unavailable';
   active: number;
@@ -46,6 +64,8 @@ interface Observation {
   lastReplyMs?: number;
   lastSuccessAt?: number;
   failure?: ErrorCode;
+  failureCause?: ProviderFailureCause;
+  httpStatus?: number;
   availabilityQuota?: boolean;
   retryAt?: number;
   availabilityCheckedAt?: number;
@@ -83,6 +103,32 @@ export class SourceStatus {
   private backoffs = new Map<string, RoutingBackoff>();
   private availabilityObservers = new Set<(id: string, at: number) => void>();
   private feedback: ((id: string, outcome: 'ok' | ErrorCode, latencyMs?: number) => void) | undefined;
+  private activeSwitches = 0;
+  private switchingFrom: string | undefined;
+  private switchingTo: string | undefined;
+  private lastTransientAt = 0;
+  beginSwitch(from?: string, to?: string): () => void {
+    this.activeSwitches++;
+    if (from) this.switchingFrom = from;
+    if (to) this.switchingTo = to;
+    let ended = false;
+    return () => {
+      if (ended) return;
+      ended = true;
+      this.activeSwitches = Math.max(0, this.activeSwitches - 1);
+      if (this.activeSwitches === 0) { this.switchingFrom = undefined; this.switchingTo = undefined; }
+    };
+  }
+  noteTransientError() { this.lastTransientAt = this.now(); }
+  needsSignup(id: string): boolean {
+    const entry = this.observations.get(id);
+    if (!entry) return true;
+    if (entry.failure === 'quota' || entry.failureCause === 'exhausted' || entry.failureCause === 'banned'
+      || entry.failureCause === 'offer_ended' || entry.failureCause === 'transient') return false;
+    const backoff = this.backoffs.get(id);
+    if (backoff && backoff.until > this.now()) return false;
+    return true;
+  }
   setDiagnostics(store: DiagnosticsStore) { this.diagnostics = store; }
   observePositiveAvailability(observer: (id: string, at: number) => void) {
     this.availabilityObservers.add(observer);
@@ -116,19 +162,22 @@ export class SourceStatus {
   healthy(id: string) {
     const entry = this.entry(id);
     entry.revision++;
-    delete entry.failure; delete entry.retryAt; delete entry.availabilityQuota;
+    delete entry.failure; delete entry.failureCause; delete entry.httpStatus; delete entry.retryAt; delete entry.availabilityQuota;
     delete entry.setupFailure; delete entry.needsHumanVerification;
     if (entry.state !== 'ready') entry.state = 'available';
     entry.available = true; entry.availabilityCheckedAt = this.now();
   }
   observedAvailable(id: string) { return this.entry(id).available; }
+  failureCause(id: string) { return this.observations.get(id)?.failureCause; }
   setSetupFailure(id: string, reason: string | undefined) {
     const entry = this.entry(id);
     delete entry.needsHumanVerification;
     // Browser diagnostics can append page text. Only use fixed local classifications.
     switch (reason?.split(';', 1)[0]) {
       case undefined: case 'cancelled': case 'quota exhausted': delete entry.setupFailure; break;
-      case 'free promotion expired': entry.setupFailure = 'free promotion expired; select another free route'; break;
+      case 'free promotion expired':
+        entry.failureCause = 'offer_ended';
+        entry.setupFailure = 'free promotion expired; select another free route'; break;
       case 'startup isolation check failed': entry.setupFailure = 'startup isolation check failed; inspect startup config and rerun usegrunt setup'; break;
       case 'needs human verification': case 'browser requested an approval':
         entry.needsHumanVerification = true;
@@ -138,8 +187,20 @@ export class SourceStatus {
         entry.setupFailure = `setup incomplete: approval required; run usegrunt add ${id}`; break;
       case 'needs Nous login': case 'sign-in required':
         entry.needsHumanVerification = true;
+        entry.failureCause = 'auth_invalid';
         entry.setupFailure = `setup incomplete: sign-in required; run usegrunt add ${id}`; break;
-      case 'provider refused': entry.setupFailure = 'setup incomplete: provider refused access; check provider access and rerun usegrunt setup'; break;
+      case 'account banned':
+        entry.failureCause = 'banned';
+        entry.setupFailure = 'provider banned this account; do not re-signup automatically'; break;
+      case 'provider refused':
+        entry.failureCause = 'banned';
+        entry.setupFailure = 'setup incomplete: provider refused access; check provider access and rerun usegrunt setup'; break;
+      case 'provider request failed':
+        entry.failureCause = 'transient';
+        entry.setupFailure = 'provider request failed during setup; retry later'; break;
+      case 'timed out':
+        entry.failureCause = 'transient';
+        entry.setupFailure = 'provider timed out during setup; retry later'; break;
       case 'Squire unavailable': case 'browser could not continue':
         entry.setupFailure = 'setup incomplete: Squire could not finish; check Squire and rerun usegrunt setup'; break;
       default: entry.setupFailure = 'setup incomplete; run usegrunt setup'; break;
@@ -147,12 +208,29 @@ export class SourceStatus {
   }
   routeProblem(id: string, code?: ErrorCode) {
     const entry = this.entry(id);
-    switch (code ?? entry.failure) {
-      case 'quota': return undefined;
-      case 'not_installed': return entry.setupFailure ?? 'setup incomplete; run usegrunt setup';
-      case 'logged_out': return entry.setupFailure ?? 'sign-in required; run usegrunt setup';
-      case 'refused': return entry.setupFailure ?? 'route refused the request; check provider access or select another route';
-      default: return entry.setupFailure;
+    const effective = code ?? entry.failure;
+    const status = entry.httpStatus !== undefined ? ` (HTTP ${entry.httpStatus})` : '';
+    if (effective === 'quota') return undefined;
+    if (entry.setupFailure) return entry.setupFailure;
+    if (entry.failureCause === 'offer_ended') return 'free offer ended or expired; select another free route';
+    if (entry.failureCause === 'banned') {
+      return entry.httpStatus !== undefined
+        ? `provider refused or banned access${status}; check account status`
+        : 'route refused the request; check provider access or select another route';
+    }
+    if (entry.failureCause === 'auth_invalid') {
+      return entry.httpStatus !== undefined
+        ? `sign-in or API key rejected${status}; run usegrunt add ${id}`
+        : 'sign-in required; run usegrunt setup';
+    }
+    if (entry.failureCause === 'transient' && (effective === 'upstream' || effective === 'timeout')) {
+      return effective === 'timeout' ? 'provider timed out; retrying after cooldown' : `temporary provider error${status}; retrying after cooldown`;
+    }
+    switch (effective) {
+      case 'not_installed': return 'setup incomplete; run usegrunt setup';
+      case 'logged_out': return 'sign-in required; run usegrunt setup';
+      case 'refused': return 'route refused the request; check provider access or select another route';
+      default: return undefined;
     }
   }
   routeFailure(id: string, code?: ErrorCode) {
@@ -182,11 +260,15 @@ export class SourceStatus {
       try { this.routes.dropped(id); } catch { return; }
     }
   }
-  failed(id: string, code: ErrorCode, retryAfter?: number) {
+  failed(id: string, code: ErrorCode, retryAfter?: number, cause?: ProviderFailureCause, httpStatus?: number) {
     const wasOpen = this.routeOpen(id);
     const entry = this.entry(id);
     entry.revision++;
     entry.failure = code;
+    entry.failureCause = cause ?? classifySourceError(new SourceError(code, '', retryAfter, undefined, httpStatus !== undefined ? { httpStatus } : undefined));
+    if (httpStatus !== undefined && Number.isSafeInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599) entry.httpStatus = httpStatus;
+    else delete entry.httpStatus;
+    if (entry.failureCause === 'transient') this.lastTransientAt = this.now();
     delete entry.availabilityQuota;
     delete entry.availabilityCheckedAt; entry.available = false;
     entry.state = code === 'quota' ? 'limited' : code === 'logged_out' || code === 'not_installed' ? 'unavailable' : 'error';
@@ -334,20 +416,47 @@ export class SourceStatus {
     if (!healthCheck && !entry.availabilityQuota && entry.failure !== 'logged_out' && entry.failure !== 'not_installed'
       && this.routingAvailability(source.id, 0, AVAILABILITY_NEGATIVE_MS) === false) return false;
     try {
-      const result = await (healthCheck ? source.healthCheck!(signal) : source.available(signal));
+      const { result, problem } = await withAvailabilityFailureCapture(async slot => ({
+        result: await (healthCheck ? source.healthCheck!(signal) : source.available(signal)),
+        problem: slot.error
+      }));
       signal?.throwIfAborted();
       // A reply or explicit recovery observed after this probe started is
       // newer evidence. The caller still receives the actual probe result.
       if (entry.revision === revision) {
         const wasOpen = this.routeOpen(source.id);
         if (!result) {
-          if (entry.availabilityQuota) this.healthy(source.id);
-          entry.revision++; entry.state = 'unavailable';
+          if (problem) {
+            const problemCode = problem.code;
+            const problemCause = classifySourceError(problem);
+            const problemStatus = problem.diagnostics?.httpStatus;
+            if (problemCode === 'quota') {
+              this.failed(source.id, 'quota', problem.retryAfter, problemCause, problemStatus);
+              entry.availabilityQuota = true;
+            } else {
+              if (entry.availabilityQuota) this.healthy(source.id);
+              entry.revision++;
+              entry.failure = problemCode;
+              entry.failureCause = problemCause;
+              if (problemStatus !== undefined && Number.isSafeInteger(problemStatus) && problemStatus >= 100 && problemStatus <= 599) entry.httpStatus = problemStatus;
+              else delete entry.httpStatus;
+              entry.state = problemCode === 'upstream' || problemCode === 'timeout' ? 'error' : 'unavailable';
+            }
+          } else {
+            if (entry.availabilityQuota) this.healthy(source.id);
+            entry.revision++; entry.state = 'unavailable';
+            if (!entry.failureCause) entry.failureCause = 'unconfigured';
+          }
         } else if (healthCheck || entry.availabilityQuota) {
           this.healthy(source.id);
           if (healthCheck) onRecovered?.();
         }
-        else if (entry.state === 'unknown' || entry.state === 'unavailable') entry.state = 'available';
+        else if (entry.state === 'unknown' || entry.state === 'unavailable') {
+          entry.state = 'available';
+          if (entry.failure !== 'logged_out' && entry.failure !== 'not_installed') {
+            delete entry.failure; delete entry.failureCause; delete entry.httpStatus;
+          }
+        }
         const checkedAt = this.now();
         entry.available = result; entry.availabilityCheckedAt = checkedAt;
         if (result) { delete entry.setupFailure; delete entry.needsHumanVerification; }
@@ -365,7 +474,7 @@ export class SourceStatus {
       if (error instanceof SourceError && error.code === 'quota') {
         // Preserve a live completion throttle, but accept new evidence after it expires.
         if (entry.revision === revision && (entry.failure !== 'quota' || entry.availabilityQuota || (entry.retryAt ?? 0) <= this.now())) {
-          this.failed(source.id, 'quota', error.retryAfter);
+          this.failed(source.id, 'quota', error.retryAfter, classifySourceError(error), error.diagnostics?.httpStatus);
           entry.availabilityQuota = true;
           entry.availabilityCheckedAt = this.now();
         }
@@ -373,10 +482,16 @@ export class SourceStatus {
       }
       if (entry.revision === revision) {
         const wasOpen = this.routeOpen(source.id);
+        const code = failureCode(error);
+        const status = error instanceof SourceError ? error.diagnostics?.httpStatus : undefined;
         entry.revision++; entry.state = 'unavailable'; entry.available = false;
+        entry.failure = code;
+        entry.failureCause = classifySourceError(error);
+        if (status !== undefined && Number.isSafeInteger(status) && status >= 100 && status <= 599) entry.httpStatus = status;
+        else delete entry.httpStatus;
         // Setup/login recovery has an explicit fresh health-check path. Keep
         // those barriers discoverable immediately after the user repairs them.
-        if (failureCode(error) === 'logged_out' || failureCode(error) === 'not_installed') delete entry.availabilityCheckedAt;
+        if (code === 'logged_out' || code === 'not_installed') delete entry.availabilityCheckedAt;
         else entry.availabilityCheckedAt = this.now();
         this.notifyClosed(source.id, wasOpen);
       }
@@ -454,7 +569,7 @@ export class SourceStatus {
         entry.revision++;
         entry.state = 'ready'; entry.lastSuccessAt = this.now(); entry.lastReplyMs = Math.max(0, this.now() - started);
         entry.available = true; entry.availabilityCheckedAt = this.now();
-        delete entry.failure; delete entry.retryAt; delete entry.availabilityQuota; delete entry.setupFailure; delete entry.needsHumanVerification;
+        delete entry.failure; delete entry.failureCause; delete entry.httpStatus; delete entry.retryAt; delete entry.availabilityQuota; delete entry.setupFailure; delete entry.needsHumanVerification;
         if (guard) guard.acceptedRevision = entry.revision;
         this.report(source.id, 'ok', this.now() - started);
         await this.performance(source.id, true, this.now() - started, request);
@@ -466,7 +581,8 @@ export class SourceStatus {
       const local = error instanceof SourceError && localRequestRefusal(error);
       if (!signal.aborted && code !== 'cancelled' && !local && (!guard || entry.revision === guard.revision)) {
         const retry = error && typeof error === 'object' && 'retryAfter' in error ? error.retryAfter : undefined;
-        this.failed(source.id, code, typeof retry === 'number' ? retry : undefined);
+        const status = error instanceof SourceError ? error.diagnostics?.httpStatus : undefined;
+        this.failed(source.id, code, typeof retry === 'number' ? retry : undefined, classifySourceError(error), status);
         if (guard) guard.acceptedRevision = entry.revision;
         this.report(source.id, code);
         if (code !== 'quota') await this.performance(source.id, false, this.now() - started, request);
@@ -492,7 +608,10 @@ export class SourceStatus {
       const entry: Observation = this.observations.get(id) ?? { state: 'unknown', active: 0, revision: 0 };
       const model = options.model?.(id);
       const row: SourceSnapshot = { id, state: entry.state, active: entry.active,
-        ...(model ? { model, modelKind: 'registry' } : {}), ...(entry.failure ? { errorCode: entry.failure } : {}), ...(entry.lastReplyMs !== undefined ? { lastReplyMs: entry.lastReplyMs } : {}),
+        ...(model ? { model, modelKind: 'registry' } : {}), ...(entry.failure ? { errorCode: entry.failure } : {}),
+        ...(entry.failureCause ? { failureCause: entry.failureCause } : {}),
+        ...(entry.httpStatus !== undefined ? { httpStatus: entry.httpStatus } : {}),
+        ...(entry.lastReplyMs !== undefined ? { lastReplyMs: entry.lastReplyMs } : {}),
         ...(entry.lastSuccessAt !== undefined ? { lastSuccessAt: entry.lastSuccessAt } : {}) };
       const cooldown = options.cooldown?.(id);
       // A recent plain reply can make the source ready for text while its tools still need verification.
@@ -511,12 +630,71 @@ export class SourceStatus {
       else if (entry.retryAt !== undefined && entry.state === 'limited') row.state = 'available';
       if (row.state !== 'disabled' && options.retired?.(id)) row.state = 'unavailable';
       if (entry.needsHumanVerification && (row.state === 'unknown' || row.state === 'unavailable')) row.state = 'approval';
+      if (row.state === 'available' || row.state === 'ready' || row.state === 'answering') {
+        delete row.failureCause;
+        delete row.httpStatus;
+      }
       if (entry.availabilityCheckedAt !== undefined) row.checkedAgoSeconds = Math.max(0, Math.floor((now - entry.availabilityCheckedAt) / 1000));
-      row.routable = (row.state === 'available' || row.state === 'ready' || row.state === 'answering') && this.routingAvailability(id, AVAILABILITY_POSITIVE_MS, AVAILABILITY_NEGATIVE_MS) === true;
+      row.routable = row.state === 'available' || row.state === 'ready' || row.state === 'answering';
+      row.probeFresh = row.routable && this.routingAvailability(id, AVAILABILITY_POSITIVE_MS, AVAILABILITY_NEGATIVE_MS) === true;
       const problem = row.state === 'unavailable' || row.state === 'error' || row.state === 'approval' ? this.routeProblem(id, row.errorCode) : undefined;
       row.detail = `${problem ?? detail[row.state]}${model ? '; model label comes from the registry, not response attestation' : ''}`;
       return row;
     });
-    return { version: 1, updatedAt: now, sources, activeRequests: sources.reduce((total, source) => total + source.active, 0) };
+    const activeRequests = sources.reduce((total, source) => total + source.active, 0);
+    const pool = this.computePoolState(sources, activeRequests, now);
+    return { version: 1, updatedAt: now, poolState: pool.state, pool, sources, activeRequests };
+  }
+  private computePoolState(sources: SourceSnapshot[], activeRequests: number, now: number): PoolStateInfo {
+    const enabled = sources.filter(source => source.state !== 'disabled');
+    let readyCount = 0, connectingCount = 0, unknownCount = 0, exhaustedCount = 0, errorCount = 0, unconfiguredCount = 0;
+    let earliestResetAt: number | undefined;
+    for (const source of enabled) {
+      if (source.state === 'ready' || source.state === 'available' || source.state === 'answering') readyCount++;
+      else if (source.state === 'connecting' || source.state === 'verifying') connectingCount++;
+      else if (source.state === 'unknown') unknownCount++;
+      else if (source.state === 'limited') exhaustedCount++;
+      else if (source.state === 'error') errorCount++;
+      else if (source.state === 'unavailable' || source.state === 'approval') {
+        if (!source.failureCause || source.failureCause === 'unconfigured') unconfiguredCount++;
+        else errorCount++;
+      }
+      if (source.retryAt !== undefined && source.retryAt > now && (source.state === 'limited' || source.state === 'error')) {
+        earliestResetAt = earliestResetAt === undefined ? source.retryAt : Math.min(earliestResetAt, source.retryAt);
+      }
+    }
+    const base = {
+      ...(earliestResetAt === undefined ? {} : { earliestResetAt }),
+      exhaustedCount, readyCount, unconfiguredCount, errorCount
+    };
+    const shortReset = earliestResetAt !== undefined && earliestResetAt - now <= TRANSIENT_RETRY_WINDOW_SECONDS * 1000;
+    if (enabled.length > 0 && readyCount === 0 && connectingCount === 0 && unknownCount === 0) {
+      if (shortReset) {
+        const wait = formatResetCountdown((earliestResetAt! - now) / 1000);
+        return { state: 'transient_error', detail: `All routes temporarily rate-limited or recovering; next retry in ${wait}.`, ...base };
+      }
+      const parts: string[] = [];
+      if (exhaustedCount) parts.push(`${exhaustedCount} quota-limited${earliestResetAt ? ` (earliest reset in ${formatResetCountdown((earliestResetAt - now) / 1000)})` : ''}`);
+      if (unconfiguredCount) parts.push(`${unconfiguredCount} need setup`);
+      if (errorCount) parts.push(`${errorCount} errored or barred`);
+      return { state: 'globally_exhausted', detail: `All routes unavailable (${parts.join(', ') || 'none eligible'}). Run usegrunt status or usegrunt setup.`, ...base };
+    }
+    if (activeRequests > 0 && this.activeSwitches > 0) {
+      const transition = this.switchingFrom && this.switchingTo ? ` (${this.switchingFrom} -> ${this.switchingTo})` : '';
+      return { state: 'switching', detail: `Switching request to another provider${transition}.`,
+        ...(this.switchingFrom ? { switchingFrom: this.switchingFrom } : {}),
+        ...(this.switchingTo ? { switchingTo: this.switchingTo } : {}), ...base };
+    }
+    if (activeRequests > 0 && this.lastTransientAt > 0 && now - this.lastTransientAt <= 30000 && errorCount > 0) {
+      return { state: 'transient_error', detail: 'Recovering from a temporary provider error.', ...base };
+    }
+    if (activeRequests > 0) {
+      return { state: 'working', detail: `Routing ${activeRequests} active request${activeRequests === 1 ? '' : 's'}.`, ...base };
+    }
+    if (exhaustedCount > 0) {
+      const reset = earliestResetAt ? `; earliest reset in ${formatResetCountdown((earliestResetAt - now) / 1000)}` : '';
+      return { state: 'provider_exhausted', detail: `${exhaustedCount} route${exhaustedCount === 1 ? '' : 's'} exhausted${reset}; ${readyCount || unknownCount} other route${(readyCount || unknownCount) === 1 ? '' : 's'} available.`, ...base };
+    }
+    return { state: 'idle', detail: readyCount ? `${readyCount} route${readyCount === 1 ? '' : 's'} ready.` : 'Idle; routes ready for requests.', ...base };
   }
 }
