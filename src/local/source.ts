@@ -201,6 +201,8 @@ export interface Source {
   // Receives inference and returns buffered text or caller-owned tool calls.
   // Aborting may consume quota but cannot execute the caller's tools.
   inferenceOnly?: boolean;
+  // Daily maintenance checks use read-only metadata/healthCheck instead of sending synthetic inference prompts.
+  metadataOnlyMaintenance?: boolean;
   // A source that calls output() when it first produces output gets the
   // first-output deadline. An inference-only adapter can also be bounded
   // while its entire response is buffered.
@@ -506,9 +508,9 @@ export class Sources {
     };
     const signal = AbortSignal.any([caller, AbortSignal.timeout(MAINTENANCE_CHECK_TIMEOUT)]);
     try {
-      if (id === 'freepi') {
+      if (source.metadataOnlyMaintenance || id === 'freepi') {
         guard = this.observation.guard(id);
-        // Free-Pi must not publish new session traces during idle checks.
+        // Metadata-only sources must not send synthetic prompts during idle checks.
         const available = await (source.healthCheck?.(signal) ?? source.available(signal));
         signal.throwIfAborted();
         const newer = newerEvidence();

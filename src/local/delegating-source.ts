@@ -5,11 +5,13 @@ export class DelegatingSource implements Source {
   readonly acceptsRequest?: NonNullable<Source['acceptsRequest']>;
   readonly supportsFunctionTools?: boolean;
   readonly jsonToolBridge?: boolean;
+  readonly metadataOnlyMaintenance?: boolean;
 
   constructor(readonly source: Source) {
     if (source.acceptsRequest) this.acceptsRequest = source.acceptsRequest.bind(source);
     if (source.supportsFunctionTools !== undefined) this.supportsFunctionTools = source.supportsFunctionTools;
     if (source.jsonToolBridge !== undefined) this.jsonToolBridge = source.jsonToolBridge;
+    if (source.metadataOnlyMaintenance !== undefined) this.metadataOnlyMaintenance = source.metadataOnlyMaintenance;
   }
 
   get id() { return this.source.id; }

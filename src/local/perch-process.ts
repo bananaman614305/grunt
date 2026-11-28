@@ -1,3 +1,4 @@
+import { openAcpClient } from './acp-client.js';
 import { recordTransport } from './diagnostics.js';
 import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
@@ -169,98 +170,18 @@ export async function runPerchMemorySettings(binary: string, options: PerchProce
 
 /** The official CLI implements newline-delimited ACP. Never expose its stderr or raw protocol errors. */
 export async function openPerchACP(binary: string, options: PerchACPOptions): Promise<PerchACP> {
-  unsupported(); options.signal.throwIfAborted();
-  const started = performance.now();
-  const child = spawn(process.execPath, [binary, 'acp'], { cwd: options.cwd, env: options.env, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
-  const notifications: Json[] = [], pending = new Map<number, { resolve(value: unknown): void; reject(error: unknown): void }>();
-  const decoder = new StringDecoder('utf8');
-  let nextId = 1, bytes = 0, partial = '', closed = false, expectedClose = false, failure: unknown;
-  let exit!: () => void;
-  const exited = new Promise<void>(resolveExit => { exit = resolveExit; });
-  const fail = (error: unknown) => {
-    failure ??= error;
-    for (const operation of pending.values()) operation.reject(error);
-    pending.clear(); kill(child);
-  };
-  const abort = () => fail(options.signal.reason);
-  const timer = setTimeout(() => fail(new SourceError('timeout', 'Perch ACP timed out')), Math.min(options.timeoutMs ?? 175000, 175000));
-  const send = (value: unknown) => {
-    if (closed || child.stdin.destroyed) throw new SourceError('upstream', 'Perch ACP is closed');
-    child.stdin.write(JSON.stringify(value) + '\n');
-  };
-  const receive = (line: string) => {
-    if (!line.trim()) return;
-    let value: Json;
-    try {
-      const parsed: unknown = JSON.parse(line);
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Invalid frame');
-      value = parsed as Json;
-    } catch { throw new SourceError('upstream', 'Perch returned an invalid ACP message'); }
-    if (value.jsonrpc !== '2.0') throw new SourceError('upstream', 'Perch returned an invalid ACP version');
-    if (typeof value.method === 'string') {
-      if (value.id !== undefined) {
-        // Deny before executing anything. This client exposes no filesystem, terminals or permissions.
-        if (value.method === 'session/request_permission') send({ jsonrpc: '2.0', id: value.id, result: { outcome: { outcome: 'cancelled' } } });
-        else send({ jsonrpc: '2.0', id: value.id, error: { code: -32601, message: 'No client tools are available' } });
-        throw new SourceError('refused', 'Perch requested an unexpected native action');
-      }
-      if (value.method !== 'session/update') throw new SourceError('refused', 'Perch returned an unexpected ACP notification');
-      const update = (value.params as { update?: { sessionUpdate?: unknown } } | undefined)?.update;
-      if (update?.sessionUpdate === 'tool_call' || update?.sessionUpdate === 'tool_call_update') throw new SourceError('refused', 'Perch attempted an unexpected native action');
-      options.onNotify?.(value); notifications.push(value); return;
-    }
-    if (!Number.isSafeInteger(value.id) || !pending.has(value.id as number)) throw new SourceError('upstream', 'Perch returned an uncorrelated ACP reply');
-    const operation = pending.get(value.id as number)!; pending.delete(value.id as number);
-    if (value.error) {
-      const error = value.error as { code?: unknown; message?: unknown };
-      const text = typeof error.message === 'string' ? error.message : '';
-      const code = /quota|usage.?limit|rate.?limit|allowance/i.test(text) ? 'quota'
-        : error.code === -32000 || /auth|sign.?in|logged.?out/i.test(text) ? 'logged_out'
-          : /plan|required.*(?:starter|pro)|forbidden|refus|denied/i.test(text) ? 'refused' : 'upstream';
-      operation.reject(new SourceError(code, 'Perch ACP did not complete the request')); return;
-    }
-    if (!Object.hasOwn(value, 'result')) throw new SourceError('upstream', 'Perch ACP returned no result');
-    operation.resolve(value.result);
-  };
-  options.signal.addEventListener('abort', abort, { once: true });
-  child.stdin.on('error', () => {});
-  child.stdout.on('data', (chunk: Buffer) => {
-    bytes += chunk.length;
-    if (bytes > (options.maxOutputBytes ?? 2 * 1024 * 1024)) { fail(new SourceError('upstream', 'Perch output exceeded the supported size')); return; }
-    partial += decoder.write(chunk);
-    let newline: number;
-    try {
-      while ((newline = partial.indexOf('\n')) !== -1) { const line = partial.slice(0, newline); partial = partial.slice(newline + 1); receive(line); }
-    } catch (error) { fail(error); }
+  unsupported();
+  return openAcpClient(process.execPath, [binary, 'acp'], {
+    source: 'perch',
+    label: 'Perch',
+    cwd: options.cwd,
+    env: options.env,
+    signal: options.signal,
+    maxOutputBytes: options.maxOutputBytes ?? 2 * 1024 * 1024,
+    timeoutMs: Math.min(options.timeoutMs ?? 175000, 175000),
+    forbidToolCalls: true,
+    ...(options.onNotify ? { onNotify: options.onNotify } : {})
   });
-  child.stderr.on('data', (chunk: Buffer) => {
-    // Count but never retain native diagnostics, which can contain pairing URLs or tokens.
-    bytes += chunk.length;
-    if (bytes > (options.maxOutputBytes ?? 2 * 1024 * 1024)) fail(new SourceError('upstream', 'Perch output exceeded the supported size'));
-  });
-  child.once('error', () => fail(new SourceError('not_installed', 'Perch CLI could not start; rerun usegrunt setup')));
-  child.once('close', code => {
-    recordTransport({ source: 'perch', transport: 'cli', endpointLabel: 'cli', durationMs: Math.max(0, performance.now() - started),
-      ...(options.signal.aborted ? { outcome: 'cancelled' as const } : failure || !expectedClose ? { outcome: 'failed' as const } : code === 0 ? { outcome: 'passed' as const } : {}),
-      ...(Number.isInteger(code) ? { exitCode: code! } : {}) });
-    closed = true; clearTimeout(timer); options.signal.removeEventListener('abort', abort);
-    fail(failure ?? new SourceError('upstream', 'Perch ACP closed before completing the request')); exit();
-  });
-  if (options.signal.aborted) abort();
-  return {
-    notifications,
-    request: async (method, params) => {
-      options.signal.throwIfAborted();
-      if (failure) throw failure;
-      if (closed) throw new SourceError('upstream', 'Perch ACP is closed');
-      return await new Promise((resolveResult, reject) => {
-        const id = nextId++; pending.set(id, { resolve: resolveResult, reject });
-        try { send({ jsonrpc: '2.0', id, method, params }); }
-        catch (error) { pending.delete(id); reject(error); }
-      });
-    },
-    close: async () => { if (!closed) { expectedClose = true; child.stdin.end(); kill(child); } await exited; }
-  };
 }
 
 /** Hash only public executable artifacts, never native authentication. */

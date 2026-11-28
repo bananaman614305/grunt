@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, stat } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -9,7 +9,6 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, expect, it } from 'vitest';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
-const builtDaemonPath = join(repoRoot, 'dist/local/daemon.mjs');
 const buildScriptPath = join(repoRoot, 'scripts/build.mjs');
 const registryPath = join(repoRoot, 'registry/adapters.json');
 
@@ -20,20 +19,11 @@ afterEach(async () => {
 
 async function prepareStandaloneDaemon(targetPath: string) {
   await mkdir(dirname(targetPath), { recursive: true });
-  const [builtStat, scriptStat] = await Promise.all([
-    stat(builtDaemonPath).catch(() => undefined),
-    stat(buildScriptPath),
-  ]);
-  // Use the built dist/local/daemon.mjs whenever it exists and is current; fall
-  // back to building directly into the temp directory when tests run before `pnpm build`.
-  if (builtStat && builtStat.mtimeMs >= scriptStat.mtimeMs) {
-    await copyFile(builtDaemonPath, targetPath);
-  } else {
-    execFileSync(process.execPath, [buildScriptPath, '--daemon-only', targetPath], {
-      cwd: repoRoot,
-      stdio: 'pipe',
-    });
-  }
+  // Always build fresh from current source so bundle tests never reuse stale dist/.
+  execFileSync(process.execPath, [buildScriptPath, '--daemon-only', targetPath], {
+    cwd: repoRoot,
+    stdio: 'pipe',
+  });
 }
 
 async function freePort(): Promise<number> {
@@ -113,5 +103,99 @@ it('standalone daemon starts and runs recovery without node_modules (daemon-json
   } finally {
     child.kill();
     await closed;
+  }
+}, 20000);
+
+it('standalone daemon hot-adds a declarative:app from a synced registry without node_modules', async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'grunt-daemon-dapp-')));
+  tempDirs.push(root);
+  const entry = join(root, 'dist/local/daemon.mjs');
+  const registry = join(root, 'dist/registry/adapters.json');
+  await prepareStandaloneDaemon(entry);
+  await mkdir(dirname(registry), { recursive: true });
+  await copyFile(registryPath, registry);
+
+  const bundled = JSON.parse(await readFile(registryPath, 'utf8')) as { version: 1; published: string; adapters: Record<string, unknown>[] };
+  const nextPublished = new Date(Date.parse(bundled.published) + 60000).toISOString();
+  const payload = JSON.stringify({
+    version: 1,
+    published: nextPublished,
+    adapters: [
+      { ...bundled.adapters[0], weight: 0.8 },
+      {
+        id: 'standalone-cli',
+        kind: 'model',
+        tier: 'experimental',
+        weight: 0.2,
+        modalities: ['text'],
+        install: 'declarative:app',
+        declarativeApp: {
+          execution: 'inference',
+          installer: { type: 'npm', package: '@example/standalone-cli', bin: 'standalone-cli' },
+          auth: { type: 'none' },
+          transport: { type: 'oneshot-exec', args: ['{{prompt}}'], promptInput: 'arg', output: { format: 'plain' } },
+          disclosure: 'Prompts go to Standalone CLI.',
+          policyVersion: '2026-11-27',
+          policyUrl: 'https://standalone.example/privacy',
+          name: 'Standalone CLI'
+        }
+      }
+    ]
+  });
+
+  const { createServer: createHttpServer } = await import('node:http');
+  const regServer = createHttpServer((_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json', ETag: '"dapp-v1"' });
+    res.end(payload);
+  });
+  await new Promise<void>(resolve => regServer.listen(0, '127.0.0.1', () => resolve()));
+  const regPort = (regServer.address() as { port: number }).port;
+
+  const port = await freePort();
+  const child = spawn(process.execPath, ['--no-addons', entry, 'daemon'], {
+    cwd: root,
+    env: {
+      ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+      HOME: root,
+      XDG_CONFIG_HOME: join(root, 'xdg'),
+      GRUNT_CONFIG_DIR: join(root, 'state'),
+      GRUNT_DAEMON: '1',
+      GRUNT_PORT: String(port),
+      GRUNT_REGISTRY_URL: `http://127.0.0.1:${regPort}/registry.json`,
+      GRUNT_POSTHOG_KEY: '', GRUNT_POSTHOG_HOST: 'http://127.0.0.1:0',
+      GRUNT_BACKGROUND_ACCOUNT_ACQUISITION: '0',
+      GRUNT_SQUIRE_AUTO_UPDATE: '0',
+      PATH: '',
+    },
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  const closed = once(child, 'close');
+  let stderr = '';
+  child.stderr.setEncoding('utf8').on('data', chunk => { stderr += chunk; });
+
+  try {
+    const deadline = Date.now() + 15000;
+    let adopted = false;
+    while (Date.now() < deadline && child.exitCode === null) {
+      const response = await fetch(`http://127.0.0.1:${port}/v1/status`, {
+        signal: AbortSignal.timeout(1000),
+      }).catch(() => undefined);
+      if (response?.status === 200) {
+        const snapshot = await response.json() as { sources?: { id: string; supportsFunctionTools?: boolean }[] };
+        const found = snapshot.sources?.find(s => s.id === 'standalone-cli');
+        if (found) {
+          expect(found.supportsFunctionTools).toBe(true);
+          adopted = true;
+          break;
+        }
+      }
+      await delay(50);
+    }
+    expect(adopted, stderr).toBe(true);
+    expect(stderr).not.toContain('Cannot find module');
+  } finally {
+    child.kill();
+    await closed;
+    await new Promise<void>(resolve => regServer.close(() => resolve()));
   }
 }, 20000);
