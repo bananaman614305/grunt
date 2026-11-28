@@ -1,3 +1,7 @@
+// Waits at or below this threshold are treated as short transient rate limits (HTTP 429).
+// Longer waits or pools with zero recoverable routes fail fast as global exhaustion (HTTP 402).
+export const TRANSIENT_RETRY_WINDOW_SECONDS = 60;
+
 type Refill = 'rolling' | 'account-window' | 'daily' | 'utc-daily' | 'monday' | 'monthly' | 'utc-monthly' | 'earned' | 'provider-reported' | 'unpublished' | 'disabled';
 type QuotaLimit = {
   amount: number;

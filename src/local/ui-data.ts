@@ -411,9 +411,12 @@ function derivePoolState(
 ): { poolState: UiPoolState; reason: string } {
   const validStates = new Set<UiPoolState>(['idle', 'working', 'switching', 'transient_error', 'provider_exhausted', 'globally_exhausted']);
   if (typeof rawStatus.poolState === 'string' && validStates.has(rawStatus.poolState as UiPoolState)) {
-    const reason = typeof rawStatus.poolReason === 'string' && rawStatus.poolReason.trim()
-      ? rawStatus.poolReason.trim()
-      : `${rawStatus.poolState.replace(/_/g, ' ')}`;
+    const rawPool = rawStatus.pool && typeof rawStatus.pool === 'object' ? rawStatus.pool as Record<string, unknown> : null;
+    const reason = typeof rawPool?.detail === 'string' && rawPool.detail.trim()
+      ? rawPool.detail.trim()
+      : typeof rawStatus.poolReason === 'string' && rawStatus.poolReason.trim()
+        ? rawStatus.poolReason.trim()
+        : `${rawStatus.poolState.replace(/_/g, ' ')}`;
     return { poolState: rawStatus.poolState as UiPoolState, reason };
   }
 
