@@ -363,7 +363,7 @@ it('leaves ended offers out of the published registry and the packaged copy', as
   // An offer is still published through its last day.
   expect(published.adapters.map(adapter => adapter.id)).toContain('tokenharbor');
   expect(published.adapters).toHaveLength(registry.adapters.length - 1);
-  // The site workflow writes site/registry.json through the same filter.
+  // The site workflow publishes registry.json through the same filter.
   const path = await directory();
   await writeFile(join(path, 'in.json'), JSON.stringify({ ...registry, adapters: registry.adapters.map(adapter => adapter.id === 'zro' ? { ...adapter, expires: '2020-01-01' } : adapter) }));
   const { execFileSync } = await import('node:child_process');
