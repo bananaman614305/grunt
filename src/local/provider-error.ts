@@ -3,9 +3,8 @@ import type { SafeDiagnosticMetadata } from './diagnostics.js';
 import { SourceError } from './source.js';
 import type { ErrorCode } from './source.js';
 
-// Waits at or below this threshold are treated as short transient rate limits (HTTP 429).
-// Longer waits or pools with zero recoverable routes fail fast as global exhaustion (HTTP 402).
-export const TRANSIENT_RETRY_WINDOW_SECONDS = 60;
+import { TRANSIENT_RETRY_WINDOW_SECONDS } from './retry-window.js';
+export { TRANSIENT_RETRY_WINDOW_SECONDS };
 
 export type ProviderFailureCause =
   | 'transient'
