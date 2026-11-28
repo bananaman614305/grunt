@@ -77,6 +77,10 @@ const finite = (n: unknown): n is number => typeof n === 'number' && Number.isFi
 const member = <T extends string>(values: readonly T[], n: unknown): n is T => typeof n === 'string' && values.includes(n as T);
 const object = (n: unknown): Record<string, unknown> | undefined => n && typeof n === 'object' && !Array.isArray(n) ? n as Record<string, unknown> : undefined;
 
+export function isDiagnosticModel(value: unknown): value is string {
+  return typeof value === 'string' && publicModel.test(value) && !/^[a-z][a-z0-9+.-]*:\/\//i.test(value) && !secret.test(value);
+}
+
 /** Construct an allowlisted projection. Never serialize request/error objects. */
 export function sanitizeDiagnosticEvent(input: unknown): DiagnosticEvent | null {
   const v = object(input);
@@ -92,7 +96,7 @@ export function sanitizeDiagnosticEvent(input: unknown): DiagnosticEvent | null 
   if (member(diagnosticStages, v.stage)) result.stage = v.stage;
   if (member(diagnosticWorkDispositions, v.workDisposition)) result.workDisposition = v.workDisposition;
   if (typeof v.source === 'string' && identifier.test(v.source) && !secret.test(v.source)) result.source = v.source;
-  if (typeof v.model === 'string' && publicModel.test(v.model) && !/^[a-z][a-z0-9+.-]*:\/\//i.test(v.model) && !secret.test(v.model)) result.model = v.model;
+  if (isDiagnosticModel(v.model)) result.model = v.model;
   if (member(['passed', 'failed', 'cancelled', 'skipped'] as const, v.outcome)) result.outcome = v.outcome;
   if (member(diagnosticErrors, v.errorCode)) result.errorCode = v.errorCode;
   if (member(diagnosticReasons, v.reason)) result.reason = v.reason;

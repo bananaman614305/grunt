@@ -219,8 +219,7 @@ enables acquisition.
   pass runs at a time, a trigger during a pass joins it, and none runs while
   foreground `usegrunt setup` holds its session. After the
   [setup flow](reference.md#free-api-and-account-setup) releases its session,
-  the daemon's next read of the
-  session (setup makes one status read) starts a pass for the remaining
+  setup explicitly notifies the daemon to start a pass for the remaining
   signups. The route a pass is signing up shows as connecting in status.
 - **Hot-add.** In the automatic pool, a newly listed shipped or declarative
   (`install: "declarative:openai"`) adapter becomes a routable source at once,

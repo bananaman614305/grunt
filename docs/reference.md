@@ -162,14 +162,20 @@ and tree with the new `review-record` channel request; see
 
 ### Source dashboard
 
-`usegrunt status` prints one cached pool snapshot. `usegrunt status --watch`
-opens a live terminal view; `--json` prints a single structured snapshot.
-A plain snapshot ends with the same launch line for each coding tool that is
-installed and has its grunt file. These commands read the local daemon's `GET /v1/status`; they do not start
-the daemon or run provider health checks. A status read after setup releases
-its session can trigger [background acquisition](router.md#3-slow-loop-hot-add-and-scout-mapping),
-whose signup driver may consume inference.
-An older daemon without that endpoint needs `npx usegrunt update`.
+`usegrunt status` shows the current provider and dispatched model for each
+in-flight route, the last successful route, and each provider's state and
+quota. Provider-reported balances include their observation time. Estimates
+use local usage and published limits when the daemon has complete coverage for
+the quota window. Unknown balances stay unknown. Cooldown and quota reset are
+shown separately. A plain snapshot also lists launch commands for installed,
+configured coding tools.
+
+`usegrunt status --watch` opens a live terminal view. `--json` prints the
+existing structured pool snapshot. The plain report reads local
+`GET /v1/status`, `GET /v1/observe?limit=0`, and aggregate diagnostics when
+needed for quota estimates. Status reads do not start the daemon, run provider
+health checks, or send inference.
+Run `npx usegrunt update` if the daemon predates the status or observation API.
 `usegrunt --help` prints command usage without starting the daemon.
 
 The watch view uses green for a source with an observed successful reply, cyan
@@ -195,6 +201,13 @@ Port selection is `--port`, then `GRUNT_PORT`, then the private numeric
 `installed-port.json` saved by successful setup, then 8788. Existing installations
 on a custom port can pass `--port` until setup records it. For example, Chad uses
 `usegrunt status --watch --port 8792`. Invalid saved configuration fails safely.
+
+The npm package includes the Agent Skill at `skills/grunt-status/SKILL.md`.
+Point your harness at that directory using its skill loader, or copy it into
+its skills directory. In Pi, register the installed package with
+`pi install "$(npm root -g)/usegrunt"` after a global npm install, then invoke
+`/skill:grunt-status` from a Pi session using Grunt. The skill runs the
+installed `usegrunt` on the daemon host and shares the status summary.
 
 Setup uses a separate live table; see the [setup flow](#free-api-and-account-setup).
 Run `usegrunt status --watch` separately to open the dashboard. Closing setup before

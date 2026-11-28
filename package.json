@@ -48,6 +48,7 @@
   "description": "One-command setup for grunt",
   "files": [
     "dist",
+    "skills",
     "README.md"
   ],
   "repository": {
