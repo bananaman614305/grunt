@@ -33,7 +33,7 @@ it('does not begin new device authentication in background', async () => {
 it('uses current official device consent, Squire GitHub flow and private native credential shape', async () => {
   const f = fixture(); await setupFreePi(f); expect(f.squire.signup).toHaveBeenCalledOnce(); expect(f.squire.signup.mock.calls[0]).toEqual(expect.arrayContaining(['freepi', 'https://github.com/login/device']));
   // The drive types only supplied facts, so the device code must be one.
-  expect((f.squire.signup.mock.calls[0] as unknown[])[3]).toEqual({ user_code: 'ABCD-EFGH' });
+  expect((f.squire.signup.mock.calls[0] as unknown[])[3]).toEqual({ user_code: 'ABCD-EFGH', device_code: 'ABCD-EFGH' });
   expect(await readFreePiToken(directory)).toBe('synthetic-token'); expect((await stat(join(directory, 'freepi', 'credentials.json'))).mode & 0o777).toBe(0o600);
   const count = f.squire.signup.mock.calls.length; await setupFreePi(f); expect(f.squire.signup.mock.calls).toHaveLength(count);
 });

@@ -1159,6 +1159,20 @@ export class BrowserSquire implements SetupSquire {
       }
       // An unsure drive often waits on an empty email field it was given a value
       // for. When it offers that field, fill the supplied email once.
+      // Squire types a fact only into a field its key names, and a device code's
+      // field is named by the page ('Code shown in your terminal'). Offer the
+      // supplied code under that field's own label once.
+      const userCode = this.signupFacts.get(provider)?.user_code;
+      const codeRow = userCode && result.status === 'low_confidence' && Array.isArray(observed.safe_table)
+        ? observed.safe_table.find((row): row is unknown[] => Array.isArray(row) && row[1] === 't'
+          && /\bcode\b/i.test(fieldLabel(row).replace(/[-_]/g, ' ')) && !usedTerms.has(`field:${fieldLabel(row)}`)) : undefined;
+      if (userCode && codeRow) {
+        const label = fieldLabel(codeRow);
+        usedTerms.add(`field:${label}`);
+        facts[label] = userCode;
+        this.signupFacts.set(provider, { ...this.signupFacts.get(provider), [label]: userCode });
+        continue;
+      }
       const suppliedEmail = this.signupFacts.get(provider)?.email;
       const emailTarget = suppliedEmail && result.status === 'low_confidence' && !usedTerms.has('fact:email')
         && Object.entries(object(result.options)).find(([key, label]) => /^k/.test(key) && typeof label === 'string'
@@ -1466,11 +1480,12 @@ export async function setup(notify = console.log, providers: string[] = [], opti
       providers = providers.filter(provider => provider !== 'ifm');
     }
     if (providers.includes('freepi')) {
-      await setupFreePi({ directory: location, squire: { signup: async (service, url, instructions) => {
+      await setupFreePi({ directory: location, squire: { signup: async (service, url, instructions, facts) => {
         const signup = (squire as SetupSquire & Partial<Pick<BrowserSquire, 'signup'>>).signup;
         if (!signup) throw new Error('Free-Pi requires browser-capable Trusty Squire');
         if (options.connect) await options.connect(); else await owned?.connect();
-        await signup.call(squire, service, url, instructions);
+        // The device code is a fact Squire types; dropping it left the field empty.
+        await signup.call(squire, service, url, instructions, facts);
       } }, notify, background: options.background ?? false, ...(options.signal ? { signal: options.signal } : {}) });
       providers = providers.filter(provider => provider !== 'freepi');
     }

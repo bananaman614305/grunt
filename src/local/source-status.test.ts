@@ -65,6 +65,22 @@ it('names skipped routes and safe reasons in a streamed tool request’s 429 bod
   } finally { await sources.close(); }
 });
 
+it('probes a route again right after its background signup succeeds', async () => {
+  const source = fake('pollinations');
+  vi.mocked(source.available).mockResolvedValue(false);
+  const now = 1000;
+  const sources = new Sources([source], { registry: () => bundledRegistry, now: () => now });
+  try {
+    expect(await sources.available(source)).toBe(false);
+    vi.mocked(source.available).mockResolvedValue(true);
+    // Within the negative window the stale probe still answers...
+    expect(await sources.available(source)).toBe(false);
+    // ...until the signup that opened the route settles.
+    sources.setSetupFailure('pollinations', undefined);
+    expect(await sources.available(source)).toBe(true);
+  } finally { await sources.close(); }
+});
+
 it('shows failed background setup in owner status and clears it when the route becomes available', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'grunt-setup-status-'));
   const source = fake('beatapi');
