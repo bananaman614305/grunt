@@ -1279,16 +1279,26 @@ git repository, only task text and output are sent. If the next adapter is
 Gödel Machines, it receives the approved request payload without generated
 handoff context.
 
-The static registry is maintained in `registry/adapters.json`. Its published
-form goes to `site/registry.json` (and the npm package's `dist/registry/adapters.json`):
-an adapter whose `expires` day has passed is left out, and the rest of its tier is
-scaled to keep the tier weight. `tsx src/registry.ts registry/adapters.json --publish site/registry.json`
-writes it. GitHub Pages serves it directly at
-`https://grunt.run/registry.json` (with an identical static copy at
-`/v1/registry` for older daemons). A shipped adapter id, an entry whose `install`
-is `declarative:openai` (with a strictly validated `declarative`
-OpenAI-compatible config), or an entry whose `install` is `npm:<package>`, goes
-in `adapters`; any other id goes in a top-level `candidates` list of providers
+The static registry is maintained in `registry/adapters.json`. Its full
+published form goes to `site/v2/registry.json` (and the npm package's
+`dist/registry/adapters.json`): an adapter whose `expires` day has passed is
+left out, and the rest of its tier is scaled to keep the tier weight.
+`tsx src/registry.ts registry/adapters.json --publish site/v2/registry.json`
+writes it, and GitHub Pages serves it at `https://grunt.run/v2/registry.json`.
+A v1-compatible projection (`tsx src/registry.ts registry/adapters.json --publish-v1 site/registry.json`)
+also omits `declarative:app` entries and rescales the remaining tier weights,
+published at `https://grunt.run/registry.json` (with an identical static copy
+at `/v1/registry`) so older daemons (`<= 0.10.21`) continue syncing updates
+cleanly. Clients on `0.10.22` and `0.10.23` also query `/registry.json` and
+accept that v1-compatible feed without falling back to raw GitHub, so
+discovering and adding `declarative:app` entries such as `omi` requires
+updating to `usegrunt >= 0.10.24` (which switches primary sync to
+`https://grunt.run/v2/registry.json`, upgrades pre-v2 caches, and uses the
+effective synced registry during `usegrunt add`). A shipped adapter id, an entry whose `install` is `declarative:openai`
+(with a strictly validated `declarative` OpenAI-compatible config), an entry
+whose `install` is `declarative:app` (with a strictly validated `declarativeApp`
+sandboxed CLI config), or an entry whose `install` is `npm:<package>`, goes in
+`adapters`; any other id goes in a top-level `candidates` list of providers
 awaiting an adapter, which every client ignores. Declarative entries carry
 public HTTPS origins only (never IP literals, loopback, link-local, or private
 hosts, with public resolved IP enforcement at connection time), pinned free
@@ -1304,7 +1314,7 @@ identifiers are ignored locally and cannot install new code.
 
 The daemon synchronizes on startup and on the
 [router loop schedule](router.md#3-slow-loop-hot-add-and-scout-mapping) with
-If-None-Match. It tries `https://grunt.run/registry.json` first and falls back
+If-None-Match. It tries `https://grunt.run/v2/registry.json` first and falls back
 to `https://raw.githubusercontent.com/bananaman614305/grunt/main/registry/adapters.json`
 if that default endpoint is unreachable, invalid or older than the retained
 registry. An explicit `GRUNT_REGISTRY_URL` is used on its own. It writes the

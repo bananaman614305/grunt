@@ -32,12 +32,14 @@ jobs:
         run: |
           pnpm exec tsx src/registry.ts registry/adapters.json
           rm -rf dist/site
-          mkdir -p dist/site/v1
+          mkdir -p dist/site/v1 dist/site/v2
           cp site/index.html site/404.html site/grunt.svg site/favicon.svg site/og.png site/CNAME dist/site/
           touch dist/site/.nojekyll
-          pnpm exec tsx src/registry.ts registry/adapters.json --publish dist/site/registry.json
+          pnpm exec tsx src/registry.ts registry/adapters.json --publish-v1 dist/site/registry.json
           pnpm exec tsx src/registry.ts dist/site/registry.json
           cp dist/site/registry.json dist/site/v1/registry
+          pnpm exec tsx src/registry.ts registry/adapters.json --publish dist/site/v2/registry.json
+          pnpm exec tsx src/registry.ts dist/site/v2/registry.json
       - name: Check staged site
         run: |
           test -f dist/site/index.html
@@ -50,6 +52,7 @@ jobs:
           test -f dist/site/.nojekyll
           test -f dist/site/registry.json
           test -f dist/site/v1/registry
+          test -f dist/site/v2/registry.json
           cmp -s dist/site/registry.json dist/site/v1/registry
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5

@@ -12,11 +12,12 @@ import { parallelMap } from './parallel.js';
 import { withTerminal } from './terminal.js';
 import { BrowserSquire, PROVIDERS, setup } from './setup.js';
 import { copyDaemon, daemonFile, legacyDaemonFile } from './daemon-files.js';
-import { RegistrySync } from './registry.js';
-import { bundledRegistry, disabledAdapters, knownAdapters } from '../registry.js';
+import { readEffectiveRegistry, RegistrySync } from './registry.js';
+import { bundledRegistry, disabledAdapters, isDeclarativeAdapter, isDeclarativeAppAdapter, isSupportedAdapter, knownAdapters } from '../registry.js';
+import type { Registry } from '../registry.js';
 import { AUTOMATIC_POOL_FILE, writeAutomaticPool } from './automatic-pool.js';
 import { banner } from './banner.js';
-import { approveDataSharing, DATA_SHARING_MANUAL_APPROVAL, DATA_SHARING_OPT_OUT, requiresManualDataSharing } from './data-sharing.js';
+import { approveDataSharing, DATA_SHARING_MANUAL_APPROVAL, DATA_SHARING_OPT_OUT, registryDataSharingPolicies, requiresManualDataSharing } from './data-sharing.js';
 import { configurePi, connectHarness, detectHarnesses, HARNESSES, launchLines, listFreeModels, nextDriver, onPath, probeFreeModel, signupHarness, runHarness } from './harnesses.js';
 import type { Harness } from './harnesses.js';
 import type { EmbeddedSignupRuntime, SignupAgent, SignupCeremonyOpenInfo } from './signup-mcp.js';
@@ -92,17 +93,25 @@ async function enableLinger(signal?: AbortSignal) {
     console.log('– local service: stops at logout until lingering is enabled; run loginctl enable-linger');
   }
 }
-export async function installedSources(directory = installedConfigRoot()) {
+const supportedSourceId = (id: string, registry: Registry = bundledRegistry) =>
+  !disabledAdapters.has(id) && (knownAdapters.has(id) || registry.adapters.some(adapter => adapter.id === id && (isDeclarativeAdapter(adapter) || isDeclarativeAppAdapter(adapter))));
+const supportedAddIds = (registry: Registry) => [
+  ...new Set([
+    ...Object.keys(PROVIDERS).filter(id => knownAdapters.has(id)),
+    ...registry.adapters.filter(adapter => isDeclarativeAdapter(adapter) || isDeclarativeAppAdapter(adapter)).map(adapter => adapter.id)
+  ])
+];
+export async function installedSources(directory = installedConfigRoot(), registry = readEffectiveRegistry(directory)) {
   try {
     const sources: unknown = JSON.parse(await readFile(join(directory, 'installed-sources.json'), 'utf8'));
     if (!Array.isArray(sources) || sources.some(id => typeof id !== 'string')) throw new Error('Invalid saved grunt sources');
-    return [...new Set(sources)].filter(id => knownAdapters.has(id) && !disabledAdapters.has(id)).join(',');
+    return [...new Set(sources)].filter(id => supportedSourceId(id, registry)).join(',');
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   return 'opencode,kilo,zro';
 }
 class ServiceRecoveryError extends Error {}
 
-export async function installService(adapters?: string[], options: { signal?: AbortSignal } = {}) {
+export async function installService(adapters?: string[], options: { signal?: AbortSignal; registry?: Registry } = {}) {
   const windows = process.platform === 'win32';
   const cancellation = windows ? new AbortController() : undefined;
   const cancel = () => cancellation?.abort(new Error('Grunt setup cancelled'));
@@ -115,9 +124,10 @@ export async function installService(adapters?: string[], options: { signal?: Ab
   };
   options.signal?.throwIfAborted();
   if (!['linux', 'darwin', 'win32'].includes(process.platform)) throw new Error('grunt background service requires systemd, launchd, or Task Scheduler');
-  const selected = [...new Set(adapters ?? (await stage(() => installedSources())).split(','))].filter(id => id && !disabledAdapters.has(id));
-  if (selected.some(id => !knownAdapters.has(id))) throw new Error('Invalid grunt service selection');
   const directory = resolve(installedConfigRoot()), runtime = join(directory, 'runtime');
+  const effectiveRegistry = options.registry ?? readEffectiveRegistry(directory);
+  const selected = [...new Set(adapters ?? (await stage(() => installedSources(directory, effectiveRegistry))).split(','))].filter(id => id && !disabledAdapters.has(id));
+  if (selected.some(id => !supportedSourceId(id, effectiveRegistry))) throw new Error('Invalid grunt service selection');
   // npx cache entries can disappear. Keep a backend runtime outside that cache.
   const dist = fileURLToPath(new URL(import.meta.url.endsWith('.ts') ? '../../dist/' : '../', import.meta.url));
   const port = gruntEnv('PORT') || '8788';
@@ -168,7 +178,7 @@ export async function installService(adapters?: string[], options: { signal?: Ab
     await stage(() => writeWindowsLauncher(next, effective));
     const sources = effective.GRUNT_SOURCES;
     const pool = join(directory, AUTOMATIC_POOL_FILE), previousPool = join(temporary, 'previous-pool');
-    if (sources) await stage(() => writeAutomaticPool(temporary, [...new Set(sources.split(','))], selected));
+    if (sources) await stage(() => writeAutomaticPool(temporary, [...new Set(sources.split(','))], selected, effectiveRegistry));
     let stopping = false, registering = false, starting = false, savedPool = false, replacedPool = false;
     try {
       if (existing) await stage(async () => { stopping = true; await stopWindowsService(directory, run); });
@@ -209,7 +219,7 @@ export async function installService(adapters?: string[], options: { signal?: Ab
     if (windows) effectivePort = await activateWindowsRuntime();
     else {
       await stage(swapRuntime);
-      effectivePort = await installBackgroundService(entry, env, { ...options, selectedSources: selected, restoreRuntime });
+      effectivePort = await installBackgroundService(entry, env, { ...options, selectedSources: selected, registry: effectiveRegistry, restoreRuntime });
     }
   } catch (error) {
     keepBackup = error instanceof ServiceRecoveryError;
@@ -227,7 +237,7 @@ export async function installService(adapters?: string[], options: { signal?: Ab
   } finally { await rm(portStage, { force: true }); }
 }
 export async function installBackgroundService(entry: string, env: Record<string, string>, options: {
-  signal?: AbortSignal; selectedSources?: readonly string[]; restoreRuntime?: () => Promise<void>;
+  signal?: AbortSignal; selectedSources?: readonly string[]; registry?: Registry; restoreRuntime?: () => Promise<void>;
 } = {}) {
   const name = 'grunt';
   const stage = async <T>(operation: () => Promise<T>) => {
@@ -272,7 +282,7 @@ export async function installBackgroundService(entry: string, env: Record<string
     const port = effective.GRUNT_PORT;
     if (!port || !/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) throw new Error('Could not determine the installed Grunt port safely');
     const serviceSources = effective.GRUNT_SOURCES?.split(',').map(id => id.trim()).filter(Boolean);
-    if (options.selectedSources && serviceSources?.length) await stage(() => writeAutomaticPool(env.GRUNT_CONFIG_DIR!, [...new Set(serviceSources)], options.selectedSources));
+    if (options.selectedSources && serviceSources?.length) await stage(() => writeAutomaticPool(env.GRUNT_CONFIG_DIR!, [...new Set(serviceSources)], options.selectedSources, options.registry));
     const recoveryRun = async (binary: string, args: string[]) =>
       (await promisify(execFile)(binary, args, { timeout: 30000 })).stdout;
     if (legacy) {
@@ -347,7 +357,7 @@ export async function installBackgroundService(entry: string, env: Record<string
     return port;
   }
   const declaredSources = env.GRUNT_SOURCES;
-  if (options.selectedSources && declaredSources) await stage(() => writeAutomaticPool(env.GRUNT_CONFIG_DIR!, declaredSources.split(','), options.selectedSources));
+  if (options.selectedSources && declaredSources) await stage(() => writeAutomaticPool(env.GRUNT_CONFIG_DIR!, declaredSources.split(','), options.selectedSources, options.registry));
   if (process.platform === 'linux') {
     const units = join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'systemd', 'user');
     await stage(() => mkdir(units, { recursive: true }));
@@ -559,7 +569,14 @@ export const TELEMETRY_NOTICE = '✓ usage telemetry: on, required to use Grunt 
 export async function wizard(add?: string, actions: Omit<typeof wizardActions, Optional> & Partial<Pick<typeof wizardActions, Optional>> = wizardActions, options: { force?: boolean } = {}) {
   if (add === '') throw new Error('Specify a provider name');
   if (add && disabledAdapters.has(add)) throw new Error(`${add} routing is disabled`);
-  if (add && (!knownAdapters.has(add) || !Object.hasOwn(PROVIDERS, add))) throw new Error(`Choose a supported provider: ${Object.keys(PROVIDERS).filter(id => knownAdapters.has(id)).join(', ')}`);
+  let loadedRegistry: Registry | undefined;
+  const bundledAddIds = supportedAddIds(bundledRegistry);
+  if (add && !bundledAddIds.includes(add)) {
+    if (!/^[a-z][a-z0-9-]{0,63}$/.test(add)) throw new Error(`Choose a supported provider: ${bundledAddIds.join(', ')}`);
+    loadedRegistry = actions.loadRegistry ? (await actions.loadRegistry()).registry : readEffectiveRegistry(installedConfigRoot());
+    const effectiveAddIds = supportedAddIds(loadedRegistry);
+    if (!effectiveAddIds.includes(add)) throw new Error(`Choose a supported provider: ${effectiveAddIds.join(', ')}`);
+  }
   // Preliminary steps print as plain lines. The table appears once, for the
   // signups, and stays in place until setup ends.
   const table = new SetupTable(process.stdout, { live: false });
@@ -583,14 +600,15 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     // Keys pressed from here on are ignored rather than echoed into the output.
     table.captureKeys();
     if (revised) console.log(harness ? `✓ harness: ${harness.id}` : '… harness: Squire alone');
-    const previous = ((await actions.installedSources?.())?.split(',') ?? []).filter(id => id && !disabledAdapters.has(id));
-    const { registry } = actions.loadRegistry ? await actions.loadRegistry() : { registry: bundledRegistry };
+    const registry = loadedRegistry ?? (actions.loadRegistry ? (await actions.loadRegistry()).registry : readEffectiveRegistry(installedConfigRoot()));
+    const previous = ((await actions.installedSources?.(installedConfigRoot(), registry))?.split(',') ?? []).filter(id => id && !disabledAdapters.has(id));
     squire?.useRegistry?.(() => registry);
-    const requested = add ? [add] : registry.adapters.filter(adapter => knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)).map(adapter => adapter.id);
-    const defaults = bundledRegistry.adapters.filter(adapter => knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)).map(adapter => adapter.id);
+    const requested = add ? [add] : registry.adapters.filter(adapter => isSupportedAdapter(adapter)).map(adapter => adapter.id);
+    const defaults = registry.adapters.filter(adapter => isSupportedAdapter(adapter)).map(adapter => adapter.id);
     const sources = add ? [...new Set([...(previous.length ? previous : defaults), add])] : requested;
     let sharingNotice: string | undefined;
-    const consent = await (actions.approveDataSharing ?? approveDataSharing)({ directory: installedConfigRoot(), providers: [...new Set([...sources, 'opencode'])], notice: line => { sharingNotice = line; } });
+    const extraPolicies = registryDataSharingPolicies(registry);
+    const consent = await (actions.approveDataSharing ?? approveDataSharing)({ directory: installedConfigRoot(), providers: [...new Set([...sources, 'opencode'])], ...(extraPolicies.length ? { extraPolicies } : {}), notice: line => { sharingNotice = line; } });
     const manualOff = consent.skipped.filter(requiresManualDataSharing);
     console.log(consent.skipped.length ? `– data sharing: off for ${consent.skipped.join(', ')} (${manualOff.length ? `${DATA_SHARING_MANUAL_APPROVAL}=${manualOff.join(',')} approves after you read its notice` : DATA_SHARING_OPT_OUT})`
       : sharingNotice ? `✓ ${sharingNotice.replace(/^Data sharing on: /, 'data sharing: on for ')}` : '✓ data sharing: on, no new sources');
@@ -607,9 +625,11 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       if (!['nous', 'reflection-beam', 'antseed-vikey'].includes(add)) { await connect(); console.log('✓ Trusty Squire: signed in'); }
       table.start();
       try {
-        await actions.setup(notify, [add], { ...(squire ? { squire } : {}), dataSharingApproved: consent.approved, directory: installedConfigRoot(),
+        await actions.setup(notify, [add], { ...(squire ? { squire } : {}), dataSharingApproved: consent.approved, directory: installedConfigRoot(), registry: () => registry,
           ...(add === 'beatapi' ? { upgradeBeatAPI: true } : {}), ...(options.force ? { force: true } : {}) });
-        await actions.installService(sources.filter(id => !skipped.has(id)));
+        const nextSources = sources.filter(id => !skipped.has(id));
+        if (nextSources.some(id => !supportedSourceId(id, bundledRegistry))) await actions.installService(nextSources, { registry });
+        else await actions.installService(nextSources);
         const port = await setupPort();
         await actions.checkService(port);
         const unavailable: string[] = [];
@@ -625,7 +645,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     session = await beginSetupSession(installedConfigRoot(), revised ? pool : ids, { anonymousKilo: revised && !skipAnonymous });
     session.signal.addEventListener('abort', abortSetup, { once: true });
     session.signal.throwIfAborted();
-    await actions.installService(pool, { signal: session.signal });
+    await actions.installService(pool, { signal: session.signal, registry });
     const port = await setupPort();
     const plan = revised ? undefined : await actions.prepareHarnesses?.(port, { table });
     const applyHarnesses = plan ?? (async () => {
@@ -707,6 +727,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     });
     const provision = async (adapters: string[], kiloAccount = false) => {
       const outcome = await actions.setupFallbacks({ directory: installedConfigRoot(), run: command, adapters, notify, onSettled, connect,
+        registry: () => registry,
         onStarted: (id: string) => { if (!settled.has(id)) table.set('source', id, 'connecting'); },
         signal: session!.signal, dataSharingApproved: consent.approved, ...(squire ? { squire } : {}), ...(kiloAccount ? { kiloAccount } : {}) });
       await parallelMap(adapters, id => onSettled(id, !outcome.unavailable.includes(id)));

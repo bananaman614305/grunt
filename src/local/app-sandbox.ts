@@ -1,10 +1,10 @@
 import { spawn, execFile } from 'node:child_process';
 import type { ChildProcess, StdioOptions } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { constants, existsSync, openSync } from 'node:fs';
-import { access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { closeSync, constants, existsSync, openSync } from 'node:fs';
+import { access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { Socket } from 'node:net';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { configRoot } from '../brand.js';
@@ -144,11 +144,36 @@ export async function listInstalledApps(directory = configRoot()): Promise<{ id:
   return results;
 }
 
+async function makeTreeWritable(target: string): Promise<void> {
+  const st = await lstat(target).catch(() => undefined);
+  if (!st || st.isSymbolicLink()) return;
+  if (st.isDirectory()) {
+    await chmod(target, (st.mode & 0o777) | 0o700).catch(() => {});
+    const entries = await readdir(target).catch(() => [] as string[]);
+    for (const entry of entries) {
+      await makeTreeWritable(join(target, entry));
+    }
+  } else {
+    await chmod(target, (st.mode & 0o777) | 0o600).catch(() => {});
+  }
+}
+
+async function removeTree(target: string): Promise<void> {
+  try {
+    await rm(target, { recursive: true, force: true });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'EACCES' && code !== 'EPERM') throw err;
+    await makeTreeWritable(target);
+    await rm(target, { recursive: true, force: true });
+  }
+}
+
 export async function cleanAppSandbox(id: string, directory = configRoot()): Promise<boolean> {
   return withAppLock(`${resolve(directory)}:${id}`, async () => {
     const paths = appSandboxPaths(id, directory);
     const existed = existsSync(paths.root) || existsSync(paths.stateFile);
-    await rm(paths.root, { recursive: true, force: true });
+    await removeTree(paths.root);
     await rm(paths.stateFile, { force: true });
     return existed;
   });
@@ -599,13 +624,33 @@ export async function runSandboxedCommand(
   }
 ): Promise<{ stdout: string; stderr: string; code: number | null }> {
   options.signal.throwIfAborted();
+  // Pass stdin via an unlinked private regular-file FD rather than a Node socketpair:
+  // CLIs that check `fstat(0).isFIFO() || isFile()` reject Linux socketpair pipes.
+  let stdinFd: number | undefined;
+  if (options.stdin !== undefined) {
+    const stdinFile = join(tmpdir(), `grunt-stdin-${randomUUID()}.txt`);
+    try {
+      await writeFile(stdinFile, options.stdin, { mode: 0o600, flag: 'wx' });
+      stdinFd = openSync(stdinFile, constants.O_RDONLY | constants.O_NOFOLLOW);
+    } finally {
+      await rm(stdinFile, { force: true }).catch(() => {});
+    }
+  }
+  const stdinStdio = stdinFd !== undefined ? stdinFd : 'ignore';
   const stdio: StdioOptions = options.onOpenerData
-    ? [options.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe', 'pipe']
-    : [options.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'];
-  const child = await spawnSandboxed(program, args, spec, {
-    stdio,
-    ...(options.backend ? { backend: options.backend } : {})
-  });
+    ? [stdinStdio, 'pipe', 'pipe', 'pipe']
+    : [stdinStdio, 'pipe', 'pipe'];
+  let child: ChildProcess;
+  try {
+    child = await spawnSandboxed(program, args, spec, {
+      stdio,
+      ...(options.backend ? { backend: options.backend } : {})
+    });
+  } finally {
+    if (stdinFd !== undefined) {
+      try { closeSync(stdinFd); } catch { /* already closed */ }
+    }
+  }
   if (options.onOpenerData && child.stdio[3]) {
     child.stdio[3].on('data', chunk => options.onOpenerData!(chunk as Buffer));
     child.stdio[3].on('error', () => {});
@@ -641,8 +686,6 @@ export async function runSandboxedCommand(
 
     child.stdout?.on('data', chunk => consume(chunk as Buffer, 'stdout'));
     child.stderr?.on('data', chunk => consume(chunk as Buffer, 'stderr'));
-    child.stdin?.on('error', () => {});
-    if (options.stdin !== undefined) child.stdin?.end(options.stdin);
     child.once('error', () => fail(new SourceError('not_installed', 'Sandboxed app command could not start')));
     child.once('close', code => {
       clearTimeout(timer);
@@ -732,6 +775,40 @@ export function installerFingerprint(installer: DeclarativeAppInstaller): string
   return JSON.stringify(installer);
 }
 
+/**
+ * Resolve an installed binary inside a package directory without allowing symlink escape.
+ * Translates sandbox-absolute targets rooted at SANDBOX_PKG (such as symlinks created by
+ * `uv tool install` inside bwrap) back into pkgDir while rejecting any path that leaves pkgDir.
+ */
+export async function resolveInstalledBinary(pkgDir: string, binaryRelPath: string): Promise<string | undefined> {
+  let realPkg: string;
+  try { realPkg = await realpath(pkgDir); } catch { return undefined; }
+  const isInsidePkg = (target: string) => target === realPkg || target.startsWith(realPkg + sep);
+  let current = resolve(realPkg, binaryRelPath);
+
+  for (let depth = 0; depth < 16; depth++) {
+    if (!isInsidePkg(current)) return undefined;
+    let st;
+    try { st = await lstat(current); } catch { return undefined; }
+    if (!st.isSymbolicLink()) {
+      let finalReal: string;
+      try { finalReal = await realpath(current); } catch { return undefined; }
+      if (!isInsidePkg(finalReal)) return undefined;
+      const finalStat = await lstat(finalReal).catch(() => undefined);
+      return finalStat?.isFile() ? finalReal : undefined;
+    }
+    const linkTarget = await readlink(current);
+    if (linkTarget === SANDBOX_PKG || linkTarget.startsWith(SANDBOX_PKG + '/')) {
+      current = resolve(realPkg, linkTarget.slice(SANDBOX_PKG.length + 1));
+    } else if (linkTarget.startsWith('/')) {
+      current = resolve(linkTarget);
+    } else {
+      current = resolve(dirname(current), linkTarget);
+    }
+  }
+  return undefined;
+}
+
 function shellQuote(value: string): string {
   return `'${value.replaceAll('\'', '\'\\\'\'')}'`;
 }
@@ -750,7 +827,7 @@ export async function installDeclarativeApp(
     const paths = await prepareAppDirectories(id, directory);
     const fingerprint = installerFingerprint(installer);
     const existing = await readAppState(id, directory);
-    if (existing && existing.installerFingerprint === fingerprint && existsSync(join(paths.pkg, existing.binaryRelPath))) {
+    if (existing && existing.installerFingerprint === fingerprint && await resolveInstalledBinary(paths.pkg, existing.binaryRelPath)) {
       return { paths, state: existing };
     }
 
@@ -866,15 +943,12 @@ export async function installDeclarativeApp(
         binaryRelPath = installer.bin;
       }
 
-      // Verify the resolved executable stays strictly inside stagingPkg.
-      const candidatePath = join(stagingPkg, binaryRelPath);
-      const realStaging = await realpath(stagingPkg);
-      const realBin = await realpath(candidatePath).catch(() => undefined);
-      if (!realBin || (realBin !== realStaging && !realBin.startsWith(realStaging + sep))) {
+      // Verify the resolved executable stays strictly inside stagingPkg (including
+      // sandbox-absolute /sandbox/pkg/... symlinks created by uv inside bwrap).
+      const realBin = await resolveInstalledBinary(stagingPkg, binaryRelPath);
+      if (!realBin) {
         throw new SourceError('refused', `${id} installed binary escaped staging directory`);
       }
-      const binStat = await lstat(realBin);
-      if (!binStat.isFile()) throw new SourceError('not_installed', `${id} installed binary is not a regular file`);
       await chmod(realBin, 0o755);
 
       // Atomic swap stagingPkg -> paths.pkg
@@ -895,14 +969,14 @@ export async function installDeclarativeApp(
           binaryRelPath
         };
         await writeAppState(id, state, directory);
-        if (hadOld) await rm(backup, { recursive: true, force: true });
+        if (hadOld) await removeTree(backup);
         return { paths, state };
       } catch (err) {
         if (hadOld && !existsSync(paths.pkg)) await rename(backup, paths.pkg).catch(() => {});
         throw err;
       }
     } finally {
-      await rm(stagingRoot, { recursive: true, force: true });
+      await removeTree(stagingRoot);
     }
   });
 }

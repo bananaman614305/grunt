@@ -99,7 +99,7 @@ export async function openAcpClient(program: string, args: string[], options: Ac
       const text = typeof error.message === 'string' ? error.message : '';
       const code = /quota|usage.?limit|rate.?limit|allowance/i.test(text) ? 'quota'
         : error.code === -32000 || /auth|sign.?in|logged.?out/i.test(text) ? 'logged_out'
-          : /plan|required.*(?:starter|pro)|forbidden|refus|denied/i.test(text) ? 'refused' : 'upstream';
+          : /plan|required.*(?:starter|pro)|pricing|forbidden|refus|denied|\b403\b/i.test(text) ? 'refused' : 'upstream';
       operation.reject(new SourceError(code, `${label} ACP did not complete the request`));
       return;
     }

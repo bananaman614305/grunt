@@ -10,7 +10,7 @@ import { TRANSIENT_RETRY_WINDOW_SECONDS } from './quota-policy.js';
 import { formatResetCountdown } from './provider-error.js';
 import type { Completion, ErrorCode, ModelRequest, SlowUpstreamPolicy, Source } from './source.js';
 import type { Adapter, Registry } from '../registry.js';
-import { knownAdapters, TIER_TOTALS } from '../registry.js';
+import { isDeclarativeAdapter, isDeclarativeAppAdapter, knownAdapters, TIER_TOTALS } from '../registry.js';
 import { SourceStatus } from './source-status.js';
 import { SourceAvailability } from './source-availability.js';
 import { currentDiagnosticContext, observeRequestPhase, withDiagnosticContext } from './diagnostics.js';
@@ -219,7 +219,7 @@ export class StickyRouter {
   registered(id: string) {
     if (knownAdapters.has(id) || this.options.localOptIns?.has(id)) return true;
     const adapter = this.options.registry().adapters.find(item => item.id === id);
-    return adapter?.install === 'declarative:openai' && adapter.declarative !== undefined;
+    return isDeclarativeAdapter(adapter) || isDeclarativeAppAdapter(adapter);
   }
   listed(id: string) { return this.registered(id) && this.options.registry().adapters.some(a => a.id === id && !scoutRetired(a, this.now())); }
   supportsInput(id: string, imageInput = false) {

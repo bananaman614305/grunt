@@ -197,7 +197,7 @@ describe('DeclarativeApp end-to-end inside real bwrap', () => {
     expect(completeSpy).not.toHaveBeenCalled();
 
     await source.close();
-  });
+  }, 15000);
 
   it('supports ACP inference mode with JsonToolBridge inside bwrap and refuses native ACP tool_call notifications', async () => {
     const backend = await detectSandboxBackend();
@@ -293,7 +293,7 @@ describe('DeclarativeApp end-to-end inside real bwrap', () => {
     }, AbortSignal.timeout(15000))).rejects.toMatchObject({ code: 'refused' });
 
     await source.close();
-  });
+  }, 15000);
 
   it('records durable signup backoff when browser login fails', async () => {
     const backend = await detectSandboxBackend();
@@ -440,5 +440,169 @@ describe('DeclarativeApp end-to-end inside real bwrap', () => {
       fetcher: async () => new Response(archiveBytes, { status: 200 })
     })).rejects.toThrow();
     expect(await isDeclarativeAppBackedOff(hangAdapter.id, abortDir)).toBe(true);
+  });
+
+  it('preserves the original Squire failure reason instead of masking it with AbortError', async () => {
+    const backend = await detectSandboxBackend();
+    if (!backend || backend.kind !== 'bwrap') return;
+
+    const configDir = await makeTemp('grunt-dapp-err-');
+    const cliScript = '#!/usr/bin/env node\nconsole.log("https://auth.err.example/go");\nsetInterval(() => {}, 1000);\n';
+    const archiveBytes = await packCliTarGz('err-cli', cliScript);
+    const adapter: DeclarativeAppAdapter = {
+      id: 'err-app',
+      kind: 'agent',
+      tier: 'experimental',
+      weight: 0.01,
+      modalities: ['text'],
+      install: DECLARATIVE_APP_INSTALL,
+      declarativeApp: {
+        execution: 'delegated',
+        installer: {
+          type: 'archive',
+          urls: { 'linux-x64': 'https://releases.err.example/err-cli.tar.gz', 'linux-arm64': 'https://releases.err.example/err-cli.tar.gz' },
+          bin: 'err-cli'
+        },
+        auth: { type: 'browser-url', command: ['login'], allowedOrigins: ['https://auth.err.example'], authFile: 'token.json' },
+        transport: { type: 'oneshot-exec', args: ['{{prompt}}'], promptInput: 'arg', output: { format: 'plain' } },
+        disclosure: 'Prompts go to Err App.',
+        policyVersion: '2026-11-28',
+        policyUrl: 'https://auth.err.example/privacy',
+        name: 'Err CLI'
+      }
+    };
+    await recordDataSharingConsent(configDir, [adapter.id], [declarativeAppDataSharingPolicy(adapter)]);
+    let seenGoal = '';
+    await expect(setupDeclarativeApp(adapter, {
+      directory: configDir,
+      squire: {
+        signup: async (_service, _url, goal) => {
+          seenGoal = goal;
+          throw new Error('Blocked by Cloudflare challenge');
+        }
+      },
+      notify: () => {},
+      background: false,
+      backend,
+      fetcher: async () => new Response(archiveBytes, { status: 200 })
+    })).rejects.toThrow('Blocked by Cloudflare challenge');
+    expect(seenGoal).toContain('Err CLI sign-in');
+    expect(seenGoal).not.toContain('CLI CLI');
+    expect(await isDeclarativeAppBackedOff(adapter.id, configDir)).toBe(true);
+  });
+
+  it('classifies ACP HTTP 403 / pricingUrl errors as refused and supports stdin promptInput with fstat(0).isFile()', async () => {
+    const backend = await detectSandboxBackend();
+    if (!backend || backend.kind !== 'bwrap') return;
+
+    const configDir = await makeTemp('grunt-dapp-regress-');
+    const acpScript = [
+      '#!/usr/bin/env node',
+      'const readline = require("node:readline");',
+      'const rl = readline.createInterface({ input: process.stdin });',
+      'rl.on("line", line => {',
+      '  if (!line.trim()) return;',
+      '  const msg = JSON.parse(line);',
+      '  if (msg.method === "initialize") console.log(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: 1 } }));',
+      '  else if (msg.method === "session/new") console.log(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { sessionId: "s1" } }));',
+      '  else if (msg.method === "session/prompt") console.log(JSON.stringify({ jsonrpc: "2.0", id: msg.id, error: { code: 500, message: "inference.remoteChat.stream failed (403): {\\"pricingUrl\\":\\"https://paid.example/pricing\\"}" } }));',
+      '});'
+    ].join('\n') + '\n';
+    const acpArchive = await packCliTarGz('paid-acp', acpScript);
+    const acpAdapter: DeclarativeAppAdapter = {
+      id: 'paid-acp',
+      kind: 'model',
+      tier: 'experimental',
+      weight: 0.01,
+      modalities: ['text'],
+      install: DECLARATIVE_APP_INSTALL,
+      declarativeApp: {
+        execution: 'inference',
+        installer: {
+          type: 'archive',
+          urls: { 'linux-x64': 'https://releases.paid.example/paid-acp.tar.gz', 'linux-arm64': 'https://releases.paid.example/paid-acp.tar.gz' },
+          bin: 'paid-acp'
+        },
+        auth: { type: 'none' },
+        transport: { type: 'acp', args: [] },
+        disclosure: 'Prompts go to Paid ACP.',
+        policyVersion: '2026-11-28',
+        policyUrl: 'https://paid.example/privacy'
+      }
+    };
+    await recordDataSharingConsent(configDir, [acpAdapter.id], [declarativeAppDataSharingPolicy(acpAdapter)]);
+    await setupDeclarativeApp(acpAdapter, {
+      directory: configDir,
+      squire: {},
+      notify: () => {},
+      background: true,
+      backend,
+      fetcher: async () => new Response(acpArchive, { status: 200 })
+    });
+    const acpSource = new DeclarativeApp(acpAdapter.id, { directory: configDir, adapter: () => acpAdapter, backend });
+    await expect(acpSource.complete({
+      model: 'grunt',
+      cwd: configDir,
+      messages: [{ role: 'user', content: 'hi' }],
+      tools: [],
+      stream: false
+    }, AbortSignal.timeout(15000))).rejects.toMatchObject({ code: 'refused' });
+    await acpSource.close();
+
+    // Verify stdin promptInput works with CLIs that require fstatSync(0).isFIFO() || isFile() (like Omi CLI)
+    const stdinScript = [
+      '#!/usr/bin/env node',
+      'const fs = require("node:fs");',
+      'const st = fs.fstatSync(0);',
+      'if (!st.isFIFO() && !st.isFile()) { console.error("not piped"); process.exit(2); }',
+      'const input = fs.readFileSync(0, "utf8").trim();',
+      'console.log(JSON.stringify({ ok: true, result: "got:" + input, sessionId: "s-stdin-1" }));'
+    ].join('\n') + '\n';
+    const stdinArchive = await packCliTarGz('stdin-cli', stdinScript);
+    const stdinAdapter: DeclarativeAppAdapter = {
+      id: 'stdin-cli',
+      kind: 'agent',
+      tier: 'experimental',
+      weight: 0.01,
+      modalities: ['text'],
+      install: DECLARATIVE_APP_INSTALL,
+      declarativeApp: {
+        execution: 'delegated',
+        installer: {
+          type: 'archive',
+          urls: { 'linux-x64': 'https://releases.stdin.example/stdin-cli.tar.gz', 'linux-arm64': 'https://releases.stdin.example/stdin-cli.tar.gz' },
+          bin: 'stdin-cli'
+        },
+        auth: { type: 'none' },
+        transport: {
+          type: 'oneshot-exec',
+          args: ['-p', '--output-format', 'json'],
+          promptInput: 'stdin',
+          output: { format: 'json', textPath: 'result', sessionIdPath: 'sessionId' }
+        },
+        disclosure: 'Prompts go to Stdin CLI.',
+        policyVersion: '2026-11-28',
+        policyUrl: 'https://stdin.example/privacy'
+      }
+    };
+    await recordDataSharingConsent(configDir, [stdinAdapter.id], [declarativeAppDataSharingPolicy(stdinAdapter)]);
+    await setupDeclarativeApp(stdinAdapter, {
+      directory: configDir,
+      squire: {},
+      notify: () => {},
+      background: true,
+      backend,
+      fetcher: async () => new Response(stdinArchive, { status: 200 })
+    });
+    const stdinSource = new DeclarativeApp(stdinAdapter.id, { directory: configDir, adapter: () => stdinAdapter, backend });
+    const reply = await stdinSource.complete({
+      model: stdinAdapter.id,
+      cwd: configDir,
+      messages: [{ role: 'user', content: 'hello stdin' }],
+      tools: [],
+      stream: false
+    }, AbortSignal.timeout(15000));
+    expect(reply.text).toBe('got:hello stdin');
+    await stdinSource.close();
   });
 });

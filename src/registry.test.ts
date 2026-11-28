@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DECLARATIVE_APP_INSTALL, DECLARATIVE_OPENAI_INSTALL, adapterErrors, bundledRegistry, disabledAdapters, imageAdapters, isDeclarativeAdapter, isDeclarativeAppAdapter, knownAdapters, publishedRegistry, validateRegistry } from './registry.js';
+import { DECLARATIVE_APP_INSTALL, DECLARATIVE_OPENAI_INSTALL, adapterErrors, bundledRegistry, disabledAdapters, imageAdapters, isDeclarativeAdapter, isDeclarativeAppAdapter, isSupportedAdapter, knownAdapters, publishedRegistry, publishedV1Registry, validateRegistry } from './registry.js';
 import type { Adapter } from './registry.js';
 import { PROMOTIONAL_PROVIDERS } from './local/promotional-api.js';
 import { recommendedAdapters, scoutRetired } from './local/routing.js';
@@ -16,10 +16,13 @@ it('preserves the established vetted sources while allowing reviewed pool additi
   const established = ['opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'perch'];
   const ids = bundledRegistry.adapters.map(adapter => adapter.id);
   expect(ids.filter(id => established.includes(id))).toEqual(established);
-  for (const id of ids) {
-    expect(knownAdapters.has(id)).toBe(true);
-    expect(disabledAdapters.has(id)).toBe(false);
+  for (const adapter of bundledRegistry.adapters) {
+    expect(isSupportedAdapter(adapter)).toBe(true);
+    expect(disabledAdapters.has(adapter.id)).toBe(false);
   }
+  const omi = bundledRegistry.adapters.find(adapter => adapter.id === 'omi');
+  expect(isDeclarativeAppAdapter(omi)).toBe(true);
+  expect(omi?.declarativeApp?.installer).toEqual({ type: 'npm', package: '@builditomi/cli', bin: 'omi' });
   expect(validateRegistry(bundledRegistry)).toEqual(bundledRegistry);
   expect(bundledRegistry.adapters.some(a => /cloudflare|qwen|freebuff|apinex/.test(a.id))).toBe(false);
   expect(bundledRegistry.adapters.filter(a => a.tier === 'stable').map(a => a.id)).toEqual(['opencode', 'kilo', 'zro']);
@@ -113,14 +116,20 @@ it('ignores unknown adapter code and starts a route pass after every sync, chang
   expect(sync.enabled.map(adapter => adapter.id)).toEqual(['opencode']);
   await sync.sync(); expect(sync.enabled.map(adapter => adapter.id)).toEqual(['kilo']);
 });
-it('keeps site/registry.json synced byte-for-byte with the published form of registry/adapters.json', async () => {
-  const [adaptersBytes, siteBytes] = await Promise.all([
+it('keeps site/registry.json v1-compatible (no declarative:app) and site/v2/registry.json synced byte-for-byte with registry/adapters.json', async () => {
+  const [adaptersBytes, siteV1Bytes, siteV2Bytes] = await Promise.all([
     readFile(new URL('../registry/adapters.json', import.meta.url)),
     readFile(new URL('../site/registry.json', import.meta.url)),
+    readFile(new URL('../site/v2/registry.json', import.meta.url)),
   ]);
-  // Ended offers are left out when published; with none ended, the bytes match the source.
-  const published = Buffer.from(`${JSON.stringify(publishedRegistry(JSON.parse(adaptersBytes.toString('utf8'))), null, 2)}\n`);
-  expect(siteBytes.equals(published)).toBe(true);
+  const source = JSON.parse(adaptersBytes.toString('utf8'));
+  const publishedV1 = publishedV1Registry(source);
+  const publishedV2 = publishedRegistry(source);
+  expect(siteV1Bytes.equals(Buffer.from(`${JSON.stringify(publishedV1, null, 2)}\n`))).toBe(true);
+  expect(siteV2Bytes.equals(Buffer.from(`${JSON.stringify(publishedV2, null, 2)}\n`))).toBe(true);
+  expect(publishedV1.adapters.some(adapter => adapter.install === DECLARATIVE_APP_INSTALL)).toBe(false);
+  expect(validateRegistry(publishedV1)).toEqual(publishedV1);
+  expect(publishedV2.adapters.some(adapter => adapter.id === 'omi' && adapter.install === DECLARATIVE_APP_INSTALL)).toBe(true);
 });
 
 it('reaches the raw GitHub fallback if the primary static registry fails', async () => {
@@ -128,7 +137,7 @@ it('reaches the raw GitHub fallback if the primary static registry fails', async
   const sync = new RegistrySync({ directory: await directory(), fetcher });
   await sync.sync();
   expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
-    'https://grunt.run/registry.json',
+    'https://grunt.run/v2/registry.json',
     'https://raw.githubusercontent.com/bananaman614305/grunt/main/registry/adapters.json'
   ]);
   expect(sync.current).toEqual(bundledRegistry);

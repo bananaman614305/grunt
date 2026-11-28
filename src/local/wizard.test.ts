@@ -12,7 +12,7 @@ import { createLocalApp } from './api.js';
 import { Sources, SourceError } from './source.js';
 import { bundledRegistry } from '../registry.js';
 import type { Source } from './source.js';
-import { approveDataSharing, dataSharingPolicies, readDataSharingConsent, recordDataSharingConsent } from './data-sharing.js';
+import { approveDataSharing, dataSharingPolicies, readDataSharingConsent, recordDataSharingConsent, registryDataSharingPolicies } from './data-sharing.js';
 
 vi.mock('@clack/prompts', () => ({
   text: vi.fn(async () => 'https://example.test/v1'), multiselect: vi.fn(async () => ['groq']), confirm: vi.fn(async () => false), isCancel: (value: unknown) => typeof value === 'symbol',
@@ -367,10 +367,12 @@ it('leaves explicit sources out of default setup and add with the data-sharing o
   try {
     const first = stubActions([], { approveDataSharing });
     await wizard(undefined, first);
-    const others = defaultIds().filter(id => !dataSharingPolicies([id]).some(entry => entry.approval === 'explicit' || entry.approval === 'material'));
+    const extraPolicies = registryDataSharingPolicies(bundledRegistry);
+    const others = defaultIds().filter(id => !dataSharingPolicies([id], extraPolicies).some(entry => entry.approval === 'explicit' || entry.approval === 'material'));
     expect(first.installService).toHaveBeenCalledWith(others, expect.anything());
     expect(first.setupFallbacks).toHaveBeenCalledWith(expect.objectContaining({ adapters: others }));
     expect(await readDataSharingConsent(consentDir, ['kilo'])).toEqual([]);
+    expect(await readDataSharingConsent(consentDir, ['omi'], extraPolicies)).toEqual([]);
 
     const add = stubActions([], { approveDataSharing });
     await wizard('kilo', add);
@@ -457,7 +459,7 @@ it('pulls the registry from the RegistrySync URL and silently falls back to the 
   const fresh = { ...bundledRegistry, published: new Date(Date.parse(bundledRegistry.published) + 1000).toISOString() };
   const fetcher = vi.fn(async () => new Response(JSON.stringify(fresh), { status: 200 }));
   expect(await loadRegistry({ fetcher })).toEqual({ registry: fresh, origin: 'remote' });
-  expect(fetcher).toHaveBeenCalledWith('https://grunt.run/registry.json', expect.anything());
+  expect(fetcher).toHaveBeenCalledWith('https://grunt.run/v2/registry.json', expect.anything());
   expect((await loadRegistry({ fetcher: async () => { throw new Error('offline'); } })).origin).toBe('cache');
   await rm(dir, { recursive: true, force: true });
   expect(await loadRegistry({ fetcher: async () => { throw new Error('offline'); } })).toEqual({ registry: bundledRegistry, origin: 'bundled' });
@@ -616,4 +618,42 @@ it('discloses required usage telemetry and queues setup_completed without waitin
     expect(lines.indexOf(TELEMETRY_NOTICE)).toBeLessThan(lines.findIndex(line => line.includes('data sharing')));
     expect(JSON.parse(await readFile(join(consentDir, 'telemetry-setup.json'), 'utf8'))).toMatchObject({ sources_configured: defaultIds().length });
   } finally { posthog.closeAllConnections(); await new Promise(resolve => posthog.close(resolve)); }
+});
+
+it('allows explicitly adding a bundled declarative:app provider and records its data-sharing consent', async () => {
+  const actions = stubActions([], { installedSources: async () => 'opencode,kilo', approveDataSharing });
+  await wizard('omi', actions);
+  expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), ['omi'], expect.objectContaining({
+    dataSharingApproved: expect.arrayContaining(['omi'])
+  }));
+  expect(actions.installService).toHaveBeenCalledWith(['opencode', 'kilo', 'omi']);
+  expect(await readDataSharingConsent(consentDir, ['omi'], registryDataSharingPolicies(bundledRegistry))).toEqual(['omi']);
+});
+
+it('allows adding and preserving a declarative:app provider arriving only through registry sync', async () => {
+  const synced = structuredClone(bundledRegistry);
+  synced.published = new Date(Date.parse(bundledRegistry.published) + 60_000).toISOString();
+  const omiEntry = synced.adapters.find(adapter => adapter.id === 'omi')!;
+  const syncedApp = structuredClone(omiEntry);
+  syncedApp.id = 'omi-synced';
+  synced.adapters.push(syncedApp);
+  const experimental = synced.adapters.filter(adapter => adapter.tier === 'experimental');
+  for (const adapter of experimental) adapter.weight = 0.2 / experimental.length;
+
+  await writeFile(join(consentDir, 'registry.json'), JSON.stringify({ registry: synced, etag: '"synced-omi"' }), { mode: 0o600 });
+  await writeFile(join(consentDir, 'installed-sources.json'), JSON.stringify(['opencode', 'omi-synced']), { mode: 0o600 });
+  expect(await installedSources(consentDir)).toBe('opencode,omi-synced');
+
+  const actions = stubActions([], {
+    loadRegistry: vi.fn(async () => ({ registry: synced, origin: 'remote' as const })),
+    installedSources: () => installedSources(consentDir, synced),
+    approveDataSharing
+  });
+  await wizard('omi-synced', actions);
+  expect(actions.loadRegistry).toHaveBeenCalledOnce();
+  const setupOpts = actions.setup.mock.calls[0]![2] as { registry?: () => typeof synced; dataSharingApproved?: string[] };
+  expect(setupOpts.registry?.()).toBe(synced);
+  expect(setupOpts.dataSharingApproved).toEqual(expect.arrayContaining(['omi-synced']));
+  expect(actions.installService).toHaveBeenCalledWith(['opencode', 'omi-synced'], { registry: synced });
+  expect(await readDataSharingConsent(consentDir, ['omi-synced'], registryDataSharingPolicies(synced))).toEqual(['omi-synced']);
 });

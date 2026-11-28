@@ -1,0 +1,431 @@
+{
+  "version": 1,
+  "published": "2026-11-28T15:00:00.000Z",
+  "adapters": [
+    {
+      "id": "opencode",
+      "kind": "agent",
+      "tier": "stable",
+      "weight": 0.25263157894736843,
+      "modalities": [
+        "text"
+      ],
+      "install": "npm:opencode-ai",
+      "models": [
+        "deepseek-v4.1-flash-free",
+        "big-pickle"
+      ]
+    },
+    {
+      "id": "kilo",
+      "kind": "model",
+      "tier": "stable",
+      "weight": 0.3368421052631579,
+      "modalities": [
+        "text",
+        "image"
+      ],
+      "install": "builtin:kilo",
+      "model": "particle-ai/particle-1:free"
+    },
+    {
+      "id": "zro",
+      "kind": "model",
+      "tier": "stable",
+      "weight": 0.21052631578947367,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:zro",
+      "signup": "https://zro.moonmath.ai/overview",
+      "model": "deepseek-v4.1-flash",
+      "hints": "On /overview press 'API Keys'. On /api-keys press 'Create key', type the supplied key_name in 'Alias', leave 'Spend limit' and 'Expiration date' empty, press 'Create'. The new key is shown once in the dialog; press its 'Copy' button so it is stored, then finish. Never press a 'Revoke' button."
+    },
+    {
+      "id": "tokenharbor",
+      "kind": "model",
+      "tier": "experimental",
+      "weight": 0.010526315789473684,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:tokenharbor",
+      "signup": "https://tokenharbor.ai/dashboard",
+      "model": "deepseek-v4.1-flash:free",
+      "hints": "On /dashboard press 'API keys … Manage keys'. On /dashboard/api-keys press 'Show plaintext key'. In its dialog press 'Send code'. After 'Send code' the code is already on its way: read the inbox now (never wait) for the Token Harbor verification email, type its code in 'Verification code' and press 'Verify'. When the plaintext key is shown, the next action is to press 'Copy plaintext key' (never wait, never finish first); it stores the key. Then finish. Do not press '+ New key', 'Edit', 'Revoke' or 'Hide plaintext key'."
+    },
+    {
+      "id": "runcrate",
+      "kind": "model",
+      "tier": "experimental",
+      "weight": 0.010526315789473684,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:runcrate",
+      "signup": "https://www.runcrate.ai/inference/free",
+      "model": "deepseek-ai/DeepSeek-V4.1-Flash"
+    },
+    {
+      "id": "mistral-vibe",
+      "kind": "agent",
+      "tier": "experimental",
+      "weight": 0.010526315789473684,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:mistral-vibe",
+      "signup": "https://console.mistral.ai/",
+      "model": "zai-glm-5-3-flash-vibe-free",
+      "hints": "On console.mistral.ai/codestral/cli/authenticate press 'Authorize'. When the page then shows no controls, the CLI pairing is done: finish."
+    },
+    {
+      "id": "livekit",
+      "kind": "model",
+      "tier": "experimental",
+      "weight": 0.010526315789473684,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:livekit",
+      "signup": "https://cloud.livekit.io/",
+      "model": "deepseek-ai/deepseek-v4.1-flash",
+      "hints": "Open the grunt project (use 'Switch project' if another project is open), then 'Settings' in the project sidebar, then 'Observability settings' (/settings/observability). There the 'Agent observability' switch must be off: turn it off if it is on. Leave 'PII redaction' and 'Data region' unchanged, then finish. On /cli/confirm-auth ('Link project to LiveKit CLI'): press 'Project', choose grunt, then press 'Allow access'. After 'Allow access' is pressed it stays disabled while the CLI links: choose WAIT until the page shows 'Access granted'; never press it again. Once that page shows 'Access granted', the CLI pairing is complete: choose DONE now."
+    },
+    {
+      "id": "pollinations",
+      "kind": "model",
+      "tier": "experimental",
+      "weight": 0.010526315789473684,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:pollinations",
+      "signup": "https://enter.pollinations.ai/",
+      "model": "community/morriszdweck/glm-5.3-flash-free",
+      "hints": "On /keys: if 'Save' has not been pressed yet in this drive, press 'Edit secret key', set Budget to 0, check 'Quest balance only', leave only 'Generate' on, and press 'Save'. If 'Save' has already been pressed in this drive, the goal is complete: choose DONE now. The key list shown after Save is the confirmation of the saved settings, so no further click is needed. Never press 'Create', 'Delete secret key' or a second 'Edit secret key'."
+    },
+    {
+      "id": "beatapi",
+      "kind": "model",
+      "tier": "experimental",
+      "weight": 0.010526315789473684,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:beatapi",
+      "signup": "https://beatapi.io/",
+      "model": "deepseek-v4.1-flash-free",
+      "hints": "On /sign-in press 'Continue with Google' and choose the Squire-connected Google account. Leave 'Username or email' and 'Password' empty; they belong to password login, not to Google sign-in. After Google returns, /oauth/google can show only 'Back to sign in' while it signs in: wait there; do not press 'Back to sign in'. After sign-in open /dashboard/apikeys and create one key named grunt; the shown key is stored automatically."
+    },
+    {
+      "id": "perch",
+      "kind": "agent",
+      "tier": "experimental",
+      "weight": 0.010526315789473684,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:perch",
+      "signup": "https://www.perchai.app",
+      "model": "deepseek-flash-starter",
+      "hints": "On chat.perchai.app (the sign-in page if you are signed out) press 'Continue with Google' and choose the Squire-connected Google account. On the Google 'Sign in to Perch AI' screen press 'Continue'. The account opens on chat.perchai.app already on Starter (free); the sidebar shows 'Starter' and the home text is 'Your first message or file starts your account on Starter (free).' There is no name field, terms checkbox, phone step or card. Leave the optional 'How'd you find Perch?' survey unused, or dismiss it with '×'. Dismiss any 'Unlimited DeepSeek' paid banner; never buy a pass.\n\nStarter includes the 'Starter Data Program' (deidentified training data, on by default). The home page says to opt out in Settings → Privacy. Press 'Open account settings', then 'Privacy', and turn the program off if a toggle is shown. On this walk Privacy showed 'Your plan is protected' with no visible toggle.\n\nAccount shows plan Starter and allowance '20,000 PT / month (up to $20 API usage)'. Stay on Starter. In 'Billing', never press 'Get Pro', 'Get Ultra', 'Get 30 days for $69.99', 'Pro pass', 'Ultra pass', 'ADD $5 · 5,000 PT' or 'ADD $20 · 20,000 PT', and leave the paid-plan Terms checkbox unchecked. There is no API Keys page and no public API key. 'Terminal' shows only 'npm install -g perchai-cli' and 'Desktop download'; the home page also links 'get the Desktop app'. Auth is the Google or GitHub session, not a key. In the chat model picker leave 'Standard' selected; never pick 'Pro' (Upgrade) or a DeepSeek 'Pass'."
+    },
+    {
+      "id": "nous",
+      "kind": "model",
+      "tier": "experimental",
+      "weight": 0.010526315789473684,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:nous",
+      "signup": "https://portal.nousresearch.com/login",
+      "model": "qwen/qwen4-max:free",
+      "hints": "On portal.nousresearch.com/login type the Squire email in 'Email' and press 'Continue with email'. There is no separate signup page and no password. On the next page type the 6-digit code into 'Enter the 6-digit code' (from no-reply@auth-mail.nousresearch.com, subject 'Sign up for Nous Research', valid 10 minutes). If it does not arrive, press 'Resend code (30s)' and read the inbox again. The page text says 'By logging in I agree to the Terms & Privacy Policy'; there is no terms checkbox, name, phone or onboarding. The account lands on /orgs/.../billing at $0.00. Leave the optional 'Use your ChatGPT plan' banner unused. On API Keys the page says 'You need available funds to create or use API keys'. The Free Hermes plan is free models only; API keys always bill credits (Stripe top-up, minimum +$10). The free tier does not give a usable API key. Stop here. Never press a top-up or billing control, never add a card, and never buy credits. The shipped model id qwen/qwen4-max:free is paid. Current free model ids on /models are meituan/longcat-2.5:free, stepfun/step-3.7-flash:free, tencent/hy4-flash:free and upstage/solar-mini4:free.",
+      "status": "inactive"
+    },
+    {
+      "id": "kenari",
+      "kind": "model",
+      "tier": "experimental",
+      "weight": 0.010526315789473684,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:kenari",
+      "signup": "https://kenari.id/login",
+      "model": "ernie-5-5-flash-preview:free",
+      "hints": "On /overview open 'API Keys' (/keys). Press 'Buat API Key', type the supplied key_name in 'Label (opsional)', then open 'Pengaturan lanjutan', choose 'Model tertentu' and tick the checkbox 'ernie-5-5-flash-preview:free' (scroll to it; do not type into 'Cari model...'). Press 'Buat Key'. The new key is shown once: press its copy button so it is stored, then finish. Never press 'Ganti key' (rotate) or 'Cabut key' (revoke)."
+    },
+    {
+      "id": "numes",
+      "kind": "model",
+      "tier": "experimental",
+      "weight": 0.010526315789473684,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:numes",
+      "signup": "https://numes.ai/dashboard",
+      "model": "z-ai/glm-5.3-flash:free"
+    },
+    {
+      "id": "goedel",
+      "kind": "model",
+      "tier": "experimental",
+      "weight": 0.010526315789473684,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:goedel",
+      "signup": "https://inference.goedelmachines.com/keys",
+      "model": "deepseek/deepseek-v4.1-flash",
+      "hints": "On /keys type grunt in 'Key name', keep 'Free · prompts kept' selected, check the 'I agree to the Terms' checkbox, press 'Create key'. The new key (prefix sk-gm-free-) is shown with 'Copy key': press 'Copy key' so it is stored, then finish."
+    },
+    {
+      "id": "fikra",
+      "kind": "model",
+      "tier": "experimental",
+      "weight": 0.010526315789473684,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:fikra",
+      "signup": "https://fikraapi.co.ke/account/signup",
+      "model": "deepseek-v4-1-flash-economy-free",
+      "status": "inactive",
+      "hints": "On /account/signup type the Squire email in the email field and a new password in the password field, choose 'Google Search' in the 'Select an option' list, press 'Create Account with $0.50 free-model credit', then complete the emailed verification and create one key named grunt; press its copy button so it is stored."
+    },
+    {
+      "id": "openference",
+      "kind": "model",
+      "tier": "experimental",
+      "weight": 0.010526315789473684,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:openference",
+      "signup": "https://openference.com/register",
+      "model": "DeepSeek-V4.1-Flash-1017-Free"
+    },
+    {
+      "id": "darus",
+      "kind": "model",
+      "tier": "experimental",
+      "weight": 0.010526315789473684,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:darus",
+      "signup": "https://gateway.darusalfatah.id/",
+      "model": "darus/deepseek-v4.1-flash-1017-FREE",
+      "hints": "On the home page press 'Mulai Gratis' (start free). On /masuk?mode=register type grunt in 'Nama Anda' (name), the Squire email in the email field and press 'Kirim OTP' (send code). After 'Kirim OTP' read the inbox now, never type first: the six-digit Darus OTP is in the email, and reading the inbox fills the code field '______'. Then type grunt in 'username', a new password in 'Min. 12 karakter, kuat', leave the referral field 'Mis. 5UHRWNL8' empty, and press 'Daftar sekarang' (register). Then create one key named grunt."
+    },
+    {
+      "id": "aperture-ai",
+      "kind": "model",
+      "tier": "experimental",
+      "weight": 0.010526315789473684,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:aperture-ai",
+      "signup": "https://www.aperture-ai.run/login.html",
+      "model": "baidu/ernie-5.5-flash-preview:free",
+      "hints": "On /login.html press 'Continue with Google' and choose the Squire-connected account. Then open 'Chat' (/chat-app/) and press 'Dashboard': the account API key is shown there with a 'Copy' button. Press 'Copy' so it is stored, then finish; there is no create step."
+    },
+    {
+      "id": "reflection-beam",
+      "kind": "model",
+      "tier": "experimental",
+      "weight": 0.010526315789473684,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:reflection-beam",
+      "model": "reflection/beam-free"
+    },
+    {
+      "id": "millionseek",
+      "kind": "model",
+      "tier": "experimental",
+      "weight": 0.010526315789473684,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:millionseek",
+      "signup": "https://100milionseek.top/signup",
+      "model": "deepseek-v4.1-flash-free",
+      "hints": "On /signup, when the page lists neither an Email field nor 'Create my key', the signup form is still loading: choose WAIT (never press 'Get started', 'Sign in' or 'Refresh availability'). When the Email field shows the Squire email, complete the Cloudflare check and press 'Create my key'. While 'Create my key' is disabled after the press, wait. The new key is shown once with a 'Copy key' button: press 'Copy key' so it is stored, then finish. On /dashboard never press 'Copy' (it copies the invite link, not the key), 'Rotate key' or 'Delete account'."
+    },
+    {
+      "id": "freepi",
+      "kind": "model",
+      "tier": "experimental",
+      "weight": 0.010526315789473684,
+      "modalities": [
+        "text"
+      ],
+      "install": "builtin:freepi",
+      "signup": "https://freepi.ai",
+      "model": "deepseek-v4.1-flash",
+      "hints": "On github.com/login/device/select_account press 'Continue as' the account Squire uses for GitHub. On /login/device type the device code from this goal into the 'User code' boxes (one character each), press 'Continue', then 'Authorize'."
+    },
+    {
+      "id": "omi",
+      "kind": "agent",
+      "tier": "experimental",
+      "weight": 0.010526315789473684,
+      "modalities": [
+        "text"
+      ],
+      "install": "declarative:app",
+      "signup": "https://cli.builditomi.com/device",
+      "hints": "On auth.builditomi.com/login press 'Continue with Google' and choose the Squire-connected Google account. On cli.builditomi.com/device type the verification code from user_code into 'Code shown in your terminal' and press 'Approve'. Never choose Pro, Pro+, Max, Black Friday offers, checkout, or add a payment method.",
+      "declarativeApp": {
+        "execution": "delegated",
+        "installer": {
+          "type": "npm",
+          "package": "@builditomi/cli",
+          "bin": "omi"
+        },
+        "auth": {
+          "type": "device-code",
+          "command": [
+            "login"
+          ],
+          "allowedOrigins": [
+            "https://cli.builditomi.com"
+          ],
+          "urlPattern": "^https://cli\\.builditomi\\.com/device",
+          "codePattern": "^\\s*([A-Z0-9]{4}-[A-Z0-9]{4})\\s*$",
+          "authFile": ".omi/credentials.json",
+          "statusArgs": [
+            "whoami"
+          ],
+          "statusMatch": "@"
+        },
+        "transport": {
+          "type": "oneshot-exec",
+          "args": [
+            "-p",
+            "--plan",
+            "--output-format",
+            "json"
+          ],
+          "promptInput": "stdin",
+          "resumeArgs": [
+            "--resume",
+            "{{sessionId}}"
+          ],
+          "output": {
+            "format": "json",
+            "textPath": "result",
+            "sessionIdPath": "sessionId"
+          },
+          "errors": {
+            "quota": "limit|quota|credits|402|429|resets",
+            "loggedOut": "not signed in|unauthorized|401|omi login"
+          }
+        },
+        "env": {
+          "OMI_NO_UPDATE_CHECK": "1",
+          "OMI_NO_BROWSER": "1"
+        },
+        "disclosure": "Prompts and workspace context go to BuildItOmi (Omi CLI) and its configured OpenRouter model backends (Google Vertex AI and US-hosted open-model providers) with zero data retention requested. BuildItOmi states prompts are not used to train public models; upstream retention and review guarantees are not independently verified.",
+        "policyVersion": "2026-10-31",
+        "policyUrl": "https://builditomi.com/legal/privacy",
+        "name": "Omi CLI"
+      }
+    }
+  ],
+  "candidates": [
+    {
+      "id": "inferbase",
+      "signup": "https://inferbase.ai/register",
+      "hints": "On inferbase.ai/register type the Squire email in the email field; name and company may be left empty. Type a new password in the password field (at least 8 characters, with an uppercase letter, a lowercase letter and a digit) and again in the confirm field, then create the account. Do not add a card. After submit, read the inbox now for the verification email from hello@inferbase.ai (valid 24 hours) and confirm the address before calling the API. On first login, skip any onboarding that can be skipped. Open /api-keys, create one key named grunt; the key is shown once: copy it so it is stored, then finish. Stay on the Free plan. Never press Upgrade, Billing, add credit, or add a payment method.",
+      "name": "Inferbase",
+      "models": [
+        "auto"
+      ],
+      "docs": "https://inferbase.ai/pricing",
+      "notes": "Official Free plan: $0, no time limit, no card. 5,000 requests/month; managed models priced up to $2.00 per 1M output tokens; 100 managed requests and $0.50 of model usage a day. Email must be verified before inference. OpenAI-compatible at https://api.inferbase.ai/v1; model id is auto."
+    },
+    {
+      "id": "exaone",
+      "signup": "https://id.exaone.ai/signup",
+      "hints": "On id.exaone.ai/signup complete the Korean form: type the Squire email in the email field (it is checked for a duplicate), a new password twice (it must include a character from !@#$%^~+-_), and grunt in the nickname field (permanent; 25-character limit). In the country modal choose the account country. Check the required Terms of Service box and the required 19+ age box, then submit. A 6-digit code is emailed from exaone@lgresearch.ai and is valid for 30 minutes: type it into the code field (if it is rejected, type it more slowly) and confirm. Then sign in at id.exaone.ai/login: type the Squire email in '이메일 계정을 입력하세요' and the password in '비밀번호를 입력하세요', and submit. When the docs site asks for API Platform terms consent, accept the required consent (this is not a card or a paid plan). Open docs.exaone.ai/en/my-profile/api-key and create the key; it is shown once and expires in 30 days: copy it so it is stored, then finish. Never add a card or open billing.",
+      "name": "EXAONE API Platform (LG AI Research)",
+      "models": [
+        "k-exaone_v2.5"
+      ],
+      "docs": "https://docs.exaone.ai/en/docs/changelog",
+      "notes": "Official changelog 2026-11-09: the API is currently available free of charge. Rate limits apply. Optional higher daily limit if you consent to usage-data analysis; consent is not required. Keys expire after 30 days. Base URL https://api.exaone.ai; model k-exaone_v2.5."
+    },
+    {
+      "id": "kyrune",
+      "name": "Kyrune Roleplay API",
+      "signup": "https://kyrune.com/login",
+      "hints": "On /login press 'Create account' in the header so the page shows 'Create your Kyrune account'. Type the Squire email in 'Email' and a new password (at least 8 characters) in 'Password', then press 'Create account' (or use 'Continue with Google' with the Squire-connected Google account). Stay on the Free plan. Then open the API dashboard at /api/ (footer link 'API dashboard'), name a key grunt, create it and copy the key (it starts with kammii-) so it is stored, then finish. Base URL https://kyrune.com/api/v1, model kyrune-mini-1.0-free. Never press 'Start free' trials of paid plans, 'Upgrade', billing, or add a card; never revoke or rotate keys.",
+      "models": [
+        "kyrune-mini-1.0-free"
+      ],
+      "docs": "https://kyrune.com/docs",
+      "notes": "Free plan, no card: 100 requests/day on Kyrune Mini (28K context, resets 00:00 UTC), one reply at a time; 10/day on other models. Roleplay-focused model. OpenAI-style API at https://kyrune.com/api/v1."
+    },
+    {
+      "id": "inferall",
+      "name": "InferAll AI Gateway",
+      "signup": "https://inferall.ai/auth?next=/keys",
+      "hints": "On /auth ('Create your account') type the Squire email in 'Email' and press 'Continue with email', then finish the email sign-in from the Squire inbox (or press 'Continue with Google' with the Squire-connected Google account). The same form signs in an existing account. After sign-in you land on /keys: create an API key named grunt and copy it (it starts with ifu_) so it is stored, then finish. Use only the free open NIM models, e.g. nvidia/nemotron-3-ultra-550b-a55b, at https://api.inferall.ai/v1. Never buy the '$5 activation' or starter pack, never press Starter, Pro, upgrade or billing, never add a card, and never revoke or rotate keys.",
+      "models": [
+        "nvidia/nemotron-3-ultra-550b-a55b"
+      ],
+      "docs": "https://inferall.ai/docs",
+      "notes": "Free plan, no card: open NVIDIA NIM models at $0, 25 calls/day (resets 00:00 UTC). OpenAI-compatible /v1 and Anthropic-compatible /v1/messages at https://api.inferall.ai. Premium models are paid."
+    },
+    {
+      "id": "anyapi",
+      "name": "AnyAPI",
+      "signup": "https://dash.anyapi.ai/sign-in",
+      "hints": "On dash.anyapi.ai/sign-in press the 'Sign Up' link at the bottom so the form shows 'Confirm Password *'. Type the Squire email in 'Email address *' and a new password in 'Password *' and 'Confirm Password *', then press 'Sign Up' (or use 'Continue with Google' with the Squire-connected Google account). Stay on the Free plan. In the dashboard open Settings, then API Keys in the sidebar, press 'Create API Key', name it grunt, and copy the generated key so it is stored, then finish. Base URL https://api.anyapi.ai/v1. Never choose Pay-as-you-go, Developer, Pro or Enterprise, never press upgrade or billing, never add a card, and never revoke or rotate keys.",
+      "docs": "https://docs.anyapi.ai/guides/quick-start",
+      "notes": "Free plan, no card: 100K ANY tokens/day on its free models (not named on the pricing page). OpenAI-style API at https://api.anyapi.ai/v1. Signup hints from a view-only walk on 2026-11-25; key steps from its quick-start docs."
+    },
+    {
+      "id": "orcarouter",
+      "signup": "https://www.orcarouter.ai/register",
+      "name": "OrcaRouter",
+      "models": [
+        "deepseek/deepseek-v4.1-flash-free",
+        "deepseek/deepseek-v4-flash-free",
+        "z-ai/glm-5.3-flash-free",
+        "tencent/hy4-preview-free",
+        "tencent/hy3-free"
+      ],
+      "docs": "https://docs.orcarouter.ai/routing/free-models",
+      "hints": "On /register ('Create your account') type the Squire email in 'Enter your email address' and press 'Send code'. Read the inbox now for the OrcaRouter code, type it in 'Enter verification code', type a new password in 'Enter your password' and press 'Create account'. ('GitHub', 'Google' and 'Microsoft' buttons are also on /register if the Squire browser is already signed in there.) Then open the Dashboard at /console and create an API key: type grunt as its Name, leave Credit limit blank, set Expiration to never, create it and copy the key (starts with sk-orca-) so it is stored, then finish. Call only model ids ending in -free; the same id without -free bills. Never top up, join a deposit-match offer or hackathon, or add a card.",
+      "notes": "Free -free models at $0, no card (seen on /register). Free tier 10 RPM / 50 requests a day per its /api/free-package/public. OpenAI-compatible base https://api.orcarouter.ai/v1. Dashboard key steps are from its docs, not a finished signup."
+    },
+    {
+      "id": "tokenrouter",
+      "signup": "https://www.tokenrouter.com/",
+      "name": "TokenRouter",
+      "models": [
+        "deepseek/deepseek-v4.1-flash-1017-free"
+      ],
+      "docs": "https://www.tokenrouter.com/models/deepseek/deepseek-v4.1-flash-1017-free/",
+      "hints": "On https://www.tokenrouter.com/ press 'Sign Up' in the nav to open the 'Create an Account' dialog. Type the Squire email in 'Email' and press 'Send Code'; read the inbox now for the TokenRouter code and type it in 'Verification Code'. Type a new password in 'Password', tick 'Click to verify you're a human', tick 'Accept Conditions of Use' and 'Accept Terms of Use and Privacy Policy', then press 'Sign Up'. Then open /console, find API key management, create a key named grunt and copy it so it is stored, then finish. Use only model deepseek/deepseek-v4.1-flash-1017-free. Never top up, use 'Top up 8, get 2 free', or add a card (payments go through Stripe).",
+      "notes": "DeepSeek V4.1 Flash 1017 free route at $0, billed as a Thanksgiving special with no end date. Signup dialog has a Cap captcha. Console key steps are not yet seen. OpenAI-compatible: https://api.tokenrouter.com/v1."
+    },
+    {
+      "id": "alysis-code",
+      "signup": "https://alysiscode.com/login",
+      "name": "Alysis Code",
+      "docs": "https://alysisai.com/news/alysis-code-paid-plans",
+      "hints": "On /login ('Welcome back') press 'Continue with Google' and choose the Squire-connected Google account. If that is not possible, press 'New here? Create an account' and use the Squire email, grunt as the name and a new password. The free plan is automatic: 50 credits every 30 days, no card. Install the Linux CLI from https://alysisai.com/ and sign in with that account. Never choose the Beta or Alpha plans, open checkout or add a card.",
+      "notes": "Coding agent (desktop app + Linux CLI) by Alysis AI. Free plan: 50 credits per 30 days (up to $0.50 of usage), 4 hosted models, no card. Create-account form fields beyond 'Your name' were not seen."
+    }
+  ]
+}

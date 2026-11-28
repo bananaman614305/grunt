@@ -1,20 +1,43 @@
+import { constants, closeSync, fstatSync, lstatSync, openSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { bundledRegistry, isSupportedAdapter, validateRegistry } from '../registry.js';
+import { bundledRegistry, isSupportedAdapter, publishedV1Registry, validateRegistry } from '../registry.js';
 import type { Registry } from '../registry.js';
+import { hasOwnerMode } from './private-file.js';
 
 // The slow router loop (docs/router.md): re-read the registry, then open routes.
 export const REGISTRY_INTERVAL = 6 * 60 * 60 * 1000;
-// Static registry hosted on GitHub Pages with a raw GitHub fallback.
+// Static v2 registry (includes declarative:app) on GitHub Pages with a raw GitHub fallback.
+// Older daemons <= 0.10.21 continue syncing the v1-compatible /registry.json and /v1/registry feeds.
 export const REGISTRY_URLS = [
-  'https://grunt.run/registry.json',
+  'https://grunt.run/v2/registry.json',
   'https://raw.githubusercontent.com/bananaman614305/grunt/main/registry/adapters.json'
 ];
+// Synchronous read of the private cached registry when newer than the bundle,
+// so synced adapters are recognized before they ship in a release bundle.
+export function readEffectiveRegistry(directory: string): Registry {
+  let fd: number | undefined;
+  try {
+    const parent = lstatSync(directory);
+    if (!parent.isDirectory() || parent.isSymbolicLink() || !hasOwnerMode(parent, 0o700)) return bundledRegistry;
+    const path = join(directory, 'registry.json');
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const info = fstatSync(fd);
+    if (!info.isFile() || !hasOwnerMode(info, 0o600) || info.size > 1024 * 1024) return bundledRegistry;
+    const saved = JSON.parse(readFileSync(fd, 'utf8')) as { registry?: unknown };
+    const cached = validateRegistry(saved.registry);
+    return Date.parse(cached.published) > Date.parse(bundledRegistry.published) ? cached : bundledRegistry;
+  } catch { return bundledRegistry; }
+  finally { if (fd !== undefined) closeSync(fd); }
+}
 export class RegistrySync {
   current: Registry = structuredClone(bundledRegistry);
   private etag: string | undefined;
+  // Pre-v2 caches (written by <= 0.10.23 from /registry.json) lack `feed: 2`.
+  // Allow a single same-timestamp replacement when upgrading to the v2 feed.
+  private legacyCache = false;
   private timer: ReturnType<typeof setInterval> | undefined;
   private pending: Promise<void> | undefined;
   private controller = new AbortController();
@@ -30,12 +53,17 @@ export class RegistrySync {
     exchange?: () => Promise<void>;
   }) {}
   get enabled() { return this.current.adapters.filter(adapter => isSupportedAdapter(adapter)); }
-  private accepts(registry: Registry) {
+  private accepts(registry: Registry, allowFeedMigration = false) {
     const incoming = Date.parse(registry.published), current = Date.parse(this.current.published);
     // Each publication is immutable. A release's bundled list is the initial
     // floor; only a newer publication may add, change or revoke its entries.
-    return incoming > current || incoming === current && isDeepStrictEqual(
-      { ...registry, published: '' }, { ...this.current, published: '' }
+    // The sole same-timestamp exception is migrating a default pre-v2 cache to
+    // the v2 feed whose v1 projection matches the cached v1 registry exactly.
+    if (incoming > current) return true;
+    if (incoming !== current) return false;
+    if (isDeepStrictEqual({ ...registry, published: '' }, { ...this.current, published: '' })) return true;
+    return allowFeedMigration && !this.options.url && this.legacyCache && isDeepStrictEqual(
+      { ...publishedV1Registry(registry), published: '' }, { ...this.current, published: '' }
     );
   }
   async load() {
@@ -45,6 +73,7 @@ export class RegistrySync {
       if (this.accepts(registry)) {
         this.current = registry;
         this.etag = typeof saved.etag === 'string' ? saved.etag : undefined;
+        this.legacyCache = !this.options.url && saved.feed !== 2;
       }
     } catch { /* A missing or damaged cache uses the packaged registry. */ }
     this.options.changed?.(this.current);
@@ -65,7 +94,7 @@ export class RegistrySync {
           if (response.status === 304) { unchanged = true; break; }
           if (response.status === 200) {
             const candidate = validateRegistry(await response.json());
-            if (!this.accepts(candidate)) continue;
+            if (!this.accepts(candidate, true)) continue;
             registry = candidate; etag = response.headers.get('ETag') ?? undefined;
             break;
           }
@@ -76,10 +105,10 @@ export class RegistrySync {
         const temporary = join(this.options.directory, `registry.${randomUUID()}.tmp`);
         try {
           await mkdir(this.options.directory, { recursive: true, mode: 0o700 });
-          await writeFile(temporary, JSON.stringify({ registry, etag }), { mode: 0o600, flag: 'wx' });
+          await writeFile(temporary, JSON.stringify({ registry, etag, feed: 2 }), { mode: 0o600, flag: 'wx' });
           await rename(temporary, join(this.options.directory, 'registry.json'));
         } finally { await rm(temporary, { force: true }); }
-        this.current = registry; this.etag = etag;
+        this.current = registry; this.etag = etag; this.legacyCache = false;
         this.options.changed?.(registry);
       } else if (!unchanged) throw new Error('Registry unavailable');
     } catch { this.options.notify?.('Registry update unavailable; keeping the last good list'); }

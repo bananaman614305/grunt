@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
 import { lstat, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { configRoot } from '../brand.js';
@@ -23,6 +22,7 @@ import {
   prepareAppDirectories,
   readAppState,
   requireSandboxBackend,
+  resolveInstalledBinary,
   runSandboxedCommand,
   sandboxPathsFor,
   spawnSandboxed,
@@ -224,7 +224,7 @@ export class DeclarativeApp implements Source {
     const state = await readAppState(this.id, this.directory);
     const paths = appSandboxPaths(this.id, this.directory);
     if (!state || state.installerFingerprint !== installerFingerprint(adapter.declarativeApp.installer)
-      || !existsSync(join(paths.pkg, state.binaryRelPath))) {
+      || !(await resolveInstalledBinary(paths.pkg, state.binaryRelPath))) {
       throw new SourceError('not_installed', `${this.id} sandboxed app is not installed; run usegrunt add ${this.id}`);
     }
     const authed = await checkAppAuth(adapter, this.directory, state.binaryRelPath, signal, this.options.backend);
@@ -550,8 +550,9 @@ export async function setupDeclarativeApp(
       if (auth.type === 'device-code' && !capturedCode) return;
       const url = capturedUrl;
       const code = capturedCode;
+      const label = adapter.declarativeApp.name ?? adapter.id;
       const goal = [
-        `Complete the ${adapter.declarativeApp.name ?? adapter.id} CLI sign-in started by Grunt using this user's existing account or a free account.`,
+        `Complete the ${/\bcli\b/i.test(label) ? label : `${label} CLI`} sign-in started by Grunt using this user's existing account or a free account.`,
         ...(code ? [`Enter the verification code ${code}.`] : []),
         ...(adapter.hints ? [adapter.hints] : []),
         'Do not add a payment method, pay, top up, or switch to a paid plan. Authorize only this CLI sign-in and finish.'
@@ -559,7 +560,7 @@ export async function setupDeclarativeApp(
       pairing = squire.signup!(adapter.id, url, goal, code ? { user_code: code } : undefined);
       void pairing.catch(err => {
         failure = err instanceof Error ? err : new Error(`${adapter.id} browser sign-in failed`);
-        lifetime.abort();
+        lifetime.abort(failure);
       });
     };
 
@@ -625,7 +626,7 @@ export async function setupDeclarativeApp(
         signupBackoffUntil: Math.max(attemptState.signupBackoffUntil ?? 0, failedAt + SIGNUP_BACKOFF_MS),
         lastSignupFailure: 'signup_failed'
       }, directory).catch(() => {});
-      throw err;
+      throw failure ?? err;
     } finally {
       lifetime.abort();
       await opener.close();

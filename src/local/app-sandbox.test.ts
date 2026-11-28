@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,6 +21,7 @@ import {
   listInstalledApps,
   prepareAppDirectories,
   pruneRetiredAppSandboxes,
+  resolveInstalledBinary,
   runSandboxedCommand,
   sandboxPathsFor,
   validateTarGzArchive
@@ -322,5 +323,78 @@ describe('app-sandbox', () => {
     } finally {
       await new Promise<void>(r => server.close(() => r()));
     }
+  });
+
+  it('resolves sandbox-absolute /sandbox/pkg symlinks (uv tool layout) while rejecting escapes and loops', async () => {
+    const pkgDir = await makeTemp('grunt-resolve-bin-');
+    await mkdir(join(pkgDir, 'bin'), { recursive: true });
+    await mkdir(join(pkgDir, 'tools', 'demo', 'bin'), { recursive: true });
+    const target = join(pkgDir, 'tools', 'demo', 'bin', 'demo');
+    await writeFile(target, '#!/bin/sh\necho ok\n', { mode: 0o755 });
+
+    // Valid sandbox-absolute symlink (what `uv tool install` writes inside bwrap)
+    await symlink(join(SANDBOX_PKG, 'tools', 'demo', 'bin', 'demo'), join(pkgDir, 'bin', 'demo'));
+    expect(await resolveInstalledBinary(pkgDir, join('bin', 'demo'))).toBe(target);
+
+    // Sandbox-absolute traversal escape must be rejected
+    await symlink(`${SANDBOX_PKG}/../../etc/passwd`, join(pkgDir, 'bin', 'escape-rel'));
+    expect(await resolveInstalledBinary(pkgDir, join('bin', 'escape-rel'))).toBeUndefined();
+
+    // Direct host escape must be rejected
+    await symlink('/etc/passwd', join(pkgDir, 'bin', 'escape-abs'));
+    expect(await resolveInstalledBinary(pkgDir, join('bin', 'escape-abs'))).toBeUndefined();
+
+    // Symlink loop must be rejected
+    await symlink(join(SANDBOX_PKG, 'bin', 'loop-b'), join(pkgDir, 'bin', 'loop-a'));
+    await symlink(join(SANDBOX_PKG, 'bin', 'loop-a'), join(pkgDir, 'bin', 'loop-b'));
+    expect(await resolveInstalledBinary(pkgDir, join('bin', 'loop-a'))).toBeUndefined();
+
+    // Directory target must be rejected
+    expect(await resolveInstalledBinary(pkgDir, 'bin')).toBeUndefined();
+  });
+
+  it('delivers stdin as a regular-file FD inside bwrap so CLIs checking fstat(0).isFile() read it cleanly', async () => {
+    const backend = await detectSandboxBackend();
+    if (!backend || backend.kind !== 'bwrap') return;
+
+    const configDir = await makeTemp('grunt-stdin-fd-');
+    const paths = await prepareAppDirectories('stdin-app', configDir);
+    await mkdir(paths.pkg, { recursive: true, mode: 0o700 });
+    const reqWork = await makeTemp('grunt-stdin-work-');
+    const { mounts } = await collectHostRuntimeMounts({});
+    const script = [
+      'const fs = require("node:fs");',
+      'const st = fs.fstatSync(0);',
+      'const body = st.isFile() || st.isFIFO() ? fs.readFileSync(0, "utf8") : "";',
+      'const workEntries = fs.readdirSync(process.cwd());',
+      'console.log(JSON.stringify({ isFile: st.isFile(), isSocket: st.isSocket(), body, workEntries }));'
+    ].join(' ');
+    const res = await runSandboxedCommand('node', ['-e', script], {
+      mode: 'run',
+      pkgDir: paths.pkg,
+      homeDir: paths.home,
+      workDir: reqWork,
+      extraRuntimeMounts: mounts
+    }, { signal: AbortSignal.timeout(15000), timeoutMs: 15000, stdin: 'hello via fd', backend });
+    expect(res.code).toBe(0);
+    expect(JSON.parse(res.stdout.trim())).toEqual({
+      isFile: true,
+      isSocket: false,
+      body: 'hello via fd',
+      workEntries: []
+    });
+  });
+
+  it('cleanAppSandbox removes read-only 0o500 cache directories created by sandboxed CLIs', async () => {
+    const configDir = await makeTemp('grunt-clean-ro-');
+    const paths = await prepareAppDirectories('ro-app', configDir);
+    const cacheDir = join(paths.home, '.cache', 'locked-dir');
+    await mkdir(cacheDir, { recursive: true, mode: 0o700 });
+    await writeFile(join(cacheDir, 'plugin.json'), '{"locked":true}\n', { mode: 0o400 });
+    await chmod(cacheDir, 0o500);
+
+    expect(await cleanAppSandbox('ro-app', configDir)).toBe(true);
+    expect(existsSync(paths.root)).toBe(false);
+    expect(await listInstalledApps(configDir)).toEqual([]);
   });
 });
