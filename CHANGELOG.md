@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## 0.10.25 — 2026-11-28
+
+- Allow Free-Pi's provider-granted bonus balances (`bonus_credits` and `bonus_wallet_credits`, such as return bonuses) while still requiring non-negative bonus counts, keeping purchased, premium, USD, and every other recognized wallet strictly at zero before and after inference, and failing closed on unknown spending controls (#282).
+- Update Free-Pi's pinned client contract to `0.6.28` so routes stay active after Free-Pi raised its published latest and minimum client version (#281).
+- Fix unattended device-code signups and post-signup availability probes: offer a supplied device code under the page's own code field label when an unattended drive is unsure (unblocking Omi CLI device sign-in), forward Free-Pi's device code facts (including `device_code`) through `setup()` into Trusty Squire's browser signup, and discard stale negative availability probes once a background signup succeeds so newly opened routes are probed immediately (#280).
+
 ## 0.10.24 — 2026-11-28
 
 - Fix unattended registry signups: pass Grunt's isolated profile email to signup drives (including 100milionseek and Darus), run CAPTCHA auto-solve observations after unfinished turns, capture API keys shown in `<pre>` blocks or copy buttons via Squire `captureSource`, create dated Pollinations keys with budget filled, stop immediately when verification mail requires missing inbox consent, and log a durable one-line outcome for each background provider opening (#278).
