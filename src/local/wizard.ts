@@ -557,7 +557,7 @@ const wizardActions = { smokeTest, resumeBackground, probeOperator: probeSetupOp
 type Optional = 'probeOperator' | 'chooseHarness' | 'connectHarness' | 'signupHarness' | 'listFreeModels' | 'installedSources' | 'createSquire' | 'banner' | 'loadRegistry' | 'checkServiceSources' | 'connectHarnesses' | 'prepareHarnesses' | 'configurePi' | 'approveDataSharing';
 // Shown whenever the build reports usage; docs/router.md#4-usage-telemetry lists every field.
 export const TELEMETRY_NOTICE = '✓ usage telemetry: on, required to use Grunt (anonymous daily counts to PostHog US; no prompts, keys or paths)';
-export async function wizard(add?: string, actions: Omit<typeof wizardActions, Optional> & Partial<Pick<typeof wizardActions, Optional>> = wizardActions) {
+export async function wizard(add?: string, actions: Omit<typeof wizardActions, Optional> & Partial<Pick<typeof wizardActions, Optional>> = wizardActions, options: { force?: boolean } = {}) {
   if (add === '') throw new Error('Specify a provider name');
   if (add && disabledAdapters.has(add)) throw new Error(`${add} routing is disabled`);
   if (add && (!knownAdapters.has(add) || !Object.hasOwn(PROVIDERS, add))) throw new Error(`Choose a supported provider: ${Object.keys(PROVIDERS).filter(id => knownAdapters.has(id)).join(', ')}`);
@@ -609,7 +609,7 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
       table.start();
       try {
         await actions.setup(notify, [add], { ...(squire ? { squire } : {}), dataSharingApproved: consent.approved, directory: installedConfigRoot(),
-          ...(add === 'beatapi' ? { upgradeBeatAPI: true } : {}) });
+          ...(add === 'beatapi' ? { upgradeBeatAPI: true } : {}), ...(options.force ? { force: true } : {}) });
         await actions.installService(sources.filter(id => !skipped.has(id)));
         const port = await setupPort();
         await actions.checkService(port);

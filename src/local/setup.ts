@@ -46,6 +46,7 @@ import { verifyKiloAccess } from './kilo.js';
 import { DATA_SHARING_POLICIES, dataSharingPolicies, readDataSharingConsent, registryDataSharingPolicies, requiresExplicitDataSharing } from './data-sharing.js';
 import { isLocalVaultReference, localVaultReference, parseLocalVaultReference, resolveSquireGrant, writePrivateProviderGrant } from './provider-grant.js';
 import type { SquireGrantSource } from './provider-grant.js';
+import { assertProviderNotRefused, clearProviderRefusal, isAccountRefusal, readProviderRefusal, recordProviderRefusal } from './provider-refusal.js';
 import {
   credentialFingerprint,
   defaultProviderOrigin,
@@ -212,9 +213,16 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
       if (error instanceof SourceError && error.code === 'cancelled' || error instanceof Error && error.name === 'AbortError') throw error;
       inconclusive ??= { error };
     };
+    // HTTP 403 or a banned account: record it and stop. Signing up again would
+    // only create more accounts for a provider that refuses this one.
+    const stopIfRefused = async (error: unknown) => {
+      options.signal?.throwIfAborted();
+      if (isAccountRefusal(error)) throw await recordProviderRefusal(options.directory ?? configRoot(), provider, error);
+    };
+    await assertProviderNotRefused(options.directory ?? configRoot(), provider);
     try {
       if (await router.hasKey?.(provider)) { options.signal?.throwIfAborted(); options.notify(`${provider}: connected`); continue; }
-    } catch (error) { rememberFailure(error); }
+    } catch (error) { await stopIfRefused(error); rememberFailure(error); }
     let triedLocalVault = false;
     if (isVaultProvider(provider)) {
       let vaulted: Awaited<ReturnType<typeof readVaultGrant>>;
@@ -233,6 +241,7 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
             options.signal?.throwIfAborted();
             options.notify(`${provider}: local vault key could not be verified as free with top-ups disabled; falling back to Squire`);
           } else {
+            await stopIfRefused(error);
             const status = rejectedStatus(error);
             if (!status) rememberFailure(error);
             else { options.signal?.throwIfAborted(); options.notify(`${provider}: local vault key rejected (HTTP ${status})`); }
@@ -277,6 +286,7 @@ export async function setupProviders(squire: SetupSquire, router: { addGrant(pla
             rememberFailure(error);
             continue;
           }
+          await stopIfRefused(error);
           const status = rejectedStatus(error);
           if (!status) rememberFailure(error);
           else { options.signal?.throwIfAborted(); options.notify(`${provider}: saved key rejected (HTTP ${status})`); }
@@ -1316,7 +1326,7 @@ export async function bootstrapKilo(squire: SetupSquire, directory: string, noti
   if (result.dropped.length) throw new SetupFailure('no verified Kilo credential');
 }
 
-export async function setup(notify = console.log, providers: string[] = [], options: { squire?: SetupSquire; signal?: AbortSignal; directory?: string; background?: boolean; dataSharingApproved?: readonly string[]; connect?: () => Promise<void>; upgradeBeatAPI?: boolean; registry?: () => Registry; exportToVault?: boolean; verifyRuncrateGrant?: RuncrateGrantVerifier } = {}) {
+export async function setup(notify = console.log, providers: string[] = [], options: { squire?: SetupSquire; signal?: AbortSignal; directory?: string; background?: boolean; dataSharingApproved?: readonly string[]; connect?: () => Promise<void>; upgradeBeatAPI?: boolean; registry?: () => Registry; exportToVault?: boolean; verifyRuncrateGrant?: RuncrateGrantVerifier; force?: boolean } = {}) {
   const retired = providers.find(provider => disabledAdapters.has(provider));
   if (retired) throw new Error(`${retired} routing is disabled`);
   const location = options.directory ?? configRoot();
@@ -1324,6 +1334,18 @@ export async function setup(notify = console.log, providers: string[] = [], opti
   const unsupported = providers.find(id => !knownAdapters.has(id) && !localOptInAdapterIds.has(id)
     && !isDeclarativeAdapter(currentRegistry.adapters.find(adapter => adapter.id === id)));
   if (unsupported) throw new Error('Choose a supported Grunt provider');
+  // A provider that refused this account gets no new signup until the person
+  // clears the refusal with `usegrunt add <provider> --force`.
+  const refused: string[] = [];
+  for (const provider of providers) {
+    if (options.force) await clearProviderRefusal(location, provider);
+    else if (await readProviderRefusal(location, provider)) refused.push(provider);
+  }
+  if (refused.length) {
+    if (refused.length === providers.length) await assertProviderNotRefused(location, refused[0]!);
+    for (const provider of refused) notify(`${provider}: skipped; it refused this account. Run usegrunt add ${provider} --force to retry`);
+    providers = providers.filter(id => !refused.includes(id));
+  }
   const extraPolicies = registryDataSharingPolicies(currentRegistry);
   const allPolicies = [...DATA_SHARING_POLICIES, ...extraPolicies];
   const approved = [...new Set([...(options.dataSharingApproved ?? []).filter(id => !requiresExplicitDataSharing(id, extraPolicies)),

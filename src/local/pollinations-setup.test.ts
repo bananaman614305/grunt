@@ -7,6 +7,7 @@ import type { PollinationsSetupSquire } from './pollinations-setup.js';
 import { POLLINATIONS_MODEL, pollinationsGrantPath, readPollinationsGrant, writePollinationsGrant } from './pollinations.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 import { planSteps } from './fixtures/key-only-goal.js';
+import { clearProviderRefusal } from './provider-refusal.js';
 
 let directory: string;
 const grant = { base_url: 'https://trusty-squire-api.fly.dev/v1/egress/g_abcdefghijklmnop', token: 'synthetic-private-grant' };
@@ -206,4 +207,16 @@ it('does not inherit stale passed approval or contact Squire when background sto
   await writePollinationsGrant(saved(), directory); const before = await readFile(pollinationsGrantPath(directory)), browser = squire(), fetcher = metadata();
   await expect(setupPollinations({ directory, squire: browser, fetcher, background: true, dataSharingApproved: ['pollinations'] })).rejects.toThrow('needs foreground setup');
   expect(await readFile(pollinationsGrantPath(directory))).toEqual(before); expect(fetcher).not.toHaveBeenCalled(); expect(browser.approveDataSharing).not.toHaveBeenCalled(); expect(browser.signup).not.toHaveBeenCalled(); expect(browser.credentials.list).not.toHaveBeenCalled(); expect(browser.credentials.grant).not.toHaveBeenCalled();
+});
+
+it('stops setup without a new signup when Pollinations answers the saved key with HTTP 403, until the refusal is cleared', async () => {
+  await recordDataSharingConsent(directory, ['pollinations']);
+  await writePollinationsGrant(saved(), directory);
+  const browser = squire(), fetcher = vi.fn<typeof fetch>(async () => new Response(null, { status: 403 }));
+  await expect(setupPollinations({ directory, squire: browser, fetcher })).rejects.toThrow('pollinations refused this account (HTTP 403)');
+  await expect(setupPollinations({ directory, squire: browser, fetcher: metadata() })).rejects.toThrow('usegrunt add pollinations --force');
+  expect(browser.signup).not.toHaveBeenCalled();
+  await clearProviderRefusal(directory, 'pollinations');
+  await setupPollinations({ directory, squire: browser, fetcher: metadata() });
+  expect(browser.signup).toHaveBeenCalledOnce();
 });

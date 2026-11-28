@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setupBeatAPI } from './beatapi-setup.js';
 import { BEATAPI_MODEL, BEATAPI_MODELS, BEATAPI_ORIGIN, beatapiGrantPath, readBeatAPIGrant, writeBeatAPIGrant } from './beatapi.js';
+import { BeatAPI } from './beatapi.js';
+import { RefusalSource, clearProviderRefusal, readProviderRefusal } from './provider-refusal.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 import { planSteps } from './fixtures/key-only-goal.js';
 let directory: string;
@@ -148,4 +150,24 @@ it('foreground setup retains the old receipt until fresh verification succeeds',
   const original = await savedReceipt(), f = fixture();
   f.fetcher.mockResolvedValueOnce(new Response('private', { status: 401 })); f.squire.signup.mockImplementationOnce(async () => { expect(await readFile(beatapiGrantPath(directory), 'utf8')).toBe(original); });
   await setupBeatAPI({ directory, ...f }); expect(f.squire.signup).toHaveBeenCalledOnce(); expect(f.squire.credentials.grant).toHaveBeenCalledOnce(); expect(await readFile(beatapiGrantPath(directory), 'utf8')).not.toBe(original);
+});
+it.each([
+  { name: 'HTTP 403', refusal: () => new Response(null, { status: 403 }) },
+  { name: 'a banned account body', refusal: () => Response.json({ error: { message: 'This account has been banned' } }, { status: 401 }) }
+])('stops setup without a new signup and switches BeatAPI off when the saved key gets $name', async ({ refusal }) => {
+  await savedReceipt();
+  const f = fixture();
+  f.fetcher.mockResolvedValueOnce(refusal());
+  await expect(setupBeatAPI({ directory, ...f })).rejects.toThrow('beatapi refused this account');
+  noProvisioning(f);
+  await expect(readProviderRefusal(directory, 'beatapi')).resolves.toBeDefined();
+  // A later setup run still starts no signup, even with a working key, until the refusal is cleared.
+  await expect(setupBeatAPI({ directory, ...f })).rejects.toThrow('usegrunt add beatapi --force');
+  noProvisioning(f);
+  await expect(new RefusalSource(new BeatAPI({ directory, fetcher: f.fetcher }), directory).available()).resolves.toBe(false);
+  // Once cleared (usegrunt add beatapi --force), setup may sign up again.
+  await clearProviderRefusal(directory, 'beatapi');
+  await rm(beatapiGrantPath(directory));
+  await setupBeatAPI({ directory, ...f });
+  expect(f.squire.signup).toHaveBeenCalledOnce();
 });

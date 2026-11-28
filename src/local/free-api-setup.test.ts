@@ -11,6 +11,7 @@ import { recordDataSharingConsent } from './data-sharing.js';
 import { SourceError } from './source.js';
 import { readVaultEntry, writeVaultEntry } from './vault.js';
 import * as mistralSetup from './mistral-vibe-setup.js';
+import { configure } from './main.js';
 
 let directory: string;
 beforeEach(async () => {
@@ -476,4 +477,26 @@ it.each([
   // Neither the vault nor the receipt changed, so the daemon still loads the limited key for the reset.
   await expect(readZroGrant(directory)).resolves.toMatchObject({ token: 'vault-limited', base_url: ZRO_ORIGIN });
   expect(squire.runs.start).not.toHaveBeenCalled();
+});
+
+it('stops Zro setup without a new signup when the saved key gets HTTP 403, keeps Zro off, and signs up again only with --force', async () => {
+  await writeZroGrant({ base_url: 'https://grant.test', token: 'refused' }, directory);
+  let status = 403;
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(null, { status }));
+  const squire = {
+    credentials: {
+      list: async () => [{ service: 'zro', reference: 'vault://refused', field_names: ['api_key'] }],
+      grant: async () => ({ base_url: 'https://grant.test', token: 'refused' })
+    }, runs: { start: vi.fn(async () => ({ decision: 'drop' as const })), get: vi.fn() }
+  };
+  await expect(setup(() => {}, ['zro'], { directory, squire })).rejects.toThrow('zro refused this account (HTTP 403)');
+  expect(squire.runs.start).not.toHaveBeenCalled();
+  // The daemon keeps the refused source off, and a repeat setup still starts no signup.
+  const sources = configure({ GRUNT_CONFIG_DIR: directory, GRUNT_SOURCES: 'zro' });
+  try { await expect(sources.sources[0]!.available()).resolves.toBe(false); } finally { await sources.close(); }
+  status = 401;
+  await expect(setup(() => {}, ['zro'], { directory, squire })).rejects.toThrow('usegrunt add zro --force');
+  expect(squire.runs.start).not.toHaveBeenCalled();
+  await setup(() => {}, ['zro'], { directory, squire, force: true }).catch(() => {});
+  expect(squire.runs.start).toHaveBeenCalledOnce();
 });

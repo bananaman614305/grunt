@@ -7,6 +7,7 @@ import {
 import type { PollinationsGrant } from './pollinations.js';
 import { resolveSquireGrant } from './provider-grant.js';
 import type { SquireGrantSource } from './provider-grant.js';
+import { assertProviderNotRefused, isAccountRefusal, recordProviderRefusal } from './provider-refusal.js';
 import { readVaultGrant, writeVaultEntry } from './vault.js';
 
 export const POLLINATIONS_STORE = { service: 'pollinations', label: 'grunt-free-pollinations', api_hosts: ['gen.pollinations.ai'], auth_shape: 'bearer' };
@@ -51,7 +52,7 @@ async function bounded<T>(operation: () => Promise<T>, signal: AbortSignal): Pro
       signal.addEventListener('abort', aborted, { once: true });
       if (signal.aborted) aborted();
     })]);
-  } catch { throw failure(); }
+  } catch (error) { if (isAccountRefusal(error)) throw error; throw failure(); }
   finally { if (aborted) signal.removeEventListener('abort', aborted); }
 }
 const eligible = (credential: Credential) => credential.service?.trim().toLowerCase() === 'pollinations'
@@ -87,13 +88,15 @@ export async function setupPollinations(options: PollinationsSetupOptions): Prom
   const signal = options.signal ? AbortSignal.any([options.signal, deadline.signal]) : deadline.signal;
   const guards = { signal, ...(options.fetcher ? { fetcher: options.fetcher } : {}) };
   const invalidate = () => rm(pollinationsGrantPath(options.directory), { force: true });
+  // A refused account never leads to another signup until the person clears it.
+  await assertProviderNotRefused(options.directory, 'pollinations');
   try {
     try {
       const saved = await bounded(() => readPollinationsGrant(options.directory), signal);
       await bounded(() => verifyPollinationsAccess(saved, guards), signal);
       options.notify?.('Pollinations: existing zero-budget free community GLM access verified');
       return;
-    } catch { if (signal.aborted) throw failure(); }
+    } catch (error) { if (signal.aborted) throw failure(); if (isAccountRefusal(error)) throw error; }
     // A failed fresh verification must never leave an older receipt usable.
     await invalidate();
     const localVault = await bounded(() => readVaultGrant('pollinations', options.directory), signal).catch(() => undefined);
@@ -110,7 +113,7 @@ export async function setupPollinations(options: PollinationsSetupOptions): Prom
         if (signal.aborted) throw failure();
         options.notify?.('Pollinations: zero-budget Quest-only free community GLM access connected through local Grunt vault');
         return;
-      } catch { if (signal.aborted) throw failure(); }
+      } catch (error) { if (signal.aborted) throw failure(); if (isAccountRefusal(error)) throw error; }
     }
     const before = await bounded(() => options.squire.credentials.list(), signal);
     const references = new Set(before.filter(eligible).map(credential => credential.reference));
@@ -146,8 +149,9 @@ export async function setupPollinations(options: PollinationsSetupOptions): Prom
       if (signal.aborted) throw failure();
       options.notify?.('Pollinations: zero-budget Quest-only free community GLM access connected through Squire');
     }
-  } catch {
+  } catch (error) {
     await invalidate().catch(() => {});
+    if (isAccountRefusal(error) && !signal.aborted) throw await recordProviderRefusal(options.directory, 'pollinations', error);
     throw failure();
   } finally { clearTimeout(timeout); }
 }

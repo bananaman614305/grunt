@@ -6,6 +6,7 @@ import { createLocalApp } from './api.js';
 import { Sources } from './source.js';
 import { configure } from './main.js';
 import { Nvidia, NVIDIA_DEEPSEEK, readNvidiaGrant, writeNvidiaGrant } from './nvidia.js';
+import { RefusalSource } from './provider-refusal.js';
 import { BrowserSquire, setup } from './setup.js';
 import { setupFallbacks } from './fallback-setup.js';
 import { bundledRegistry, validateRegistry } from '../registry.js';
@@ -24,7 +25,7 @@ it('pins NVIDIA capabilities and configures its dedicated source', async () => {
     expect(() => validateRegistry({ ...bundledRegistry, adapters: [{ ...adapter, ...change }] })).toThrow();
   }
   const sources = configure({ GRUNT_SOURCES: 'nvidia' });
-  expect(sources.sources[0]).toBeInstanceOf(Nvidia);
+  expect((sources.sources[0] as RefusalSource).source).toBeInstanceOf(Nvidia);
   await sources.close();
 });
 

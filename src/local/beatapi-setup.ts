@@ -4,6 +4,7 @@ import type { BeatAPIGrant } from './beatapi.js';
 import { resolveSquireGrant } from './provider-grant.js';
 import type { SquireGrantSource } from './provider-grant.js';
 import { readVaultGrant, writeVaultEntry } from './vault.js';
+import { assertProviderNotRefused, isAccountRefusal, recordProviderRefusal } from './provider-refusal.js';
 export const BEATAPI_STORE = { service: 'beatapi', label: 'grunt', api_hosts: [new URL(BEATAPI_ORIGIN).hostname], auth_shape: 'bearer' };
 interface Credential { service: string | null; reference: string; field_names: string[]; auth_strategy?: string | null; label?: string; allowed_hosts?: string[] }
 export interface BeatAPISetupSquire extends SquireGrantSource {
@@ -20,7 +21,7 @@ async function bounded<T>(operation: () => Promise<T>, signal: AbortSignal): Pro
   let abort: (() => void) | undefined;
   try { return await Promise.race([Promise.resolve().then(() => { signal.throwIfAborted(); return operation(); }), new Promise<never>((_resolve, reject) => {
     abort = () => reject(failure()); signal.addEventListener('abort', abort, { once: true }); if (signal.aborted) abort();
-  })]); } catch { throw failure(); } finally { if (abort) signal.removeEventListener('abort', abort); }
+  })]); } catch (error) { if (isAccountRefusal(error)) throw error; throw failure(); } finally { if (abort) signal.removeEventListener('abort', abort); }
 }
 const ownedKey = (c: Credential) => typeof c?.service === 'string' && c.service.trim().toLowerCase() === 'beatapi'
   && c.label === BEATAPI_STORE.label && typeof c.reference === 'string' && Boolean(c.reference)
@@ -36,6 +37,8 @@ export async function setupBeatAPI(options: BeatAPISetupOptions): Promise<void> 
   const signal = AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(600000)]);
   const guards = { ...(options.fetcher ? { fetcher: options.fetcher } : {}), signal };
   let verifiedLegacy: BeatAPIGrant | undefined;
+  // A refused or banned account never leads to another signup until the person clears it.
+  await assertProviderNotRefused(options.directory, 'beatapi');
   // Background setup reuses verified access as it is; without it, background
   // setup signs up like foreground. A user can explicitly upgrade a working
   // DeepSeek-only receipt with `usegrunt add beatapi`.
@@ -49,12 +52,17 @@ export async function setupBeatAPI(options: BeatAPISetupOptions): Promise<void> 
       return;
     }
     verifiedLegacy = grant;
-  } catch { if (signal.aborted) throw failure(); }
+  } catch (error) {
+    if (signal.aborted) throw failure();
+    if (isAccountRefusal(error)) throw await recordProviderRefusal(options.directory, 'beatapi', error);
+  }
   try {
     if (verifiedLegacy) {
       // The authenticated catalog reports effective access for the already
       // verified key. A receipt migration does not renew its billing checks.
-      if (await verifyBeatAPIModelAccess(verifiedLegacy, guards)) {
+      // The account check above passed, so a catalog refusal limits this key, not the account.
+      const upgradable = await verifyBeatAPIModelAccess(verifiedLegacy, guards).catch(() => { throw failure(); });
+      if (upgradable) {
         signal.throwIfAborted();
         const upgraded: BeatAPIGrant = { ...verifiedLegacy, version: 2, models: BEATAPI_MODELS };
         if (verifiedLegacy.base_url === BEATAPI_ORIGIN) await writeBeatAPIVaultReceipt(upgraded, options.directory);
@@ -79,7 +87,7 @@ export async function setupBeatAPI(options: BeatAPISetupOptions): Promise<void> 
           await writeBeatAPIVaultReceipt(hasGLM ? { ...verified, version: 2, models: BEATAPI_MODELS } : { ...verified, version: 1 }, options.directory);
           options.notify?.(hasGLM ? connected : deepseekOnly);
           return;
-        } catch { if (signal.aborted) throw failure(); }
+        } catch (error) { if (signal.aborted) throw failure(); if (isAccountRefusal(error)) throw error; }
       }
     }
     signal.throwIfAborted(); options.squire.approveDataSharing?.(saved);
@@ -118,5 +126,8 @@ export async function setupBeatAPI(options: BeatAPISetupOptions): Promise<void> 
       }
     }
     options.notify?.(hasGLM ? connected : deepseekOnly);
-  } catch { throw failure(); }
+  } catch (error) {
+    if (isAccountRefusal(error) && !signal.aborted) throw await recordProviderRefusal(options.directory, 'beatapi', error);
+    throw failure();
+  }
 }
