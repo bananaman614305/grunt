@@ -4,7 +4,7 @@ import { bootstrapKilo, BrowserSquire, setup } from './setup.js';
 import type { SetupSquire } from './setup.js';
 import type { SignupAgent } from './signup-mcp.js';
 import { parallelMap, SETUP_CONCURRENCY } from './parallel.js';
-import { bundledRegistry, disabledAdapters, isDeclarativeAdapter } from '../registry.js';
+import { bundledRegistry, disabledAdapters, isDeclarativeAdapter, isDeclarativeAppAdapter } from '../registry.js';
 import type { Registry } from '../registry.js';
 import { OpenCode } from './opencode.js';
 import { SourceError, Sources } from './source.js';
@@ -337,7 +337,7 @@ export async function setupFallbacks(options: {
             return;
           }
           const declarative = currentRegistry.adapters.find(adapter => adapter.id === id);
-          const task = tasks[id] ?? (isDeclarativeAdapter(declarative) ? async () => { try {
+          const task = tasks[id] ?? (isDeclarativeAdapter(declarative) || isDeclarativeAppAdapter(declarative) ? async () => { try {
             await (options.setupProvider ?? setup)(options.notify, [id], { squire: squire as SetupSquire, directory: options.directory,
               connect, background: reuseOnly, dataSharingApproved: approved,
               ...(options.registry ? { registry: options.registry } : {}),

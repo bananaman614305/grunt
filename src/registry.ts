@@ -3,8 +3,14 @@ import { pathToFileURL } from 'node:url';
 import ipaddr from 'ipaddr.js';
 
 export const DECLARATIVE_OPENAI_INSTALL = 'declarative:openai';
+export const DECLARATIVE_APP_INSTALL = 'declarative:app';
+export const FUTURE_DECLARATIVE_INSTALL = /^declarative:[a-z][a-z0-9-]{0,31}$/;
 export const DECLARATIVE_ZERO_PRICE_CHECKS = ['none', 'models_catalog'] as const;
 export type DeclarativeZeroPriceCheck = typeof DECLARATIVE_ZERO_PRICE_CHECKS[number];
+export const DECLARATIVE_APP_EXECUTIONS = ['inference', 'delegated'] as const;
+export type DeclarativeAppExecution = typeof DECLARATIVE_APP_EXECUTIONS[number];
+export const DECLARATIVE_APP_PLATFORMS = ['linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64'] as const;
+export type DeclarativeAppPlatform = typeof DECLARATIVE_APP_PLATFORMS[number];
 
 export interface DeclarativeOpenAiConfig {
   baseUrl: string;
@@ -17,6 +23,84 @@ export interface DeclarativeOpenAiConfig {
   policyUrl: string;
   name?: string;
   minContextLength?: number;
+}
+
+export type DeclarativeAppInstaller =
+  | { type: 'npm'; package: string; bin: string; version?: string; allowPostinstall?: boolean }
+  | { type: 'uv'; package: string; bin: string; version?: string }
+  | { type: 'archive'; urls: Partial<Record<DeclarativeAppPlatform, string>>; bin: string; format?: 'tar.gz' | 'zip' };
+
+export interface DeclarativeAppExpectStep {
+  match: string;
+  send: string;
+}
+
+export type DeclarativeAppAuth =
+  | { type: 'none'; statusArgs?: string[]; statusMatch?: string; authFile?: string }
+  | {
+      type: 'browser-url';
+      command: string[];
+      allowedOrigins: string[];
+      urlPattern?: string;
+      pty?: boolean;
+      expect?: DeclarativeAppExpectStep[];
+      statusArgs?: string[];
+      statusMatch?: string;
+      authFile?: string;
+    }
+  | {
+      type: 'device-code';
+      command: string[];
+      allowedOrigins: string[];
+      urlPattern?: string;
+      codePattern: string;
+      pty?: boolean;
+      statusArgs?: string[];
+      statusMatch?: string;
+      authFile?: string;
+    };
+
+export interface DeclarativeAppOneshotOutput {
+  format: 'plain' | 'json' | 'jsonl';
+  textPath?: string;
+  sessionIdPath?: string;
+  eventTypeField?: string;
+  eventTypeValue?: string;
+}
+
+export interface DeclarativeAppErrorPatterns {
+  quota?: string;
+  loggedOut?: string;
+  refused?: string;
+}
+
+export type DeclarativeAppTransport =
+  | {
+      type: 'oneshot-exec';
+      args: string[];
+      promptInput: 'arg' | 'stdin' | 'file';
+      resumeArgs?: string[];
+      output: DeclarativeAppOneshotOutput;
+      errors?: DeclarativeAppErrorPatterns;
+    }
+  | {
+      type: 'acp';
+      args: string[];
+      modelOption?: string;
+      mode?: string;
+    };
+
+export interface DeclarativeAppConfig {
+  execution: DeclarativeAppExecution;
+  installer: DeclarativeAppInstaller;
+  auth: DeclarativeAppAuth;
+  transport: DeclarativeAppTransport;
+  env?: Record<string, string>;
+  disclosure: string;
+  policyVersion: string;
+  policyUrl: string;
+  name?: string;
+  timeoutMs?: number;
 }
 
 export interface Adapter {
@@ -38,6 +122,8 @@ export interface Adapter {
   hints?: string;
   // Validated configuration for declarative:openai entries. Never carries code or commands.
   declarative?: DeclarativeOpenAiConfig;
+  // Validated configuration for sandboxed declarative:app CLI entries.
+  declarativeApp?: DeclarativeAppConfig;
 }
 export type DeclarativeAdapter = Adapter & {
   kind: 'model';
@@ -47,6 +133,10 @@ export type DeclarativeAdapter = Adapter & {
   hints: string;
   expires: string;
   declarative: DeclarativeOpenAiConfig;
+};
+export type DeclarativeAppAdapter = Adapter & {
+  install: typeof DECLARATIVE_APP_INSTALL;
+  declarativeApp: DeclarativeAppConfig;
 };
 // A provider listed in the registry before Grunt ships an adapter for it. Every
 // client ignores this list; the provider scout ships adapters from it.
@@ -74,8 +164,9 @@ export const TIERS = ['stable', 'experimental'] as const;
 export const MODALITIES = ['text', 'image'] as const;
 export const FITS = ['great', 'possible', 'poor'] as const;
 export const STATUSES = ['active', 'expiring', 'inactive'] as const;
-export const ADAPTER_FIELDS = ['id', 'kind', 'tier', 'weight', 'modalities', 'install', 'signup', 'model', 'models', 'fit', 'status', 'expires', 'hints', 'declarative'] as const;
+export const ADAPTER_FIELDS = ['id', 'kind', 'tier', 'weight', 'modalities', 'install', 'signup', 'model', 'models', 'fit', 'status', 'expires', 'hints', 'declarative', 'declarativeApp'] as const;
 export const DECLARATIVE_FIELDS = ['baseUrl', 'apiPath', 'modelsEndpoint', 'zeroPriceCheck', 'stream', 'disclosure', 'policyVersion', 'policyUrl', 'name', 'minContextLength'] as const;
+export const DECLARATIVE_APP_FIELDS = ['execution', 'installer', 'auth', 'transport', 'env', 'disclosure', 'policyVersion', 'policyUrl', 'name', 'timeoutMs'] as const;
 export const CANDIDATE_FIELDS = ['id', 'signup', 'hints', 'name', 'models', 'docs', 'notes'] as const;
 export const TIER_TOTALS = { stable: 0.8, experimental: 0.2 } as const;
 export const installers: Readonly<Record<string, string>> = { freebuff: 'npm:freebuff', opencode: 'npm:opencode-ai', kilo: 'builtin:kilo', nvidia: 'builtin:nvidia', zro: 'builtin:zro', tokenharbor: 'builtin:tokenharbor', runcrate: 'builtin:runcrate', apinex: 'builtin:apinex', 'mistral-vibe': 'builtin:mistral-vibe', livekit: 'builtin:livekit', pollinations: 'builtin:pollinations', beatapi: 'builtin:beatapi', perch: 'builtin:perch', nous: 'builtin:nous', kenari: 'builtin:kenari', numes: 'builtin:numes', goedel: 'builtin:goedel', crowllm: 'builtin:crowllm', fikra: 'builtin:fikra', openference: 'builtin:openference', darus: 'builtin:darus', 'aperture-ai': 'builtin:aperture-ai', 'reflection-beam': 'builtin:reflection-beam', 'antseed-vikey': 'builtin:antseed-vikey', millionseek: 'builtin:millionseek', freepi: 'builtin:freepi', ifm: 'builtin:ifm' };
@@ -147,8 +238,43 @@ export function isDeclarativeAdapter(adapter: Pick<Adapter, 'install' | 'declara
   return adapter?.install === DECLARATIVE_OPENAI_INSTALL && adapter.declarative !== undefined;
 }
 
+export function isDeclarativeAppAdapter(adapter: Pick<Adapter, 'install' | 'declarativeApp'> | undefined): adapter is DeclarativeAppAdapter {
+  return adapter?.install === DECLARATIVE_APP_INSTALL && adapter.declarativeApp !== undefined;
+}
+
 export function isSupportedAdapter(adapter: Adapter): boolean {
-  return !disabledAdapters.has(adapter.id) && (knownAdapters.has(adapter.id) || isDeclarativeAdapter(adapter));
+  return !disabledAdapters.has(adapter.id) && (knownAdapters.has(adapter.id) || isDeclarativeAdapter(adapter) || isDeclarativeAppAdapter(adapter));
+}
+
+const REGEX_MAX = 256;
+const SAFE_BIN_PATTERN = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+){0,4}$/;
+const SAFE_PACKAGE_PATTERN = /^(?:@[a-z0-9._-]+\/)?[a-z0-9][a-z0-9._-]{0,127}$/i;
+const SAFE_VERSION_PATTERN = /^[A-Za-z0-9._+-]{1,64}$/;
+const SAFE_ENV_KEY_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
+const FORBIDDEN_ENV_KEY_PATTERN = /^(?:PATH|HOME|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_|NODE_OPTIONS|NODE_PATH|SHELL|BASH_ENV|ENV|ZDOTDIR|GRUNT_|OPENAI_BASE_URL|ANTHROPIC_BASE_URL|XDG_)/i;
+const SAFE_DOT_PATH_PATTERN = /^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+){0,7}$/;
+const SAFE_REL_FILE_PATTERN = /^(?!\/)(?!.*\.\.)[A-Za-z0-9._/-]{1,160}$/;
+// Reject nested quantifiers such as (a+)+, (a*)*, (.+){2,} that can cause catastrophic backtracking.
+const NESTED_QUANTIFIER_PATTERN = /\((?:[^()\\]|\\.)*[+*](?:[^()\\]|\\.)*\)[+*{]/;
+
+export function safeRegexPattern(value: unknown): value is string {
+  if (typeof value !== 'string' || !value.length || value.length > REGEX_MAX || CONTROL_CHARS.test(value)) return false;
+  if (NESTED_QUANTIFIER_PATTERN.test(value)) return false;
+  try {
+    new RegExp(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function safeArgList(value: unknown, maxItems = 32, maxLength = 256): value is string[] {
+  return Array.isArray(value) && value.length <= maxItems
+    && value.every(item => typeof item === 'string' && item.length <= maxLength && !CONTROL_CHARS.test(item));
+}
+
+function safeBinPath(value: unknown): value is string {
+  return typeof value === 'string' && SAFE_BIN_PATTERN.test(value) && !value.split('/').some(segment => segment === '.' || segment === '..');
 }
 
 const httpsUrl = (value: unknown) => {
@@ -176,7 +302,7 @@ export const ADAPTER_RULES = {
   tier: `must be one of ${TIERS.join(', ')}`,
   weight: 'must be a number greater than 0 and at most 1',
   modalities: `must be a non-empty list of distinct values from ${MODALITIES.join(', ')}; a shipped adapter may include image only when it supports image input, and a declarative adapter must be text only`,
-  install: `must be the shipped installer for a shipped adapter id, ${DECLARATIVE_OPENAI_INSTALL} for a declarative model adapter, or npm:<package>`,
+  install: `must be the shipped installer for a shipped adapter id, ${DECLARATIVE_OPENAI_INSTALL}, ${DECLARATIVE_APP_INSTALL}, another declarative:<type>, or npm:<package>`,
   signup: 'must be an https URL without credentials; required and public DNS only for a declarative adapter',
   model: `must be a non-blank string; required (at most ${MODEL_MAX} characters) for a declarative adapter; a single-model shipped adapter keeps its shipped model`,
   models: `only opencode may list models: 1 to ${MODELS_MAX} distinct non-blank strings, without model`,
@@ -184,7 +310,8 @@ export const ADAPTER_RULES = {
   status: `must be one of ${STATUSES.join(', ')}`,
   expires: 'must be a YYYY-MM-DD day; required for a declarative adapter',
   hints: `must be non-blank text of at most ${HINTS_MAX} characters; required for a declarative adapter`,
-  declarative: `required JSON object when install is ${DECLARATIVE_OPENAI_INSTALL}, forbidden otherwise`
+  declarative: `required JSON object when install is ${DECLARATIVE_OPENAI_INSTALL}, forbidden otherwise`,
+  declarativeApp: `required JSON object when install is ${DECLARATIVE_APP_INSTALL}, forbidden otherwise`
 } as const satisfies Record<typeof ADAPTER_FIELDS[number], string>;
 export const CANDIDATE_RULES = {
   id: ADAPTER_RULES.id,
@@ -218,6 +345,146 @@ export function declarativeErrors(value: unknown): RegistryError[] {
   check(d.minContextLength === undefined || typeof d.minContextLength === 'number' && Number.isSafeInteger(d.minContextLength) && d.minContextLength >= 1 && d.minContextLength <= MIN_CONTEXT_LENGTH_MAX, 'minContextLength');
   return errors;
 }
+export function declarativeAppErrors(value: unknown): RegistryError[] {
+  const d = record(value);
+  if (!d) return [{ field: 'declarativeApp', rule: ADAPTER_RULES.declarativeApp }];
+  const errors: RegistryError[] = [];
+  const push = (field: string, rule: string) => errors.push({ field: `declarativeApp.${field}`, rule });
+  for (const key of Object.keys(d)) {
+    if (!DECLARATIVE_APP_FIELDS.includes(key as never)) push(key, 'is not a declarativeApp field');
+  }
+  if (!DECLARATIVE_APP_EXECUTIONS.includes(d.execution as never)) {
+    push('execution', `must be one of ${DECLARATIVE_APP_EXECUTIONS.join(', ')}`);
+  }
+  // Validate installer
+  const inst = record(d.installer);
+  if (!inst) {
+    push('installer', 'must be a JSON object');
+  } else if (inst.type === 'npm') {
+    for (const key of Object.keys(inst)) if (!['type', 'package', 'bin', 'version', 'allowPostinstall'].includes(key)) push(`installer.${key}`, 'unknown installer field');
+    if (typeof inst.package !== 'string' || !SAFE_PACKAGE_PATTERN.test(inst.package)) push('installer.package', 'must be a valid npm package name');
+    if (!safeBinPath(inst.bin)) push('installer.bin', 'must be a safe relative binary name');
+    if (inst.version !== undefined && (typeof inst.version !== 'string' || !SAFE_VERSION_PATTERN.test(inst.version))) push('installer.version', 'must be a valid package version');
+    if (inst.allowPostinstall !== undefined && typeof inst.allowPostinstall !== 'boolean') push('installer.allowPostinstall', 'must be a boolean');
+  } else if (inst.type === 'uv') {
+    for (const key of Object.keys(inst)) if (!['type', 'package', 'bin', 'version'].includes(key)) push(`installer.${key}`, 'unknown installer field');
+    if (typeof inst.package !== 'string' || !SAFE_PACKAGE_PATTERN.test(inst.package)) push('installer.package', 'must be a valid Python package name');
+    if (!safeBinPath(inst.bin)) push('installer.bin', 'must be a safe relative binary name');
+    if (inst.version !== undefined && (typeof inst.version !== 'string' || !SAFE_VERSION_PATTERN.test(inst.version))) push('installer.version', 'must be a valid package version');
+  } else if (inst.type === 'archive') {
+    for (const key of Object.keys(inst)) if (!['type', 'urls', 'bin', 'format'].includes(key)) push(`installer.${key}`, 'unknown installer field');
+    const urls = record(inst.urls);
+    if (!urls || !Object.keys(urls).length) {
+      push('installer.urls', 'must map at least one platform to a public https URL');
+    } else {
+      for (const [platform, url] of Object.entries(urls)) {
+        if (!DECLARATIVE_APP_PLATFORMS.includes(platform as never)) push(`installer.urls.${platform}`, 'unsupported platform');
+        else if (!safePublicHttpsUrl(url)) push(`installer.urls.${platform}`, 'must be a public https URL');
+      }
+    }
+    if (!safeBinPath(inst.bin)) push('installer.bin', 'must be a safe relative binary path');
+    if (inst.format !== undefined && !['tar.gz', 'zip'].includes(String(inst.format))) push('installer.format', 'must be tar.gz or zip');
+  } else {
+    push('installer.type', 'must be npm, uv, or archive');
+  }
+  // Validate auth
+  const auth = record(d.auth);
+  if (!auth) {
+    push('auth', 'must be a JSON object');
+  } else {
+    const commonAuth = ['type', 'statusArgs', 'statusMatch', 'authFile'];
+    if (auth.statusArgs !== undefined && !safeArgList(auth.statusArgs, 16)) push('auth.statusArgs', 'must be a list of safe CLI arguments');
+    if (auth.statusMatch !== undefined && !safeRegexPattern(auth.statusMatch)) push('auth.statusMatch', 'must be a safe regular expression');
+    if (auth.authFile !== undefined && (typeof auth.authFile !== 'string' || !SAFE_REL_FILE_PATTERN.test(auth.authFile))) push('auth.authFile', 'must be a safe relative path inside app home');
+    if (auth.type === 'none') {
+      for (const key of Object.keys(auth)) if (!commonAuth.includes(key)) push(`auth.${key}`, 'unknown auth field');
+    } else if (auth.type === 'browser-url' || auth.type === 'device-code') {
+      const allowed = auth.type === 'browser-url'
+        ? [...commonAuth, 'command', 'allowedOrigins', 'urlPattern', 'pty', 'expect']
+        : [...commonAuth, 'command', 'allowedOrigins', 'urlPattern', 'codePattern', 'pty'];
+      for (const key of Object.keys(auth)) if (!allowed.includes(key)) push(`auth.${key}`, 'unknown auth field');
+      if (!safeArgList(auth.command, 16) || !auth.command.length) push('auth.command', 'must be a non-empty list of safe CLI arguments');
+      if (!Array.isArray(auth.allowedOrigins) || !auth.allowedOrigins.length || auth.allowedOrigins.length > 8
+        || !auth.allowedOrigins.every(origin => safePublicHttpsOrigin(origin) !== undefined)) {
+        push('auth.allowedOrigins', 'must list 1 to 8 public https origins');
+      }
+      if (auth.urlPattern !== undefined && !safeRegexPattern(auth.urlPattern)) push('auth.urlPattern', 'must be a safe regular expression');
+      if (auth.pty !== undefined && typeof auth.pty !== 'boolean') push('auth.pty', 'must be a boolean');
+      if (auth.type === 'device-code' && !safeRegexPattern(auth.codePattern)) push('auth.codePattern', 'must be a safe regular expression');
+      if (auth.type === 'browser-url' && auth.expect !== undefined) {
+        if (!Array.isArray(auth.expect) || auth.expect.length > 8) {
+          push('auth.expect', 'must be at most 8 expect steps');
+        } else {
+          for (let i = 0; i < auth.expect.length; i++) {
+            const step = record(auth.expect[i]);
+            if (!step || !safeRegexPattern(step.match) || typeof step.send !== 'string' || step.send.length > 64) {
+              push(`auth.expect[${i}]`, 'must have safe regex match and short send string');
+            }
+          }
+        }
+      }
+    } else {
+      push('auth.type', 'must be none, browser-url, or device-code');
+    }
+  }
+  // Validate transport
+  const transport = record(d.transport);
+  if (!transport) {
+    push('transport', 'must be a JSON object');
+  } else if (transport.type === 'oneshot-exec') {
+    for (const key of Object.keys(transport)) if (!['type', 'args', 'promptInput', 'resumeArgs', 'output', 'errors'].includes(key)) push(`transport.${key}`, 'unknown transport field');
+    if (!safeArgList(transport.args, 32)) push('transport.args', 'must be a list of safe CLI arguments');
+    if (!['arg', 'stdin', 'file'].includes(String(transport.promptInput))) push('transport.promptInput', 'must be arg, stdin, or file');
+    if (transport.resumeArgs !== undefined && !safeArgList(transport.resumeArgs, 16)) push('transport.resumeArgs', 'must be a list of safe CLI arguments');
+    const out = record(transport.output);
+    if (!out || !['plain', 'json', 'jsonl'].includes(String(out.format))) {
+      push('transport.output', 'must specify format plain, json, or jsonl');
+    } else {
+      for (const key of Object.keys(out)) if (!['format', 'textPath', 'sessionIdPath', 'eventTypeField', 'eventTypeValue'].includes(key)) push(`transport.output.${key}`, 'unknown output field');
+      if (out.textPath !== undefined && (typeof out.textPath !== 'string' || !SAFE_DOT_PATH_PATTERN.test(out.textPath))) push('transport.output.textPath', 'must be a safe dot path');
+      if (out.sessionIdPath !== undefined && (typeof out.sessionIdPath !== 'string' || !SAFE_DOT_PATH_PATTERN.test(out.sessionIdPath))) push('transport.output.sessionIdPath', 'must be a safe dot path');
+      if (out.eventTypeField !== undefined && (typeof out.eventTypeField !== 'string' || !SAFE_DOT_PATH_PATTERN.test(out.eventTypeField))) push('transport.output.eventTypeField', 'must be a safe dot path');
+      if (out.eventTypeValue !== undefined && (!nonBlank(out.eventTypeValue) || out.eventTypeValue.length > 64 || CONTROL_CHARS.test(out.eventTypeValue))) push('transport.output.eventTypeValue', 'must be a short non-blank string');
+    }
+    if (transport.errors !== undefined) {
+      const errs = record(transport.errors);
+      if (!errs) push('transport.errors', 'must be an object');
+      else {
+        for (const [k, v] of Object.entries(errs)) {
+          if (!['quota', 'loggedOut', 'refused'].includes(k)) push(`transport.errors.${k}`, 'unknown error class');
+          else if (!safeRegexPattern(v)) push(`transport.errors.${k}`, 'must be a safe regular expression');
+        }
+      }
+    }
+  } else if (transport.type === 'acp') {
+    for (const key of Object.keys(transport)) if (!['type', 'args', 'modelOption', 'mode'].includes(key)) push(`transport.${key}`, 'unknown transport field');
+    if (!safeArgList(transport.args, 32)) push('transport.args', 'must be a list of safe CLI arguments');
+    if (transport.modelOption !== undefined && (!nonBlank(transport.modelOption) || transport.modelOption.length > 128 || CONTROL_CHARS.test(transport.modelOption))) push('transport.modelOption', 'must be a non-blank string');
+    if (transport.mode !== undefined && (!nonBlank(transport.mode) || transport.mode.length > 64 || CONTROL_CHARS.test(transport.mode))) push('transport.mode', 'must be a non-blank string');
+  } else {
+    push('transport.type', 'must be oneshot-exec or acp');
+  }
+  // Validate env
+  if (d.env !== undefined) {
+    const env = record(d.env);
+    if (!env || Object.keys(env).length > 32) {
+      push('env', 'must be a JSON object with at most 32 entries');
+    } else {
+      for (const [key, val] of Object.entries(env)) {
+        if (!SAFE_ENV_KEY_PATTERN.test(key) || FORBIDDEN_ENV_KEY_PATTERN.test(key)) push(`env.${key}`, 'unsafe or reserved environment variable name');
+        else if (typeof val !== 'string' || val.length > 512 || CONTROL_CHARS.test(val)) push(`env.${key}`, 'must be a safe string value');
+      }
+    }
+  }
+  if (!nonBlank(d.disclosure) || d.disclosure.length > DISCLOSURE_MAX || TEXT_CONTROL_CHARS.test(d.disclosure)) push('disclosure', DECLARATIVE_RULES.disclosure);
+  if (typeof d.policyVersion !== 'string' || !POLICY_VERSION_PATTERN.test(d.policyVersion)) push('policyVersion', DECLARATIVE_RULES.policyVersion);
+  if (!safePublicHttpsUrl(d.policyUrl)) push('policyUrl', DECLARATIVE_RULES.policyUrl);
+  if (d.name !== undefined && (!nonBlank(d.name) || d.name.length > NAME_MAX || CONTROL_CHARS.test(d.name))) push('name', DECLARATIVE_RULES.name);
+  if (d.timeoutMs !== undefined && (typeof d.timeoutMs !== 'number' || !Number.isSafeInteger(d.timeoutMs) || d.timeoutMs < 1000 || d.timeoutMs > 600000)) {
+    push('timeoutMs', 'must be an integer between 1000 and 600000');
+  }
+  return errors;
+}
 // One adapter entry's schema violations, with fixed rule text. Empty means valid.
 export function adapterErrors(value: unknown): RegistryError[] {
   const a = record(value);
@@ -228,13 +495,15 @@ export function adapterErrors(value: unknown): RegistryError[] {
   const known = id !== undefined && knownAdapters.has(id);
   const disabled = id !== undefined && disabledAdapters.has(id);
   const declarativeInstall = a.install === DECLARATIVE_OPENAI_INSTALL;
+  const declarativeAppInstall = a.install === DECLARATIVE_APP_INSTALL;
+  const futureDeclarative = typeof a.install === 'string' && FUTURE_DECLARATIVE_INSTALL.test(a.install) && !declarativeInstall && !declarativeAppInstall;
   const modalities = Array.isArray(a.modalities) ? a.modalities as unknown[] : undefined;
   check(id, 'id');
   check(KINDS.includes(a.kind as never), 'kind');
   check(TIERS.includes(a.tier as never), 'tier');
   check(typeof a.weight === 'number' && Number.isFinite(a.weight) && a.weight > 0 && a.weight <= 1, 'weight');
   check(modalities && modalities.length && modalities.every(m => MODALITIES.includes(m as never)) && new Set(modalities).size === modalities.length, 'modalities');
-  check(typeof a.install === 'string' && (NPM_INSTALL.test(a.install) || known && a.install === installers[id as string] || !known && !disabled && declarativeInstall), 'install');
+  check(typeof a.install === 'string' && (NPM_INSTALL.test(a.install) || known && a.install === installers[id as string] || !known && !disabled && (declarativeInstall || declarativeAppInstall || futureDeclarative)), 'install');
   check(a.model === undefined || nonBlank(a.model), 'model');
   check(a.models === undefined || a.id === 'opencode' && a.model === undefined && Array.isArray(a.models) && a.models.length && a.models.length <= MODELS_MAX
     && a.models.every(nonBlank) && new Set(a.models).size === a.models.length, 'models');
@@ -250,6 +519,7 @@ export function adapterErrors(value: unknown): RegistryError[] {
     check(!modalities || modalities.includes('text') && modalities.every(m => m === 'text' || m === 'image' && imageAdapters.has(id as string)), 'modalities');
     check(pinnedModels[id as string] === undefined || a.model === pinnedModels[id as string], 'model');
     check(a.declarative === undefined, 'declarative');
+    check(a.declarativeApp === undefined, 'declarativeApp');
   } else if (declarativeInstall && !disabled) {
     check(a.kind === 'model', 'kind');
     check(!modalities || modalities.every(m => m === 'text'), 'modalities');
@@ -258,9 +528,20 @@ export function adapterErrors(value: unknown): RegistryError[] {
     check(safePublicHttpsUrl(a.signup), 'signup');
     check(hintsValid(a.hints), 'hints');
     check(dayValid(a.expires), 'expires');
+    check(a.declarativeApp === undefined, 'declarativeApp');
     errors.push(...declarativeErrors(a.declarative));
+  } else if (declarativeAppInstall && !disabled) {
+    const appCfg = record(a.declarativeApp);
+    const expectedKind = appCfg?.execution === 'delegated' ? 'agent' : 'model';
+    check(a.kind === expectedKind, 'kind');
+    check(!modalities || modalities.every(m => m === 'text'), 'modalities');
+    check(a.models === undefined, 'models');
+    check(a.signup === undefined || safePublicHttpsUrl(a.signup), 'signup');
+    check(a.declarative === undefined, 'declarative');
+    errors.push(...declarativeAppErrors(a.declarativeApp));
   } else {
     check(a.declarative === undefined, 'declarative');
+    check(a.declarativeApp === undefined, 'declarativeApp');
   }
   return errors;
 }

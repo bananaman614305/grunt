@@ -4,8 +4,8 @@ import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { gruntEnv } from '../brand.js';
-import { isDeclarativeAdapter } from '../registry.js';
-import type { DeclarativeAdapter, Registry } from '../registry.js';
+import { isDeclarativeAdapter, isDeclarativeAppAdapter } from '../registry.js';
+import type { DeclarativeAdapter, DeclarativeAppAdapter, Registry } from '../registry.js';
 
 export interface DataSharingPolicy {
   provider: string;
@@ -152,8 +152,22 @@ export function declarativeDataSharingPolicy(adapter: DeclarativeAdapter): DataS
   };
 }
 
+export function declarativeAppDataSharingPolicy(adapter: DeclarativeAppAdapter): DataSharingPolicy {
+  return {
+    provider: adapter.id,
+    name: adapter.declarativeApp.name ?? adapter.id,
+    version: adapter.declarativeApp.policyVersion,
+    disclosure: adapter.declarativeApp.disclosure,
+    url: adapter.declarativeApp.policyUrl,
+    approval: 'explicit'
+  };
+}
+
 export function registryDataSharingPolicies(registry: Registry): DataSharingPolicy[] {
-  return registry.adapters.filter(isDeclarativeAdapter).map(declarativeDataSharingPolicy);
+  return [
+    ...registry.adapters.filter(isDeclarativeAdapter).map(declarativeDataSharingPolicy),
+    ...registry.adapters.filter(isDeclarativeAppAdapter).map(declarativeAppDataSharingPolicy)
+  ];
 }
 
 function allDataSharingPolicies(extraPolicies: readonly DataSharingPolicy[] = []): readonly DataSharingPolicy[] {

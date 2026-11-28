@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { rm } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import { bundledRegistry, disabledAdapters, isDeclarativeAdapter, knownAdapters, localOptInAdapterIds } from '../registry.js';
+import { bundledRegistry, disabledAdapters, isDeclarativeAdapter, isDeclarativeAppAdapter, knownAdapters, localOptInAdapterIds } from '../registry.js';
 import type { Registry } from '../registry.js';
 import { BROWSER_CONCURRENCY } from './parallel.js';
 import { Nvidia, writeNvidiaGrant } from './nvidia.js';
@@ -32,6 +32,7 @@ import { setupNous } from './nous-setup.js';
 import { setupKenari } from './kenari-setup.js';
 import { setupPromotionalApi } from './promotional-setup.js';
 import { declarativeSquireStore, setupDeclarativeApi } from './declarative-api.js';
+import { setupDeclarativeApp } from './declarative-app.js';
 import { setupCrowLLM } from './crowllm-setup.js';
 import { setupAperture } from './aperture-setup.js';
 import { setupAntseedVikey } from './antseed-vikey-setup.js';
@@ -1338,8 +1339,10 @@ export async function setup(notify = console.log, providers: string[] = [], opti
   if (retired) throw new Error(`${retired} routing is disabled`);
   const location = options.directory ?? configRoot();
   const currentRegistry = options.registry?.() ?? bundledRegistry;
-  const unsupported = providers.find(id => !knownAdapters.has(id) && !localOptInAdapterIds.has(id)
-    && !isDeclarativeAdapter(currentRegistry.adapters.find(adapter => adapter.id === id)));
+  const unsupported = providers.find(id => {
+    const entry = currentRegistry.adapters.find(adapter => adapter.id === id);
+    return !knownAdapters.has(id) && !localOptInAdapterIds.has(id) && !isDeclarativeAdapter(entry) && !isDeclarativeAppAdapter(entry);
+  });
   if (unsupported) throw new Error('Choose a supported Grunt provider');
   // A provider that refused this account gets no new signup until the person
   // clears the refusal with `usegrunt add <provider> --force`.
@@ -1368,13 +1371,24 @@ export async function setup(notify = console.log, providers: string[] = [], opti
   try {
     for (const provider of [...providers]) {
       const declarative = currentRegistry.adapters.find(adapter => adapter.id === provider);
-      if (!isDeclarativeAdapter(declarative)) continue;
-      await setupDeclarativeApi(declarative, {
-        directory: location, squire, notify, background: options.background ?? false,
-        connect: async () => { if (options.connect) await options.connect(); else await owned?.connect(); },
-        ...(options.signal ? { signal: options.signal } : {})
-      });
-      providers = providers.filter(id => id !== provider);
+      if (isDeclarativeAdapter(declarative)) {
+        await setupDeclarativeApi(declarative, {
+          directory: location, squire, notify, background: options.background ?? false,
+          connect: async () => { if (options.connect) await options.connect(); else await owned?.connect(); },
+          ...(options.signal ? { signal: options.signal } : {})
+        });
+        providers = providers.filter(id => id !== provider);
+      } else if (isDeclarativeAppAdapter(declarative)) {
+        await setupDeclarativeApp(declarative, {
+          directory: location,
+          squire: squire as SetupSquire & Partial<Pick<BrowserSquire, 'signup'>>,
+          notify,
+          background: options.background ?? false,
+          connect: async () => { if (options.connect) await options.connect(); else await owned?.connect(); },
+          ...(options.signal ? { signal: options.signal } : {})
+        });
+        providers = providers.filter(id => id !== provider);
+      }
     }
     if (providers.includes('antseed-vikey')) {
       await setupAntseedVikey({ directory: location, dataSharingApproved: approved, notify, ...(options.signal ? { signal: options.signal } : {}) });

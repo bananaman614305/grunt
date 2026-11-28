@@ -1,4 +1,4 @@
-import { disabledAdapters, isDeclarativeAdapter, knownAdapters, localOptInAdapterIds } from '../registry.js';
+import { disabledAdapters, isDeclarativeAdapter, isDeclarativeAppAdapter, knownAdapters, localOptInAdapterIds } from '../registry.js';
 import type { Registry } from '../registry.js';
 import { readDataSharingConsent, registryDataSharingPolicies, requiresDataSharing } from './data-sharing.js';
 import { DailyMaintenance } from './maintenance.js';
@@ -20,7 +20,7 @@ export function createSourceMaintenance(sources: Sources, options: RuntimeMainte
   const extraPolicies = () => options.registry ? registryDataSharingPolicies(options.registry()) : [];
   const maintenance = new DailyMaintenance({ directory: options.directory,
     providers: options.providers ?? (() => {
-      const declarative = new Set((options.registry?.().adapters ?? []).filter(isDeclarativeAdapter).map(adapter => adapter.id));
+      const declarative = new Set((options.registry?.().adapters ?? []).filter(adapter => isDeclarativeAdapter(adapter) || isDeclarativeAppAdapter(adapter)).map(adapter => adapter.id));
       return sources.sources.filter(source => !disabledAdapters.has(source.id)
         && (knownAdapters.has(source.id) || localOptInAdapterIds.has(source.id) || declarative.has(source.id))).map(source => source.id);
     }),

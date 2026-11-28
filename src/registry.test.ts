@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DECLARATIVE_OPENAI_INSTALL, adapterErrors, bundledRegistry, disabledAdapters, imageAdapters, isDeclarativeAdapter, knownAdapters, publishedRegistry, validateRegistry } from './registry.js';
+import { DECLARATIVE_APP_INSTALL, DECLARATIVE_OPENAI_INSTALL, adapterErrors, bundledRegistry, disabledAdapters, imageAdapters, isDeclarativeAdapter, isDeclarativeAppAdapter, knownAdapters, publishedRegistry, validateRegistry } from './registry.js';
 import type { Adapter } from './registry.js';
 import { PROMOTIONAL_PROVIDERS } from './local/promotional-api.js';
 import { recommendedAdapters, scoutRetired } from './local/routing.js';
@@ -350,6 +350,98 @@ it.each([
   ['declarative on npm adapter', { install: 'npm:some-pkg' }]
 ])('rejects invalid declarative adapter: %s', (_label, patch) => {
   expect(adapterErrors({ ...validDeclarative, ...patch }).length).toBeGreaterThan(0);
+});
+
+const validDeclarativeApp: Adapter = {
+  id: 'sample-cli',
+  kind: 'model',
+  tier: 'experimental',
+  weight: 0.01,
+  modalities: ['text'],
+  install: DECLARATIVE_APP_INSTALL,
+  signup: 'https://samplecli.example/login',
+  hints: 'Authorize the CLI login and close the tab.',
+  declarativeApp: {
+    execution: 'inference',
+    installer: { type: 'npm', package: '@sample/cli', bin: 'sample-cli' },
+    auth: {
+      type: 'browser-url',
+      command: ['login'],
+      allowedOrigins: ['https://auth.samplecli.example'],
+      urlPattern: '^https://auth\\.samplecli\\.example/cli/',
+      authFile: '.config/sample/token.json'
+    },
+    transport: {
+      type: 'oneshot-exec',
+      args: ['-p', '{{prompt}}', '--json'],
+      promptInput: 'arg',
+      output: { format: 'json', textPath: 'reply.text' },
+      errors: { quota: 'rate limit', loggedOut: 'not logged in' }
+    },
+    disclosure: 'Prompts go to Sample CLI free tier.',
+    policyVersion: '2026-11-27',
+    policyUrl: 'https://samplecli.example/privacy',
+    name: 'Sample CLI'
+  }
+};
+
+it('accepts valid declarative:app entries (oneshot-exec and acp) and forward-compatible future declarative types', async () => {
+  expect(adapterErrors(validDeclarativeApp)).toEqual([]);
+  expect(isDeclarativeAppAdapter(validDeclarativeApp)).toBe(true);
+
+  const delegatedAcp: Adapter = {
+    ...validDeclarativeApp,
+    id: 'sample-acp',
+    kind: 'agent',
+    declarativeApp: {
+      ...validDeclarativeApp.declarativeApp!,
+      execution: 'delegated',
+      auth: { type: 'none' },
+      transport: { type: 'acp', args: ['acp'], mode: 'plan' }
+    }
+  };
+  expect(adapterErrors(delegatedAcp)).toEqual([]);
+
+  // Future declarative:* types pass validateRegistry so newer registries do not freeze older daemons,
+  // while remaining excluded from RegistrySync.enabled.
+  const futureEntry: Adapter = {
+    id: 'future-kind',
+    kind: 'model',
+    tier: 'experimental',
+    weight: 0.01,
+    modalities: ['text'],
+    install: 'declarative:future'
+  };
+  expect(adapterErrors(futureEntry)).toEqual([]);
+
+  const updated = validateRegistry({
+    ...bundledRegistry,
+    published: new Date(Date.parse(bundledRegistry.published) + 1000).toISOString(),
+    adapters: [
+      { ...bundledRegistry.adapters[0]!, weight: 0.8 },
+      { ...validDeclarativeApp, weight: 0.1 },
+      { ...futureEntry, weight: 0.1 }
+    ]
+  });
+  const sync = new RegistrySync({ directory: await directory(), fetcher: async () => Response.json(updated) });
+  await sync.load();
+  await sync.sync();
+  expect(sync.enabled.map(adapter => adapter.id)).toEqual(['opencode', 'sample-cli']);
+});
+
+it.each([
+  ['delegated with kind model', { kind: 'model', declarativeApp: { ...validDeclarativeApp.declarativeApp!, execution: 'delegated' } }],
+  ['inference with kind agent', { kind: 'agent' }],
+  ['path traversal bin', { declarativeApp: { ...validDeclarativeApp.declarativeApp!, installer: { type: 'npm', package: 'good', bin: '../evil' } } }],
+  ['forbidden env PATH', { declarativeApp: { ...validDeclarativeApp.declarativeApp!, env: { PATH: '/evil' } } }],
+  ['forbidden env LD_PRELOAD', { declarativeApp: { ...validDeclarativeApp.declarativeApp!, env: { LD_PRELOAD: '/evil.so' } } }],
+  ['loopback allowedOrigin', { declarativeApp: { ...validDeclarativeApp.declarativeApp!, auth: { type: 'browser-url', command: ['login'], allowedOrigins: ['https://127.0.0.1'] } } }],
+  ['ReDoS nested quantifier regex', { declarativeApp: { ...validDeclarativeApp.declarativeApp!, transport: { ...validDeclarativeApp.declarativeApp!.transport, type: 'oneshot-exec', args: ['-p', '{{prompt}}'], promptInput: 'arg', output: { format: 'plain' }, errors: { quota: '(a+)+$' } } } }],
+  ['archive non-https url', { declarativeApp: { ...validDeclarativeApp.declarativeApp!, installer: { type: 'archive', urls: { 'linux-x64': 'http://evil.example/a.tar.gz' }, bin: 'cli' } } }],
+  ['missing declarativeApp object', { declarativeApp: undefined }],
+  ['both declarative and declarativeApp', { declarative: validDeclarative.declarative }]
+])('rejects invalid declarative:app adapter: %s', (_label, patch) => {
+  expect(adapterErrors({ ...validDeclarativeApp, ...patch }).length).toBeGreaterThan(0);
 });
 
 it('leaves ended offers out of the published registry and the packaged copy', async () => {
