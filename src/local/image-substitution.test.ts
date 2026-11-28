@@ -116,14 +116,15 @@ it('keeps the image for a briefly benched image source (a true 429 with its retr
   const { items, sources, app } = pool({ image: ['runcrate'], now: () => now });
   const request = { model: 'grunt', messages: [{ role: 'user', content: 'x' }], tools: [], cwd: '/tmp', stream: false, imageInput: true as const };
   const capable = items.find(item => item.id === 'runcrate')!;
-  // A 2-minute quota window: waiting is honest, so the image stays and the answer is a real 429.
-  vi.mocked(capable.complete).mockRejectedValue(new SourceError('quota', 'limit', 120));
+  // A short quota window (<= 60s): waiting is honest, so the image stays and the answer is a real 429.
+  vi.mocked(capable.complete).mockRejectedValue(new SourceError('quota', 'limit', 45));
   await sources.complete({ ...request, tools: [], messages: [{ role: 'user', content: 'prime' }] }, AbortSignal.timeout(2000)).catch(() => undefined);
   expect(sources.acceptsImages(request)).toBe(true);
   const kept = await post(app, 'messages', messagesBody([{ type: 'text', text: 'describe' }, image], { tools: undefined }));
   expect(kept.status).toBe(429); expect(Number(kept.headers.get('retry-after'))).toBeGreaterThan(0);
+  expect(Number(kept.headers.get('retry-after'))).toBeLessThanOrEqual(60);
   expect(JSON.stringify(vi.mocked(capable.complete).mock.calls.at(-1)?.[0].messages ?? '')).not.toContain('image omitted');
-  // Once it is benched for hours, the image no longer holds the conversation: it is answered as text.
+  // Once it is benched beyond the 60s window (e.g. hours), the image no longer holds the conversation: it is answered as text.
   now += 200_000;
   vi.mocked(capable.complete).mockRejectedValue(new SourceError('quota', 'daily limit', 6 * 3600));
   await sources.complete({ ...request, messages: [{ role: 'user', content: 'prime again' }] }, AbortSignal.timeout(2000)).catch(() => undefined);

@@ -148,8 +148,16 @@ it('routes past an invalid sample through the sticky router with only a short be
 
 // The error when nothing can serve a request must not call a local refusal a quota wait.
 const input: ModelRequest = { model: 'grunt', messages: [{ role: 'user', content: 'go' }], tools: [{ type: 'function', function: { name: 'read', parameters: {} } }], cwd: '/tmp', stream: false };
-function router(ids: string[], complete: (id: string) => Promise<Completion>, extra: { unavailable?: string[]; pending?: string[] } = {}) {
-  const items = ids.map((id): Source => ({ id, supportsFunctionTools: true, available: async () => !extra.unavailable?.includes(id), complete: () => complete(id) }));
+function router(ids: string[], complete: (id: string) => Promise<Completion>, extra: { unavailable?: string[]; limited?: string[]; pending?: string[] } = {}) {
+  const items = ids.map((id): Source => ({
+    id,
+    supportsFunctionTools: true,
+    available: async () => {
+      if (extra.limited?.includes(id)) throw new SourceError('quota', 'daily limit', 30);
+      return !extra.unavailable?.includes(id);
+    },
+    complete: () => complete(id)
+  }));
   return new StickyRouter(items, { registry: () => ({ ...bundledRegistry, adapters: items.map(item => ({ ...bundledRegistry.adapters.find(a => a.id === item.id)!, weight: 1 })) }), random: () => 0,
     ...(extra.pending ? { pending: new Set(extra.pending) } : {}) });
 }
@@ -178,8 +186,8 @@ it('keeps the retryable error for the incident mix: five local refusals plus an 
   expect(error).toMatchObject({ code: 'quota' }); expect(error.retryAfter).toBeGreaterThan(0);
   expect(error.message).toMatch(/5 adapters refused/);
 });
-it('keeps the retryable error when a limited or unchecked adapter might still serve the request', async () => {
-  const r = router(['kilo', 'runcrate'], async () => { throw requestRefusal('refused'); }, { unavailable: ['runcrate'] });
+it('keeps the retryable error when a limited or pending adapter might still serve the request', async () => {
+  const r = router(['kilo', 'runcrate'], async () => { throw requestRefusal('refused'); }, { limited: ['runcrate'] });
   const error = await r.complete(input, AbortSignal.timeout(1000)).catch(e => e);
   await r.close();
   expect(error).not.toBeInstanceOf(RequestError); expect(error).toMatchObject({ code: 'quota' });
@@ -187,4 +195,11 @@ it('keeps the retryable error when a limited or unchecked adapter might still se
   const waiting = await pending.complete(input, AbortSignal.timeout(1000)).catch(e => e);
   await pending.close();
   expect(waiting).not.toBeInstanceOf(RequestError); expect(waiting).toMatchObject({ code: 'quota' });
+});
+it('preserves the local request-shape error when the only fallback adapter is unconfigured', async () => {
+  const r = router(['kilo', 'runcrate'], async () => { throw requestRefusal('refused'); }, { unavailable: ['runcrate'] });
+  const error = await r.complete(input, AbortSignal.timeout(1000)).catch(e => e);
+  await r.close();
+  expect(error).toBeInstanceOf(RequestError);
+  expect(error.message).toMatch(/1 adapter refused this conversation's tool definitions or tool history locally/);
 });

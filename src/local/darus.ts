@@ -7,6 +7,7 @@ import { readPromotionalStream } from './promotional-api.js';
 import { readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
 import { nousQuotaDelay, readQuotaError } from './quota-timing.js';
 import { MetadataFlights } from './metadata-flight.js';
+import { classifyHttpFailure } from './provider-error.js';
 import { lengthLimited, truncatedCompletion, withObservedEnding, SourceError } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 
@@ -122,8 +123,13 @@ export class Darus implements Source {
       });
       if (!response.ok) {
         const retry = nousQuotaDelay(response.headers, await readQuotaError(response), this.now);
-        throw new SourceError(response.status === 401 ? 'logged_out' : [402, 429].includes(response.status) ? 'quota' : response.status === 403 ? 'refused' : 'upstream',
-          `Darus returned HTTP ${response.status}`, retry, undefined, { httpStatus: response.status, transport: 'http', httpMethod: 'POST', endpointLabel: 'chat.completions' });
+        throw classifyHttpFailure({
+          source: 'Darus',
+          status: response.status,
+          ...(retry === undefined ? {} : { retryAfter: retry }),
+          httpMethod: 'POST',
+          endpointLabel: 'chat.completions'
+        });
       }
       if (response.headers.has('x-darus-model-failover')) {
         await response.body?.cancel();

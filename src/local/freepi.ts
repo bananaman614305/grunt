@@ -12,6 +12,7 @@ import { readDataSharingConsent } from './data-sharing.js';
 import { acquireFreePiAccountLease } from './freepi-lock.js';
 import { quotaRetryAfter } from './quota-timing.js';
 import { observeAttemptDispatch, diagnosticFetch } from './diagnostics.js';
+import { classifyHttpFailure, observeAvailabilityFailure } from './provider-error.js';
 import { lengthLimited, truncatedCompletion, withObservedEnding, SourceError, requestRefusal } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 
@@ -92,7 +93,13 @@ export class FreePi implements Source {
     });
     if (!response.ok) {
       await response.body?.cancel();
-      throw new SourceError(response.status === 401 ? 'logged_out' : [402, 429].includes(response.status) ? 'quota' : response.status === 403 ? 'refused' : 'upstream', `Free-Pi returned HTTP ${response.status}`, quotaRetryAfter(response.headers.get('Retry-After')), undefined, { httpStatus: response.status, transport: 'http', endpointLabel: path === '/me/stats' ? 'account' : 'chat.completions' });
+      const retry = quotaRetryAfter(response.headers.get('Retry-After'));
+      throw classifyHttpFailure({
+        source: 'Free-Pi',
+        status: response.status,
+        ...(retry === undefined ? {} : { retryAfter: retry }),
+        endpointLabel: path === '/me/stats' ? 'account' : 'chat.completions'
+      });
     }
     return readFreePiJson(response, signal, path === '/me/stats' ? 65536 : undefined);
   }
@@ -107,7 +114,7 @@ export class FreePi implements Source {
   async available() {
     const signal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(10000)]);
     try { const token = await this.token(); await this.guard(token, signal); return true; }
-    catch (error) { if (error instanceof SourceError && error.code === 'quota') throw error; return false; }
+    catch (error) { if (error instanceof SourceError && error.code === 'quota') throw error; observeAvailabilityFailure(error); return false; }
   }
   // Maintenance verifies native access/free rights without selling another trace.
   async healthCheck() { return this.available(); }

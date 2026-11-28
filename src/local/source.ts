@@ -8,9 +8,30 @@ import type { DiagnosticsStore, SafeDiagnosticMetadata, DiagnosticContext, Diagn
 import type { RoutingHistory } from './routing-history.js';
 import { localRequestRefusal } from './routing-history.js';
 import { MetadataFlights } from './metadata-flight.js';
+import type { ProviderFailureCause } from './provider-error.js';
+import { TRANSIENT_RETRY_WINDOW_SECONDS, classifySourceError, formatResetCountdown } from './provider-error.js';
 export class SourceError extends Error {
   replay?: 'safe' | 'unsafe';
+  failureCause?: ProviderFailureCause;
   constructor(public code: ErrorCode, message: string, public retryAfter?: number, public output?: string, public diagnostics?: SafeDiagnosticMetadata) { super(message); }
+}
+// Returned when every candidate route failed or is unavailable. `terminal` distinguishes
+// hard global exhaustion (HTTP 402, stop retrying) from a short transient wait (HTTP 429).
+export class PoolExhaustedError extends SourceError {
+  readonly terminal: boolean;
+  readonly poolState: 'transient_error' | 'globally_exhausted';
+  constructor(message: string, options: {
+    terminal: boolean;
+    retryAfter?: number;
+    code?: ErrorCode;
+    diagnostics?: SafeDiagnosticMetadata;
+    output?: string;
+  }) {
+    super(options.code ?? 'quota', message, options.retryAfter, options.output, options.diagnostics);
+    this.terminal = options.terminal;
+    this.poolState = options.terminal ? 'globally_exhausted' : 'transient_error';
+    this.failureCause = options.terminal ? 'exhausted' : 'transient';
+  }
 }
 export function canReplay(error: SourceError) {
   return error.code !== 'cancelled' && !(error instanceof RequestError)
@@ -385,6 +406,15 @@ export class Sources {
     return this.metadata.run(source.id, signal => this.observation.available(source, false, undefined, signal), undefined, source.availabilityTimeoutMs);
   }
   openRoute(id: string) { return this.observation.observedAvailable(id) !== false && this.dispatchEligible(id); }
+  needsSignup(id: string) {
+    if (!this.observation.needsSignup(id)) return false;
+    const cooldown = this.registeredRouter?.cooldown(id, false);
+    if (cooldown && cooldown.until > (this.routing?.now ?? Date.now)()) {
+      if (cooldown.code === 'quota' || cooldown.code === 'refused' || cooldown.code === 'upstream' || cooldown.code === 'timeout') return false;
+    }
+    return true;
+  }
+  poolState() { return this.status(false).poolState ?? 'idle'; }
   dispatchEligible(id: string, request?: ModelRequest) {
     const router = this.registeredRouter;
     const source = this.sources.find(source => source.id === id);
@@ -643,8 +673,17 @@ export class Sources {
         if (error instanceof SourceError && !(error instanceof RequestError) && skipped.size
           && ['quota', 'not_installed', 'logged_out', 'refused'].includes(error.code)) {
           const details = [...skipped].map(([id, reason]) => `${id} (${reason})`).join(', ');
-          const reported = new SourceError(error.code, `${error.message}. Routes skipped: ${details}.`, error.retryAfter, error.output, error.diagnostics);
+          const reported = error instanceof PoolExhaustedError
+            ? new PoolExhaustedError(`${error.message} Routes skipped: ${details}.`, {
+              terminal: error.terminal,
+              ...(error.retryAfter === undefined ? {} : { retryAfter: error.retryAfter }),
+              code: error.code,
+              ...(error.output === undefined ? {} : { output: error.output }),
+              ...(error.diagnostics === undefined ? {} : { diagnostics: error.diagnostics })
+            })
+            : new SourceError(error.code, `${error.message}. Routes skipped: ${details}.`, error.retryAfter, error.output, error.diagnostics);
           if (error.replay !== undefined) reported.replay = error.replay;
+          if (error.failureCause !== undefined) reported.failureCause = error.failureCause;
           throw reported;
         }
         throw error;
@@ -761,7 +800,32 @@ export class Sources {
     if (!attempted && imageBlocked && !routedFailure) {
       throw new RequestError('This conversation contains an image, but no source on this route accepts image input; remove the image or continue in text');
     }
-    throw quota ?? last;
+    const finalError = quota ?? last;
+    if (finalError instanceof PoolExhaustedError || finalError instanceof RequestError || finalError.replay === 'unsafe') throw finalError;
+    if (finalError.code === 'quota') {
+      const short = finalError.retryAfter !== undefined && Number.isFinite(finalError.retryAfter) && finalError.retryAfter <= TRANSIENT_RETRY_WINDOW_SECONDS;
+      const reset = finalError.retryAfter !== undefined && Number.isFinite(finalError.retryAfter) ? ` (earliest reset in ${formatResetCountdown(finalError.retryAfter)})` : '';
+      const message = short
+        ? finalError.message
+        : `Grunt pool globally exhausted: ${finalError.message}${reset}. Run usegrunt status or usegrunt setup.`;
+      throw new PoolExhaustedError(message, {
+        terminal: !short,
+        ...(finalError.retryAfter === undefined ? {} : { retryAfter: finalError.retryAfter }),
+        code: 'quota',
+        ...(finalError.output === undefined ? {} : { output: finalError.output }),
+        ...(finalError.diagnostics === undefined ? {} : { diagnostics: finalError.diagnostics })
+      });
+    }
+    if (automatic && ['not_installed', 'logged_out', 'refused'].includes(finalError.code)) {
+      const cause = classifySourceError(finalError);
+      const message = `Grunt pool globally exhausted: ${finalError.message} (${cause}). Run usegrunt status or usegrunt setup.`;
+      throw new PoolExhaustedError(message, {
+        terminal: true,
+        code: finalError.code,
+        ...(finalError.diagnostics === undefined ? {} : { diagnostics: finalError.diagnostics })
+      });
+    }
+    throw finalError;
   }
   async close() {
     this.metadata.close();

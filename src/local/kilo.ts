@@ -5,6 +5,7 @@ import { providerGrantDirectory, readPrivateProviderGrant, validateProviderGrant
 import { JsonToolBridge } from './json-tool-bridge.js';
 import { readPromotionalStream } from './promotional-api.js';
 import { completionEnding, emitStreamText, endingOf, hasEmittedStreamText, messageText, resetUncommittedStreamReply, withEnding, lengthLimited, truncatedCompletion, needsFunctionTools, SourceError } from './source.js';
+import { observeAvailabilityFailure } from './provider-error.js';
 import { diagnosticFetch, observeAttemptDispatch, recordAttemptFailure } from './diagnostics.js';
 import type { SafeDiagnosticMetadata } from './diagnostics.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
@@ -213,10 +214,16 @@ export class Kilo implements Source {
   private async track<T>(task: Promise<T>) { this.pending.add(task); try { return await task; } finally { this.pending.delete(task); } }
   async available() {
     return this.track((async () => { try {
-      if (this.shutdown.signal.aborted || !await this.approved()) return false;
+      if (this.shutdown.signal.aborted) return false;
+      if (!await this.approved()) {
+        const consent = new SourceError('refused', 'Kilo data sharing is not approved; rerun usegrunt setup');
+        consent.failureCause = 'unconfigured';
+        observeAvailabilityFailure(consent);
+        return false;
+      }
       await this.verify(this.shutdown.signal);
       return !this.shutdown.signal.aborted;
-    } catch { return false; } })());
+    } catch (error) { observeAvailabilityFailure(error); return false; } })());
   }
   async healthCheck() { return this.available(); }
   complete(request: ModelRequest, caller: AbortSignal, output?: () => void): Promise<Completion> { return this.track(this.retryBadCalls(request, caller, output)); }

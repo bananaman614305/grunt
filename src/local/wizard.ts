@@ -437,7 +437,7 @@ export async function checkFallbackServices(unavailable: string[], port = 8788, 
           preparing = response.headers.get('x-grunt-preparing')?.split(',').includes(source) ?? false;
           const answered = response.headers.get('x-grunt-source');
           const result = await response.json().catch(() => ({})) as { error?: { code?: string }; choices?: { message?: { content?: string } }[] };
-          if (!response.ok) failure = result.error?.code === 'quota' || response.status === 429 ? 'quota exhausted' : `grunt returned HTTP ${response.status}`;
+          if (!response.ok) failure = result.error?.code === 'quota' || result.error?.code === 'globally_exhausted' || response.status === 429 || response.status === 402 ? 'quota exhausted' : `grunt returned HTTP ${response.status}`;
           else if (answered !== source) failure = `${answered ?? 'an unnamed source'} answered instead of ${source}`;
           else if (!result.choices?.[0]?.message?.content?.trim()) failure = 'no text returned';
           else failure = undefined;
@@ -499,7 +499,7 @@ export async function probeSetupOperator(port: number, source: string, signal: A
       { role: 'user', content: `Call the setup_ready tool once with no arguments. Check ${randomUUID()}.` }
     ], tools: [{ type: 'function', function: { name: 'setup_ready', parameters: { type: 'object', properties: {}, additionalProperties: false } } }] })
   });
-  if (response.status === 429) throw new OperatorProbeFailure('quota exhausted');
+  if (response.status === 429 || response.status === 402) throw new OperatorProbeFailure('quota exhausted');
   if (!response.ok) throw new OperatorProbeFailure(`tool-call probe returned HTTP ${response.status}`);
   const answered = response.headers.get('x-grunt-source');
   if (answered !== source) throw new OperatorProbeFailure(`tool-call probe was answered by ${answered && /^[a-z0-9-]{1,40}$/.test(answered) ? answered : 'another source'}`);
@@ -518,7 +518,7 @@ export async function smokeTest(port: number, signal: AbortSignal) {
       body: JSON.stringify({ model: 'grunt', cwd: directory, stream: false, max_tokens: 256,
         messages: [{ role: 'user', content: `Reply only: grunt is ready. Do not use tools or change files. Check ${randomUUID()}.` }] })
     });
-    if (response.status === 429) throw new Error('quota exhausted');
+    if (response.status === 429 || response.status === 402) throw new Error('quota exhausted');
     if (!response.ok) throw new Error(`grunt returned HTTP ${response.status}`);
     const result = await response.json().catch(() => ({})) as { choices?: { message?: { content?: string } }[] };
     if (!result.choices?.[0]?.message?.content?.trim()) throw new Error('grunt printed no answer');
