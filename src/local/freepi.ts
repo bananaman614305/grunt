@@ -27,12 +27,16 @@ const object = (value: unknown): Record<string, unknown> => value !== null && ty
 const count = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 const requiredWallets = ['credit_usd', 'credit_credits', 'bonus_credits', 'bonus_wallet_credits', 'premium_credits', 'premium_bought_credits', 'premium_gifted_credits'];
 const wallets = [...requiredWallets, 'premium_expiring_credits', 'regular_wallet_credits'];
+// Free-Pi grants these itself (e.g. a return bonus); nothing was bought, so a
+// balance may remain. Purchased, premium and USD balances must still be zero.
+const grantedWallets = ['bonus_credits', 'bonus_wallet_credits'];
 const metadata = ['credit_tiers', 'premium_get_line', 'premium_expires_at', 'use_bonus', 'allowance_credits', 'remaining_credits_today'];
 
 // Match the authenticated 0.6.28 contract, including earned/gifted wallets.
 // New spending controls fail closed until reviewed; optional is not assumed zero.
 export function assertFreePiAccount(account: Record<string, unknown>, now = Date.now(), allowExhausted = false) {
-  if (requiredWallets.some(key => !Object.hasOwn(account, key)) || wallets.some(key => Object.hasOwn(account, key) && account[key] !== 0)
+  if (requiredWallets.some(key => !Object.hasOwn(account, key))
+    || wallets.some(key => Object.hasOwn(account, key) && (grantedWallets.includes(key) ? !count(account[key]) : account[key] !== 0))
     || Object.keys(account).some(key => /wallet|credit|payment|billing|charge|subscription|postpaid/i.test(key) && !wallets.includes(key) && !metadata.includes(key))) {
     throw new SourceError('refused', 'Free-Pi requires verified zero balances for every spendable wallet');
   }

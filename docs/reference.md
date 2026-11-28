@@ -1399,8 +1399,9 @@ a provider Retry-After wins. Retirement is unchanged.
 Use `npx usegrunt add freepi` for its GitHub device signup; setup automatically
 records the current material trace-sale policy. Every inference additionally requires
 `X-Grunt-Context: public`; handoff and image requests are excluded.
-Ordinary Pi sessions do not add that header. All spendable wallets must be zero
-before and after inference, and the exact current free offer must remain valid.
+Ordinary Pi sessions do not add that header. All purchased, premium and USD wallets
+must be zero before and after inference (Free-Pi's own granted bonus balances
+may remain), and the exact current free offer must remain valid.
 Synthetic qualification passed tools, 201,074 input tokens and actual Grunt
 attribution; it did not authorize submitting game or private-project content.
 See the [Free-Pi guide](providers/freepi.md) for account-dependent allowances,
