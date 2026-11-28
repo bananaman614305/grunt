@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -9,6 +9,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import type * as SignupSdkModule from '@trusty-squire/mcp/signup';
 import type {
+  CaptureSource,
   CapturedCredential,
   CreateSignupSessionOptions,
   EmbeddedSignupSession,
@@ -41,6 +42,7 @@ import {
 import type { VaultProvider } from './vault.js';
 
 export type {
+  CaptureSource,
   CapturedCredential,
   CreateSignupSessionOptions,
   EmbeddedSignupSession,
@@ -163,6 +165,7 @@ export interface ManagedEmbeddedSignupSession {
     maxSeconds?: number;
     timeoutMs?: number;
     signal?: AbortSignal;
+    captureSource?: readonly CaptureSource[];
   }): Promise<EmbeddedDriveOutcome>;
   click(ref: string): Promise<SignupObservationSummary>;
   observe(format?: 'compact' | 'full'): Promise<SignupObservationSummary>;
@@ -197,6 +200,24 @@ export async function gruntSignupPaths(directory = configRoot()): Promise<{ prof
     profileDir: sdk.assertIsolatedProfileDir(join(directory, GRUNT_BROWSER_PROFILE_DIR)),
     sessionPath: sdk.assertIsolatedSessionPath(join(directory, GRUNT_SIGNUP_SESSION_FILE))
   };
+}
+
+/**
+ * The one Google account signed in to Grunt's isolated Chrome profile, as
+ * Chrome records it. Squire learns this identity only during a Google step, so
+ * an email-only signup form has no email to type unless Grunt supplies it.
+ */
+export async function signupIdentityEmail(directory = configRoot()): Promise<string | undefined> {
+  try {
+    const preferences = JSON.parse(await readFile(join(directory, GRUNT_BROWSER_PROFILE_DIR, 'Default', 'Preferences'), 'utf8')) as { account_info?: unknown };
+    const accounts = Array.isArray(preferences.account_info) ? preferences.account_info : [];
+    const emails = new Set(accounts.map(account => (account as { email?: unknown } | null)?.email)
+      .filter((email): email is string => typeof email === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()))
+      .map(email => email.trim().toLowerCase()));
+    return emails.size === 1 ? [...emails][0] : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -570,7 +591,8 @@ export async function openEmbeddedSignupSession(
         ...(turnOptions.maxSteps !== undefined ? { maxSteps: turnOptions.maxSteps } : {}),
         ...(turnOptions.maxSeconds !== undefined ? { maxSeconds: turnOptions.maxSeconds } : {}),
         ...(turnOptions.timeoutMs !== undefined ? { timeoutMs: turnOptions.timeoutMs } : {}),
-        ...(turnOptions.signal ? { signal: turnOptions.signal } : {})
+        ...(turnOptions.signal ? { signal: turnOptions.signal } : {}),
+        ...(turnOptions.captureSource?.length ? { captureSource: turnOptions.captureSource } : {})
       });
       if (signupSession.closed) {
         await close();

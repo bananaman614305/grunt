@@ -48,7 +48,9 @@ it('captures new private access after consent, verifies server guards, and reuse
   await setupPollinations({ directory, squire: browser, fetcher, notify });
   expect(browser.signup).toHaveBeenCalledOnce();
   const [provider, url, goal, facts] = browser.signup.mock.calls[0] as unknown as [string, string, string, Record<string, string>];
-  expect(facts).toEqual({ key_name: 'grunt-free-pollinations' });
+  // A fresh key name per attempt: an earlier key's value can never be shown again.
+  expect(facts).toEqual({ key_name: expect.stringMatching(/^grunt-free-pollinations-\d{8}-\d{4}$/), Budget: '0' });
+  expect(goal).toContain('leave every listed key unchanged and create one new secret key');
   expect([provider, url]).toEqual(['pollinations', 'https://enter.pollinations.ai/keys']);
   expect(planSteps(goal)).toEqual([]);
   expect(goal).toContain('budget must be exactly 0'); expect(goal).toContain('Quest Pollen Only must be enabled');

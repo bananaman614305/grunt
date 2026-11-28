@@ -132,13 +132,16 @@ export class SourceRecovery {
           reason ??= setupFailureReason(error);
           return { unavailable: [id] };
         }).finally(() => this.options.opening?.(undefined));
-        if (!signal.aborted) this.options.settled?.(id, outcome.unavailable.includes(id) ? reason ?? 'setup failed' : undefined);
+        const failure = outcome.unavailable.includes(id) ? reason ?? 'setup failed' : undefined;
+        if (!signal.aborted) this.options.settled?.(id, failure);
         this.failed.delete(id);
         this.failedSinceSync.delete(id);
-        if (outcome.unavailable.includes(id)) {
+        if (failure !== undefined) {
           this.failed.add(id);
           this.failedSinceSync.add(id);
         }
+        // A durable, fixed-text outcome per opening (setupFailureReason never copies upstream text).
+        if (!signal.aborted) notify(`grunt routes: ${id} ${failure === undefined ? 'opened' : `not opened (${failure})`}`);
       }
     } finally { await session.close(); }
   }

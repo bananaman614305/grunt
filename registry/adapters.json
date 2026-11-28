@@ -103,7 +103,7 @@
       "install": "builtin:pollinations",
       "signup": "https://enter.pollinations.ai/",
       "model": "community/morriszdweck/glm-5.3-flash-free",
-      "hints": "On /keys: if 'Save' has not been pressed yet in this drive, press 'Edit secret key', set Budget to 0, check 'Quest balance only', leave only 'Generate' on, and press 'Save'. If 'Save' has already been pressed in this drive, the goal is complete: choose DONE now. The key list shown after Save is the confirmation of the saved settings, so no further click is needed. Never press 'Create', 'Delete secret key' or a second 'Edit secret key'."
+      "hints": "On /keys keep 'Secret' selected and press 'Create'. In the 'Create secret key' dialog type the supplied key_name in 'Name', type 0 in 'Budget', check the 'Quest balance only' checkbox (not its information button), leave 'Expiry' empty, check 'See balance, usage, earnings and quests', leave the other permissions as they are ('Generate' stays on), and only when both checkboxes show checked press the dialog's 'Create'. The new key is shown once as the 'Copy secret key' button: press 'Copy secret key', then finish with the dialog still open. Never press 'Copy and close', 'Edit secret key' or 'Delete secret key', and never change a listed key."
     },
     {
       "id": "beatapi",
@@ -257,7 +257,7 @@
       "install": "builtin:millionseek",
       "signup": "https://100milionseek.top/signup",
       "model": "deepseek-v4.1-flash-free",
-      "hints": "On /signup, when the page lists neither an Email field nor 'Create my key', the signup form is still loading: choose WAIT (never press 'Get started', 'Sign in' or 'Refresh availability'). When the Email field shows the Squire email, complete the Cloudflare check and press 'Create my key'. While 'Create my key' is disabled after the press, wait. The new key is shown once with a 'Copy key' button: press 'Copy key' so it is stored, then finish. On /dashboard never press 'Copy' (it copies the invite link, not the key), 'Rotate key' or 'Delete account'."
+      "hints": "On /signup, when the page lists neither an Email field nor 'Create my key', the signup form is still loading: choose WAIT (never press 'Get started', 'Sign in' or 'Refresh availability'). Type the supplied email into 'Email'. When the human check has finished and 'Create my key' is enabled, press it. While 'Create my key' is disabled after the press, wait. The new key is shown once with a 'Copy key' button: press 'Copy key' so it is stored, then finish. On /dashboard never press 'Copy' (it copies the invite link, not the key), 'Rotate key' or 'Delete account'."
     },
     {
       "id": "freepi",

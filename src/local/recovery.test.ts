@@ -401,3 +401,18 @@ it('counts only coding-capable routes (excluding non-tool opencode and public-on
   expect(codingCapableRoute(new Goedel({ directory: dir }), dir)).toBe(false);
   expect(codingCapableRoute(new Kilo({ directory: dir }), dir)).toBe(true);
 });
+
+it('records one fixed-text outcome line per opening', async () => {
+  const dir = await directory();
+  const lines: string[] = [];
+  const setup = vi.fn(async (options: { adapters?: string[]; onSettled?: (id: string, available: boolean, reason?: string) => void }) => {
+    const id = options.adapters![0]!;
+    if (id === 'perch') { options.onSettled?.(id, false, 'browser account check failed'); return { unavailable: [id] }; }
+    return { unavailable: [] };
+  });
+  const recovery = new SourceRecovery({ directory: dir, candidates: async () => ['perch', 'zro'], open: async () => 0, notify: line => lines.push(line), setup });
+  recovery.trigger();
+  await vi.waitFor(() => expect(lines).toContain('grunt routes: zro opened'));
+  expect(lines).toContain('grunt routes: perch not opened (browser account check failed)');
+  await recovery.close();
+});

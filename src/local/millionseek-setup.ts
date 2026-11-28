@@ -1,9 +1,10 @@
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { readDataSharingConsent } from './data-sharing.js';
-import { MillionSeek, MILLIONSEEK_HOST, MILLIONSEEK_MODEL, MILLIONSEEK_SERVICE } from './millionseek.js';
+import { MillionSeek, MILLIONSEEK_HOST, MILLIONSEEK_SERVICE } from './millionseek.js';
 import { firstWorkingGrant, resolveSquireGrant, writePrivateProviderGrant } from './provider-grant.js';
 import type { BrowserSquire, SetupSquire } from './setup.js';
+import { signupIdentityEmail } from './signup-mcp.js';
 
 export const MILLIONSEEK_STORE = { service: MILLIONSEEK_SERVICE, label: 'Grunt Free', api_hosts: [MILLIONSEEK_HOST], auth_shape: 'bearer' };
 type Squire = SetupSquire & Partial<Pick<BrowserSquire, 'signup' | 'call'>>;
@@ -27,8 +28,11 @@ export async function setupMillionSeek({ directory, squire, notify, connect, sig
   if (!matches.length) {
     if (!squire.signup) throw new Error('100milionseek requires browser-capable Trusty Squire');
     signal?.throwIfAborted();
+    // Squire knows the profile's email only after a Google step; this form never has one.
+    const email = await signupIdentityEmail(directory);
+    const facts: [Record<string, string>] | [] = email ? [{ email }] : [];
     await squire.signup(MILLIONSEEK_SERVICE, `https://${MILLIONSEEK_HOST}/signup`,
-      `Reuse the user's existing 100milionseek account and key if available; otherwise create one ordinary free account using the verified account email through Squire's sealed signup slots. Honor one account per person/inbox; never create aliases, rotate accounts, redeem token-reset vouchers, or resell access. Stop if signup slots are paused. Use normal observed controls and Squire's configured verification tools. A visible Cloudflare checkbox inside its frame can receive normal keyboard focus: focus the preceding email field, Tab, verify focus on the checkbox, then Space. Never forge verification or inject tokens; hand off if supported controls cannot complete it. Never add payment details, buy tokens, or use paid models. Capture the newly created key directly with Squire's observed Copy key button and store service ${MILLIONSEEK_SERVICE}, label ${MILLIONSEEK_STORE.label}, auth_shape bearer, api_hosts ["${MILLIONSEEK_HOST}"]. Never return the key. Verify ${MILLIONSEEK_MODEL}, 198000 input and a recurring 100M-token UTC-day allowance; temporary bonuses are separate. Stop if payment, SMS, Discord or Telegram is required.`);
+      `Create one ordinary free 100milionseek account with the supplied email and capture its new API key. On /signup type the supplied email into 'Email', let the human check finish (Squire's configured CAPTCHA solver handles it; never forge or inject tokens yourself), then press 'Create my key'. One account per person/inbox: never create aliases or other accounts, redeem token-reset vouchers or resell access. Stop if the page says signups are closed or paused, or asks for payment, SMS, Discord or Telegram. Never add payment details, buy tokens or a pass, or use paid models. Capture the new key with Squire's observed 'Copy key' button and store service ${MILLIONSEEK_SERVICE}, label ${MILLIONSEEK_STORE.label}, auth_shape bearer, api_hosts ["${MILLIONSEEK_HOST}"]. Never return the key.`, ...facts);
     matches = await select();
   }
   if (!matches.length) throw new Error('100milionseek requires one unambiguous scoped free key');

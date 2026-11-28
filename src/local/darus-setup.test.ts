@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -70,4 +70,12 @@ it('reaches guarded Darus setup through the real default onboarding task map', a
   expect(settled).toHaveBeenCalledWith('darus', true, undefined);
   expect(connect).toHaveBeenCalledTimes(1);
   expect((await stat(join(directory, 'darus.json'))).mode & 0o777).toBe(0o600);
+});
+it('supplies the Grunt profile email to the email-only registration form', async () => {
+  await recordDataSharingConsent(directory, ['darus']);
+  await mkdir(join(directory, 'browser-profile', 'Default'), { recursive: true });
+  await writeFile(join(directory, 'browser-profile', 'Default', 'Preferences'), JSON.stringify({ account_info: [{ email: 'person@example.com' }] }));
+  const squire = browser([]);
+  await expect(setupDarus({ directory, squire, notify, background: false })).rejects.toThrow('unambiguous');
+  expect(squire.signup).toHaveBeenCalledWith('darus', `https://${DARUS_HOST}/`, expect.any(String), { email: 'person@example.com' });
 });

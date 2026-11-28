@@ -73,6 +73,7 @@ import {
   writeId
 } from './signup-mcp.js';
 import type {
+  CaptureSource,
   EmbeddedSignupRuntime,
   InMemoryCapturedGrant,
   ManagedEmbeddedSignupSession,
@@ -386,6 +387,20 @@ const EMBEDDED_SIGNUP_TOOLS: Tool[] = [
 
 // operate_drive rejects a longer goal.
 const DRIVE_GOAL_LIMIT = 4000;
+// Exact controls a provider's signup documents as its next step. The drive can
+// stay unsure on these pages even when it offers the control; Grunt then
+// presses each one once (still subject to guardedSignupChoice).
+const UNSURE_DRIVE_CONTROLS: Record<string, readonly RegExp[]> = {
+  [MILLIONSEEK_SERVICE]: [/^create my key$/i, /^copy key$/i]
+};
+// Where a provider shows a new key that Squire's Copy-button capture cannot
+// read (a key printed in <pre>, or inside its own copy button). Squire reads
+// these after a finished drive.
+const SIGNUP_CAPTURE_SOURCES: Record<string, readonly CaptureSource[]> = {
+  [MILLIONSEEK_SERVICE]: [{ selector: '#done [data-p="key"]' }, { selector: '#reissued [data-p="key"]' }],
+  // The new secret key is the text of its own copy button in the created dialog.
+  pollinations: [{ selector: 'button[aria-label="Copy secret key"] > span:first-child' }]
+};
 // Squire's explicit capture stores one revealed textbox/code value, or retries
 // an unresolved write by write_id. Only this provider's vault entry is allowed.
 // Returns undefined when absent and null when it is not acceptable.
@@ -614,8 +629,10 @@ export class BrowserSquire implements SetupSquire {
             this.embeddedSessions.set(sessionId, { provider, url, goal, handle });
           }
           try {
+            const captureSource = SIGNUP_CAPTURE_SOURCES[provider];
             const { driveResult } = await handle.drive({
               ...(!tracked ? { url } : {}),
+              ...(captureSource ? { captureSource } : {}),
               goal,
               ...(Object.keys(facts).length ? { facts } : {}),
               ...(answer !== undefined ? { answer } : {}),
@@ -1045,6 +1062,11 @@ export class BrowserSquire implements SetupSquire {
         return { run: { id: provider, state: 'completed' }, decision: 'silent' };
       }
       const active = this.sessions.get(provider);
+      // Squire's CAPTCHA auto-solve runs on page observations, never inside a
+      // drive turn. Without an operator (which observes the page itself),
+      // observe once after each unfinished turn so a gated submit (an
+      // invisible Turnstile, for example) can receive its token.
+      if (active && !this.options.agent) await this.serviceCall(provider, 'operate_observe', { session_id: active }).catch(() => undefined);
       const offeredTerms = Object.entries(object(result.options)).find(([key, label]) => typeof label === 'string' && /\b(?:accept|agree)\b/i.test(label) && /\b(?:terms of service|terms and conditions|terms of use)\b/i.test(label) && guardedSignupChoice(key, label));
       const usedTerms = this.recoveryChoices.get(provider) ?? new Set<string>();
       this.recoveryChoices.set(provider, usedTerms);
@@ -1058,6 +1080,11 @@ export class BrowserSquire implements SetupSquire {
         await this.serviceCall(provider, 'operate_click', { session_id: active, ref: termsButton[0] });
         continue;
       }
+      // Squire keeps polling an inbox this session may not read and reports only
+      // that its budget ended while waiting for verification mail. Without inbox
+      // consent that wait never ends, so stop now instead of re-driving it.
+      if (result.status === 'budget' && /waiting for verification (?:mail|email)/i.test(String(result.reason))
+        && this.signupSession?.consentOperatorInboxOtp === false) return dropped('verification email needs inbox consent');
       if (['budget', 'evaluate_timeout'].includes(String(result.status))) return { run: { id: provider, state: 'running' }, decision: 'silent' };
       if (checkCaptured) {
         // A new vault entry can be tested directly unless the goal also
@@ -1129,6 +1156,28 @@ export class BrowserSquire implements SetupSquire {
           answer = embeddedNameTarget[0];
           continue;
         }
+      }
+      // An unsure drive often waits on an empty email field it was given a value
+      // for. When it offers that field, fill the supplied email once.
+      const suppliedEmail = this.signupFacts.get(provider)?.email;
+      const emailTarget = suppliedEmail && result.status === 'low_confidence' && !usedTerms.has('fact:email')
+        && Object.entries(object(result.options)).find(([key, label]) => /^k/.test(key) && typeof label === 'string'
+          && /^e-?mail(?: address)?\b/i.test(label.trim()));
+      if (emailTarget) {
+        usedTerms.add('fact:email');
+        answer = emailTarget[0];
+        continue;
+      }
+      // An unsure drive that offers the provider's documented next control presses
+      // it once. A disabled control (its key carries Squire's s=d state) waits.
+      const documentedControl = result.status === 'low_confidence'
+        && Object.entries(object(result.options)).find(([key, label]) => /^k/.test(key) && !/_s_d(?:_|$)/.test(key) && typeof label === 'string'
+          && (UNSURE_DRIVE_CONTROLS[provider] ?? []).some(pattern => pattern.test(label.trim()))
+          && guardedSignupChoice(key, label) && !usedTerms.has(`control:${key}`));
+      if (documentedControl) {
+        usedTerms.add(`control:${documentedControl[0]}`);
+        answer = documentedControl[0];
+        continue;
       }
       // Background signups use the router's driver too; it cannot hand off to a person.
       if (this.options.agent && url) {
