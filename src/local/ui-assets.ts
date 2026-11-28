@@ -484,8 +484,8 @@ export function renderUiHtml(options: { daemonPort: number; bindHost: string; ui
               <div class="chart-foot">
                 <div class="legend">
                   <span class="leg-item"><span class="swatch seg-in"></span>Input</span>
-                  <span class="leg-item"><span class="swatch seg-out"></span>Output</span>
-                  <span class="leg-item"><span class="swatch seg-rsn"></span>Reasoning</span>
+                  <span class="leg-item"><span class="swatch seg-out"></span>Output (other)</span>
+                  <span class="leg-item"><span class="swatch seg-rsn"></span>Reasoning (of output)</span>
                 </div>
                 <span id="unknownTokNote"></span>
               </div>
@@ -946,7 +946,9 @@ export const UI_CLIENT_JS = `(function () {
     document.getElementById('sumActive').textContent = snap.activeRequests + ' active';
 
     const t = snap.totals;
-    const tokTotal = t.input + t.output + t.reasoning;
+    const tokTotal = t.input + t.output;
+    const rsnShown = Math.min(t.output, t.reasoning);
+    const outNonRsn = Math.max(0, t.output - rsnShown);
     document.getElementById('sumWin').textContent = snap.window.toUpperCase();
     document.getElementById('sumTok').textContent = snap.metricsAvailable ? fmtNum(tokTotal) : 'Unreported';
     const bar = document.getElementById('sumTokBar');
@@ -954,12 +956,12 @@ export const UI_CLIENT_JS = `(function () {
     if (snap.metricsAvailable && tokTotal > 0) {
       bar.appendChild(buildHorizontalBarSvg([
         { pct: (t.input / tokTotal) * 100, cls: 'fill-in' },
-        { pct: (t.output / tokTotal) * 100, cls: 'fill-out' },
-        { pct: (t.reasoning / tokTotal) * 100, cls: 'fill-rsn' }
+        { pct: (outNonRsn / tokTotal) * 100, cls: 'fill-out' },
+        { pct: (rsnShown / tokTotal) * 100, cls: 'fill-rsn' }
       ], false));
     }
     document.getElementById('sumTokSplit').textContent = snap.metricsAvailable
-      ? 'In ' + fmtNum(t.input) + ' · Out ' + fmtNum(t.output) + ' · Rsn ' + fmtNum(t.reasoning)
+      ? 'In ' + fmtNum(t.input) + ' · Out ' + fmtNum(t.output) + (t.reasoning > 0 ? ' (incl. ' + fmtNum(t.reasoning) + ' rsn)' : '')
       : 'Diagnostics metrics unavailable';
 
     document.getElementById('sumLimited').textContent = snap.limitedCount + ' waiting';
@@ -994,10 +996,12 @@ export const UI_CLIENT_JS = `(function () {
       barsHost.appendChild(el('div', { class: 'empty-cell w-full' }, 'No recorded token usage in the selected window yet.'));
       return;
     }
-    const maxV = Math.max(...snap.history.map(b => b.input + b.output + b.reasoning), 1);
+    const maxV = Math.max(...snap.history.map(b => b.input + b.output), 1);
     const selIdx = state.selectedBarIdx !== null && state.selectedBarIdx < snap.history.length ? state.selectedBarIdx : snap.history.length - 1;
     snap.history.forEach((b, idx) => {
-      const tot = b.input + b.output + b.reasoning;
+      const tot = b.input + b.output;
+      const rsnShown = Math.min(b.output, b.reasoning);
+      const outNonRsn = Math.max(0, b.output - rsnShown);
       const isSel = idx === selIdx;
       const btn = el('button', {
         class: 'bar-btn' + (isSel ? ' selected' : ''),
@@ -1006,7 +1010,7 @@ export const UI_CLIENT_JS = `(function () {
         'aria-label': new Date(b.hour).toISOString().slice(0, 16) + ' UTC, ' + fmtNum(tot) + ' tokens'
       });
       if (tot > 0) {
-        btn.appendChild(buildVerticalStackSvg((tot / maxV) * 100, b.input / tot, b.output / tot, b.reasoning / tot));
+        btn.appendChild(buildVerticalStackSvg((tot / maxV) * 100, b.input / tot, outNonRsn / tot, rsnShown / tot));
       }
       btn.addEventListener('click', () => { state.selectedBarIdx = idx; renderChart(snap); });
       barsHost.appendChild(btn);
@@ -1014,8 +1018,8 @@ export const UI_CLIENT_JS = `(function () {
     axisHost.appendChild(el('span', null, new Date(snap.history[0].hour).toISOString().slice(5, 16) + ' UTC'));
     axisHost.appendChild(el('span', null, new Date(snap.history[snap.history.length - 1].hour).toISOString().slice(5, 16) + ' UTC'));
     const cur = snap.history[selIdx];
-    const curTot = cur.input + cur.output + cur.reasoning;
-    readout.textContent = new Date(cur.hour).toISOString().slice(5, 16) + ' UTC · ' + fmtNum(curTot) + ' tok (in ' + fmtNum(cur.input) + ' · out ' + fmtNum(cur.output) + ' · rsn ' + fmtNum(cur.reasoning) + ')';
+    const curTot = cur.input + cur.output;
+    readout.textContent = new Date(cur.hour).toISOString().slice(5, 16) + ' UTC · ' + fmtNum(curTot) + ' tok (in ' + fmtNum(cur.input) + ' · out ' + fmtNum(cur.output) + (cur.reasoning > 0 ? ', incl. ' + fmtNum(cur.reasoning) + ' rsn' : '') + ')';
   }
 
   function renderQuotaCell(r, now) {
@@ -1115,9 +1119,9 @@ export const UI_CLIENT_JS = `(function () {
       tr.appendChild(renderQuotaCell(r, now));
 
       const td4 = el('td', { class: 'mono' });
-      const tot = r.tokens.input + r.tokens.output + r.tokens.reasoning;
+      const tot = r.tokens.input + r.tokens.output;
       td4.appendChild(el('div', null, fmtNum(tot)));
-      td4.appendChild(el('div', { class: 'sub-line mono' }, tot > 0 ? fmtNum(r.tokens.input) + 'i · ' + fmtNum(r.tokens.output) + 'o' + (r.tokens.reasoning ? ' · ' + fmtNum(r.tokens.reasoning) + 'r' : '') : 'No spend in window'));
+      td4.appendChild(el('div', { class: 'sub-line mono' }, tot > 0 ? fmtNum(r.tokens.input) + 'i · ' + fmtNum(r.tokens.output) + 'o' + (r.tokens.reasoning ? ' (' + fmtNum(r.tokens.reasoning) + 'r)' : '') : 'No spend in window'));
       tr.appendChild(td4);
 
       const td5 = el('td');
@@ -1186,8 +1190,8 @@ export const UI_CLIENT_JS = `(function () {
       const td4 = el('td', { class: 'mono' });
       if (req.tokens.input !== null || req.tokens.output !== null) {
         const ti = req.tokens.input || 0, to = req.tokens.output || 0, trsn = req.tokens.reasoning || 0;
-        td4.appendChild(el('div', null, fmtNum(ti + to + trsn)));
-        td4.appendChild(el('div', { class: 'sub-line mono' }, fmtNum(ti) + 'i · ' + fmtNum(to) + 'o' + (trsn ? ' · ' + fmtNum(trsn) + 'r' : '')));
+        td4.appendChild(el('div', null, fmtNum(ti + to)));
+        td4.appendChild(el('div', { class: 'sub-line mono' }, fmtNum(ti) + 'i · ' + fmtNum(to) + 'o' + (trsn ? ' (' + fmtNum(trsn) + 'r)' : '')));
       } else {
         td4.appendChild(el('div', { class: 'sub-line' }, req.live ? 'In progress' : 'Unreported'));
       }
@@ -1353,7 +1357,7 @@ export const UI_CLIENT_JS = `(function () {
     s3.appendChild(el('div', { class: 'detail-k' }, 'Measured spend (' + snap.window.toUpperCase() + ')'));
     s3.appendChild(kvRow('Input tokens', fmtNum(r.tokens.input), true));
     s3.appendChild(kvRow('Output tokens', fmtNum(r.tokens.output), true));
-    s3.appendChild(kvRow('Reasoning tokens', fmtNum(r.tokens.reasoning), true));
+    s3.appendChild(kvRow('Reasoning (in output)', fmtNum(r.tokens.reasoning), true));
     s3.appendChild(kvRow('Attempts', fmtNum(r.tokens.attempts) + (r.tokens.unknownInput ? ' (' + r.tokens.unknownInput + ' unmeasured)' : ''), true));
     panel.appendChild(s3);
 
@@ -1464,7 +1468,7 @@ function fmtStaticNum(n: number): string {
 export function renderStaticSnapshotHtml(snapshot: UiSnapshot): string {
   const ts = new Date(snapshot.observedAt).toISOString();
   const rows = snapshot.routes.map(r => {
-    const tot = r.tokens.input + r.tokens.output + r.tokens.reasoning;
+    const tot = r.tokens.input + r.tokens.output;
     const rem = r.remaining.tier === 'verified'
       ? `${fmtStaticNum(r.remaining.remaining ?? 0)}${r.remaining.limit ? ` / ${fmtStaticNum(r.remaining.limit)}` : ''} ${r.remaining.unit ?? ''} (Reported)`
       : r.remaining.tier === 'estimate'
@@ -1475,12 +1479,12 @@ export function renderStaticSnapshotHtml(snapshot: UiSnapshot): string {
       <td><div class="name-main">${escapeHtml(r.name)}</div><div class="sub-line mono">${escapeHtml(r.model ?? 'Model not observed')}</div></td>
       <td><span class="state-pill neutral">${escapeHtml(r.state)}</span><div class="sub-line">${escapeHtml(r.detail)}</div></td>
       <td class="mono">${escapeHtml(rem)}</td>
-      <td class="mono">${escapeHtml(fmtStaticNum(tot))}<div class="sub-line mono">${escapeHtml(`${fmtStaticNum(r.tokens.input)}i · ${fmtStaticNum(r.tokens.output)}o · ${fmtStaticNum(r.tokens.reasoning)}r`)}</div></td>
+      <td class="mono">${escapeHtml(fmtStaticNum(tot))}<div class="sub-line mono">${escapeHtml(`${fmtStaticNum(r.tokens.input)}i · ${fmtStaticNum(r.tokens.output)}o${r.tokens.reasoning > 0 ? ` (${fmtStaticNum(r.tokens.reasoning)}r)` : ''}`)}</div></td>
       <td class="mono">${escapeHtml(reset)}</td>
     </tr>`;
   }).join('\n');
 
-  const totalTok = snapshot.totals.input + snapshot.totals.output + snapshot.totals.reasoning;
+  const totalTok = snapshot.totals.input + snapshot.totals.output;
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1497,7 +1501,7 @@ export function renderStaticSnapshotHtml(snapshot: UiSnapshot): string {
   </div>
   <section class="summary-strip">
     <div class="summary-cell"><div class="summary-k"><span>Pool state</span></div><div class="summary-v">${escapeHtml(snapshot.daemonReachable ? snapshot.poolState : 'daemon offline')}</div><div class="summary-sub">${escapeHtml(snapshot.poolReason)}</div></div>
-    <div class="summary-cell"><div class="summary-k"><span>Tokens spent</span></div><div class="summary-v mono">${escapeHtml(fmtStaticNum(totalTok))}</div><div class="summary-sub mono">${escapeHtml(`In ${fmtStaticNum(snapshot.totals.input)} · Out ${fmtStaticNum(snapshot.totals.output)} · Rsn ${fmtStaticNum(snapshot.totals.reasoning)}`)}</div></div>
+    <div class="summary-cell"><div class="summary-k"><span>Tokens spent</span></div><div class="summary-v mono">${escapeHtml(fmtStaticNum(totalTok))}</div><div class="summary-sub mono">${escapeHtml(`In ${fmtStaticNum(snapshot.totals.input)} · Out ${fmtStaticNum(snapshot.totals.output)}${snapshot.totals.reasoning > 0 ? ` (incl. ${fmtStaticNum(snapshot.totals.reasoning)} rsn)` : ''}`)}</div></div>
     <div class="summary-cell"><div class="summary-k"><span>Routable / Limited</span></div><div class="summary-v mono">${snapshot.routableCount} / ${snapshot.limitedCount}</div><div class="summary-sub">${snapshot.earliestResetAt ? `Earliest comeback: ${escapeHtml(new Date(snapshot.earliestResetAt).toISOString())}` : 'No active quota cooldown'}</div></div>
     <div class="summary-cell"><div class="summary-k"><span>Requests</span></div><div class="summary-v mono">${escapeHtml(fmtStaticNum(snapshot.totals.requests))}</div><div class="summary-sub">${escapeHtml(`${snapshot.totals.requestsPassed} passed · ${snapshot.totals.failovers} failovers`)}</div></div>
   </section>

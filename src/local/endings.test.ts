@@ -69,7 +69,7 @@ it('reaches the pool as a failed attempt that is not a provider outage', async (
 });
 it('keeps endings out of hourly metrics', async () => {
   const end = Math.floor(Date.UTC(2026, 10, 24, 12) / HOUR) * HOUR;
-  const metrics: unknown[] = [];
+  const metrics: { buckets: Record<string, unknown>[]; histogram: unknown }[] = [];
   vi.spyOn(performance, 'now').mockReturnValue(0);
   for (const withEndings of [false, true]) {
     const directory = await dir(); let now = end - 2 * HOUR + 1000;
@@ -83,12 +83,22 @@ it('keeps endings out of hourly metrics', async () => {
     }
     now = end;
     const m = await journal.metrics({ since: end - 2 * HOUR, until: end });
-    metrics.push(JSON.parse(JSON.stringify({ buckets: m.buckets, histogram: m.histogram })));
+    metrics.push(JSON.parse(JSON.stringify({ buckets: m.buckets, histogram: m.histogram })) as { buckets: Record<string, unknown>[]; histogram: unknown });
     if (withEndings) {
       const event = (await journal.list()).events.find(e => e.type === 'attempt.finish' && e.finishReason === 'tool_calls')!;
       expect(event).toMatchObject({ hadToolCalls: true, reasoningTokens: 5 });
     }
   }
-  expect(metrics[0]).toEqual(metrics[1]);
-  expect(JSON.stringify(metrics)).not.toMatch(/finishReason|hadToolCalls|reasoningTokens/);
+  // Ending labels (finishReason, hadToolCalls) never enter hourly metrics or split series cardinality;
+  // reasoning token counts aggregate onto the existing attempt.finish bucket.
+  const withoutReasoning = (entry: { buckets: Record<string, unknown>[]; histogram: unknown }) => ({
+    histogram: entry.histogram,
+    buckets: entry.buckets.map(({ reasoningTokens: _r, unknownReasoning: _u, ...rest }) => rest)
+  });
+  expect(withoutReasoning(metrics[0]!)).toEqual(withoutReasoning(metrics[1]!));
+  expect(JSON.stringify(metrics)).not.toMatch(/finishReason|hadToolCalls/);
+  const attempt0 = metrics[0]!.buckets.find(b => (b.dimensions as { type?: string }).type === 'attempt.finish');
+  const attempt1 = metrics[1]!.buckets.find(b => (b.dimensions as { type?: string }).type === 'attempt.finish');
+  expect(attempt0).toMatchObject({ reasoningTokens: 0, unknownReasoning: 3 });
+  expect(attempt1).toMatchObject({ reasoningTokens: 15, unknownReasoning: 0 });
 });

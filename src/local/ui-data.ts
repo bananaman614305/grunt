@@ -243,10 +243,58 @@ function windowStartForPeriod(period: 'minute' | 'hour' | 'day' | 'month', now: 
   return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
 }
 
+interface EstimablePolicyLimit {
+  amount: number;
+  unit: 'tokens' | 'requests';
+  period: 'hour' | 'day' | 'month';
+  scope: 'account' | 'workspace' | 'ip' | 'free projects';
+}
+
+function selectEstimablePolicyLimit(source: SourceSnapshot): EstimablePolicyLimit | undefined {
+  const policy = source.quotaPolicy ?? providerQuotaPolicy(source.id);
+  const estimable: EstimablePolicyLimit[] = [];
+  for (const l of policy?.limits ?? []) {
+    if ((l.unit === 'tokens' || l.unit === 'requests') && l.period !== 'minute') {
+      estimable.push({ amount: l.amount, unit: l.unit, period: l.period, scope: l.scope });
+    }
+  }
+  return estimable.find(l => l.period === 'day' && l.unit === 'tokens')
+    ?? estimable.find(l => l.period === 'day' && l.unit === 'requests')
+    ?? estimable.find(l => l.period === 'month')
+    ?? estimable.find(l => l.period === 'hour')
+    ?? estimable[0];
+}
+
+function requiredPolicyWindowStart(source: SourceSnapshot, rawObserved: ObservedQuota | undefined, now: number): number | null {
+  if (rawObserved ?? source.quotaObserved) return null;
+  const preferredLimit = selectEstimablePolicyLimit(source);
+  if (preferredLimit) {
+    return Math.max(0, windowStartForPeriod(preferredLimit.period, now, source.quotaWindow));
+  }
+  const seller = source.sellerQuota ?? (source.id === 'antseed-vikey' ? sellerQuota(source.sellerQuota) : undefined);
+  if (seller && (seller.perAddress || seller.perIp) && seller.windowSeconds >= 3600) {
+    return Math.max(0, now - seller.windowSeconds * 1000);
+  }
+  return null;
+}
+
+function hasCompletePolicyCoverage(metrics: DiagnosticMetrics | null, windowStart: number, alignedStart: number, now: number): boolean {
+  if (!metrics || !metrics.coverage.available) return false;
+  if (metrics.window.alignedSince > alignedStart) return false;
+  const { startedAt, retainedFrom, deduplicationFloor, droppedEvents, droppedLateEvents, overflowEvents } = metrics.coverage;
+  if (startedAt === null || startedAt > windowStart) return false;
+  if (retainedFrom !== null && retainedFrom > alignedStart) return false;
+  if (deduplicationFloor > windowStart) return false;
+  if (droppedEvents > 0 || droppedLateEvents > 0 || overflowEvents > 0) return false;
+  const retentionMs = metrics.limits.retentionDays * 86400000;
+  if (windowStart < now - retentionMs) return false;
+  return true;
+}
+
 function buildRemainingUsage(
   source: SourceSnapshot,
   rawObserved: ObservedQuota | undefined,
-  metrics: DiagnosticMetrics | null,
+  quotaMetrics: DiagnosticMetrics | null,
   now: number
 ): UiRemainingUsage {
   const policy = source.quotaPolicy ?? providerQuotaPolicy(source.id);
@@ -264,50 +312,68 @@ function buildRemainingUsage(
     };
   }
 
-  // Policy-estimated remaining usage from local Grunt spend inside the policy's window.
-  const limits = policy?.limits ?? [];
-  const preferredLimit = limits.find(l => l.period === 'day' && l.unit === 'tokens')
-    ?? limits.find(l => l.period === 'day' && l.unit === 'requests')
-    ?? limits.find(l => l.period === 'month')
-    ?? limits.find(l => l.period === 'hour')
-    ?? limits[0];
-
-  if (preferredLimit && metrics?.coverage.available) {
-    const start = windowStartForPeriod(preferredLimit.period, now, source.quotaWindow);
+  // Policy-estimated remaining usage from local Grunt spend across the full policy window.
+  const preferredLimit = selectEstimablePolicyLimit(source);
+  if (preferredLimit) {
+    const start = Math.max(0, windowStartForPeriod(preferredLimit.period, now, source.quotaWindow));
     const alignedStart = Math.floor(start / DIAGNOSTIC_METRIC_HOUR_MS) * DIAGNOSTIC_METRIC_HOUR_MS;
+    if (!hasCompletePolicyCoverage(quotaMetrics, start, alignedStart, now)) {
+      return {
+        tier: 'unknown',
+        note: `Local diagnostics do not cover the full ${preferredLimit.period} policy window; remaining quota is not estimated.`
+      };
+    }
     let spent = 0;
-    for (const bucket of metrics.buckets) {
+    let unknownTokenCount = 0;
+    for (const bucket of quotaMetrics!.buckets) {
       if (bucket.dimensions.type !== 'attempt.finish' || bucket.dimensions.source !== source.id) continue;
       if (bucket.hour < alignedStart) continue;
       if (preferredLimit.unit === 'tokens') {
-        spent += source.id === 'goedel' ? bucket.inputTokens : bucket.inputTokens + bucket.outputTokens;
-      } else if (preferredLimit.unit === 'requests') {
+        if (source.id === 'goedel') {
+          spent += bucket.inputTokens;
+          unknownTokenCount += bucket.unknownInput;
+        } else {
+          spent += bucket.inputTokens + bucket.outputTokens;
+          unknownTokenCount += bucket.unknownInput + bucket.unknownOutput;
+        }
+      } else {
         spent += bucket.count;
       }
     }
-    if (preferredLimit.unit === 'tokens' || preferredLimit.unit === 'requests') {
-      const remaining = source.state === 'limited' ? 0 : Math.max(0, preferredLimit.amount - spent);
+    if (preferredLimit.unit === 'tokens' && unknownTokenCount > 0) {
       return {
-        tier: 'estimate',
-        unit: preferredLimit.unit,
-        remaining,
-        limit: preferredLimit.amount,
-        used: spent,
-        source: 'local_policy',
-        period: preferredLimit.period,
-        scope: preferredLimit.scope,
-        note: `Estimated from local Grunt spend vs published ${preferredLimit.amount.toLocaleString('en-US')} ${preferredLimit.unit}/${preferredLimit.period} (${preferredLimit.scope}). External API usage is not visible.`
+        tier: 'unknown',
+        note: `Some local attempts in this ${preferredLimit.period} window omitted token counts; remaining quota is not estimated.`
       };
     }
+    const remaining = source.state === 'limited' ? 0 : Math.max(0, preferredLimit.amount - spent);
+    return {
+      tier: 'estimate',
+      unit: preferredLimit.unit,
+      remaining,
+      limit: preferredLimit.amount,
+      used: spent,
+      source: 'local_policy',
+      period: preferredLimit.period,
+      scope: preferredLimit.scope,
+      note: `Estimated from local Grunt spend vs published ${preferredLimit.amount.toLocaleString('en-US')} ${preferredLimit.unit}/${preferredLimit.period} (${preferredLimit.scope}). External API usage is not visible.`
+    };
   }
 
   const seller = source.sellerQuota ?? (source.id === 'antseed-vikey' ? sellerQuota(source.sellerQuota) : undefined);
-  if (seller && (seller.perAddress || seller.perIp)) {
+  if (seller && (seller.perAddress || seller.perIp) && seller.windowSeconds >= 3600) {
     const cap = seller.perAddress ?? seller.perIp!;
-    const start = Math.floor((now - seller.windowSeconds * 1000) / DIAGNOSTIC_METRIC_HOUR_MS) * DIAGNOSTIC_METRIC_HOUR_MS;
+    const start = Math.max(0, now - seller.windowSeconds * 1000);
+    const alignedStart = Math.floor(start / DIAGNOSTIC_METRIC_HOUR_MS) * DIAGNOSTIC_METRIC_HOUR_MS;
+    if (!hasCompletePolicyCoverage(quotaMetrics, start, alignedStart, now)) {
+      return {
+        tier: 'unknown',
+        note: `Local diagnostics do not cover the full ${Math.round(seller.windowSeconds / 3600)}h seller window; remaining quota is not estimated.`
+      };
+    }
     let spent = 0;
-    for (const bucket of metrics?.buckets ?? []) {
-      if (bucket.dimensions.type === 'attempt.finish' && bucket.dimensions.source === source.id && bucket.hour >= start) {
+    for (const bucket of quotaMetrics!.buckets) {
+      if (bucket.dimensions.type === 'attempt.finish' && bucket.dimensions.source === source.id && bucket.hour >= alignedStart) {
         spent += bucket.count;
       }
     }
@@ -453,20 +519,6 @@ export async function collectUiSnapshot(options: {
     };
   }
 
-  // Fetch observe + metrics + summary in parallel; none of these failures should break status rendering.
-  const [observeRes, metricsRes, summaryRes] = await Promise.allSettled([
-    fetchBoundedJson(`${base}${OBSERVATION_PATH}?limit=25`, fetcher, 2 * 1024 * 1024, options.signal) as Promise<Observation>,
-    fetchBoundedJson(`${base}/v1/diagnostics/metrics?since=${since}&until=${now}`, fetcher, 8 * 1024 * 1024, options.signal) as Promise<DiagnosticMetrics>,
-    fetchBoundedJson(`${base}/v1/diagnostics/summary?since=${since}`, fetcher, 2 * 1024 * 1024, options.signal) as Promise<DiagnosticSummary>
-  ]);
-
-  const observation = observeRes.status === 'fulfilled' ? observeRes.value : null;
-  const metrics = metricsRes.status === 'fulfilled' && metricsRes.value?.version === 1 ? metricsRes.value : null;
-  const summary = summaryRes.status === 'fulfilled' ? summaryRes.value : null;
-
-  const obsRouteMap = new Map<string, Observation['routes'][number]>();
-  for (const r of observation?.routes ?? []) obsRouteMap.set(r.id, r);
-
   const rawSourceMap = new Map<string, Record<string, unknown>>();
   if (Array.isArray(rawStatusObj.sources)) {
     for (const s of rawStatusObj.sources) {
@@ -475,6 +527,38 @@ export async function collectUiSnapshot(options: {
       }
     }
   }
+
+  // Determine whether any route needs a wider metrics window than the selected display window
+  // so quota policy estimates never depend on the chosen chart/summary display span.
+  let earliestPolicySince: number | null = null;
+  for (const source of parsedStatus.sources) {
+    const rawObs = observedQuota(rawSourceMap.get(source.id)?.quotaObserved);
+    const reqStart = requiredPolicyWindowStart(source, rawObs, now);
+    if (reqStart !== null && (earliestPolicySince === null || reqStart < earliestPolicySince)) {
+      earliestPolicySince = reqStart;
+    }
+  }
+  const needSeparateQuotaMetrics = earliestPolicySince !== null && earliestPolicySince < since;
+
+  // Fetch observe + display metrics + summary (and independent policy-window metrics when wider) in parallel.
+  const [observeRes, metricsRes, summaryRes, quotaMetricsRes] = await Promise.allSettled([
+    fetchBoundedJson(`${base}${OBSERVATION_PATH}?limit=25`, fetcher, 2 * 1024 * 1024, options.signal) as Promise<Observation>,
+    fetchBoundedJson(`${base}/v1/diagnostics/metrics?since=${since}&until=${now}`, fetcher, 8 * 1024 * 1024, options.signal) as Promise<DiagnosticMetrics>,
+    fetchBoundedJson(`${base}/v1/diagnostics/summary?since=${since}`, fetcher, 2 * 1024 * 1024, options.signal) as Promise<DiagnosticSummary>,
+    needSeparateQuotaMetrics
+      ? fetchBoundedJson(`${base}/v1/diagnostics/metrics?since=${earliestPolicySince}&until=${now}`, fetcher, 8 * 1024 * 1024, options.signal) as Promise<DiagnosticMetrics>
+      : Promise.resolve(null)
+  ]);
+
+  const observation = observeRes.status === 'fulfilled' ? observeRes.value : null;
+  const metrics = metricsRes.status === 'fulfilled' && metricsRes.value?.version === 1 ? metricsRes.value : null;
+  const summary = summaryRes.status === 'fulfilled' ? summaryRes.value : null;
+  const quotaMetrics = needSeparateQuotaMetrics
+    ? (quotaMetricsRes.status === 'fulfilled' && quotaMetricsRes.value?.version === 1 ? quotaMetricsRes.value : null)
+    : metrics;
+
+  const obsRouteMap = new Map<string, Observation['routes'][number]>();
+  for (const r of observation?.routes ?? []) obsRouteMap.set(r.id, r);
 
   // Aggregate tokens & attempts by route and by hour from metrics (falling back to summary).
   const routeTokens = new Map<string, UiTokenCounts>();
@@ -491,6 +575,8 @@ export async function collectUiSnapshot(options: {
   const combinedHistogram = Array.from({ length: DIAGNOSTIC_LATENCY_BOUNDS_MS.length + 1 }, () => 0);
 
   if (metrics?.coverage.available) {
+    let sawAttemptBucket = false;
+    let hasHourlyReasoning = false;
     for (const bucket of metrics.buckets) {
       if (bucket.dimensions.type === 'request.finish') {
         totals.requests += bucket.count;
@@ -502,6 +588,12 @@ export async function collectUiSnapshot(options: {
         }
       }
       if (bucket.dimensions.type === 'attempt.finish') {
+        sawAttemptBucket = true;
+        if (typeof bucket.reasoningTokens === 'number' || typeof bucket.unknownReasoning === 'number') {
+          hasHourlyReasoning = true;
+        }
+        const rsn = typeof bucket.reasoningTokens === 'number' ? bucket.reasoningTokens : 0;
+        const unkRsn = typeof bucket.unknownReasoning === 'number' ? bucket.unknownReasoning : 0;
         const src = bucket.dimensions.source ?? 'unknown';
         let agg = routeTokens.get(src);
         if (!agg) { agg = emptyTokens(); routeTokens.set(src, agg); }
@@ -512,20 +604,22 @@ export async function collectUiSnapshot(options: {
           else target.failed += bucket.count;
           target.input += bucket.inputTokens;
           target.output += bucket.outputTokens;
+          target.reasoning += rsn;
           target.unknownInput += bucket.unknownInput;
           target.unknownOutput += bucket.unknownOutput;
+          target.unknownReasoning += unkRsn;
         }
         let h = hourMap.get(bucket.hour);
         if (!h) { h = { hour: bucket.hour, input: 0, output: 0, reasoning: 0, attempts: 0 }; hourMap.set(bucket.hour, h); }
         h.input += bucket.inputTokens;
         h.output += bucket.outputTokens;
+        h.reasoning += rsn;
         h.attempts += bucket.count;
       }
     }
     totals.medianLatencyMs = medianFromHistogram(combinedHistogram);
-    // Hourly metrics deliberately exclude ending metadata (see endings.test.ts),
-    // so merge reasoning token totals from /v1/diagnostics/summary when available.
-    if (summary) {
+    // Fallback for older daemons whose hourly metrics buckets do not yet expose reasoning counters.
+    if (sawAttemptBucket && !hasHourlyReasoning && summary) {
       totals.reasoning = summary.attempts.reasoningTokens ?? 0;
       totals.unknownReasoning = summary.attempts.unknownReasoning ?? 0;
       for (const p of summary.providers) {
@@ -630,7 +724,7 @@ export async function collectUiSnapshot(options: {
       comesBackKind,
       resetCadence: policy ? (REFILL_LABELS[policy.refill] ?? policy.refill) : 'Unpublished',
       actionCommand: actionCmd,
-      remaining: buildRemainingUsage(source, rawObs, metrics, now),
+      remaining: buildRemainingUsage(source, rawObs, quotaMetrics, now),
       tokens: routeTokens.get(source.id) ?? emptyTokens(),
       maintenance: source.maintenance ?? null,
       policyDetail: policy?.detail ?? null

@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { createClient } from '@libsql/client';
 import { DiagnosticsStore } from './diagnostics.js';
 import { parseStatus } from './dashboard.js';
 import { observedQuota } from './quota-policy.js';
@@ -109,7 +111,7 @@ function mockDaemonFetcher(now: number, overrides: { status?: Record<string, unk
     version: 1,
     streamId: '00000000-0000-4000-8000-000000000001',
     window: { since: now - 86400000, until: now, alignedSince: hour - 86400000, alignedUntil: hour + 3600000 },
-    coverage: { startedAt: hour - 86400000, retainedFrom: hour, deduplicationFloor: 0, droppedLateEvents: 0, overflowEvents: 0, available: true, droppedEvents: 0, persistentDroppedEvents: 0 },
+    coverage: { startedAt: hour - 86400000, retainedFrom: hour - 86400000, deduplicationFloor: 0, droppedLateEvents: 0, overflowEvents: 0, available: true, droppedEvents: 0, persistentDroppedEvents: 0 },
     ingestionHealth: { enabled: true, available: true, queued: 0, droppedEvents: 0 },
     histogram: { upperBoundsMs: [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000, 60000, 180000, 600000, 3600000], overflowBucket: true, cumulative: false },
     buckets: [
@@ -142,21 +144,53 @@ function mockDaemonFetcher(now: number, overrides: { status?: Record<string, unk
 }
 
 describe('daemon reasoningTokens and quotaObserved additions', () => {
-  it('aggregates reasoningTokens and unknownReasoning in diagnostics summary while keeping hourly metrics ending-free', async () => {
+  it('aggregates reasoningTokens and unknownReasoning in hourly metrics and summary, and upgrades legacy SQLite rows', async () => {
     const dir = await makeTempDir('grunt-rsn-');
     const start = 1795363200000;
+    const hour = Math.floor(start / 3600000) * 3600000;
     const store = await DiagnosticsStore.open({ directory: dir, now: () => start + 10000 });
     closers.push(() => store.close());
 
+    // Simulate a pre-upgrade SQLite bucket row missing reasoningTokens and unknownReasoning keys.
+    const rawDb = createClient({ url: pathToFileURL(join(dir, 'diagnostics.db')).href });
+    const legacyDims = { type: 'attempt.finish', kind: 'user', source: 'darus', outcome: 'passed' };
+    const legacyBucket = {
+      hour,
+      dimensions: legacyDims,
+      count: 1,
+      durationCount: 0,
+      durationSumMs: 0,
+      durationMaxMs: 0,
+      durationHistogram: Array.from({ length: 18 }, () => 0),
+      inputTokens: 100,
+      outputTokens: 40,
+      unknownInput: 0,
+      unknownOutput: 0
+    };
+    await rawDb.execute({
+      sql: 'INSERT INTO diagnostic_metric_hours(hour,series,data) VALUES(?,?,?)',
+      args: [hour, JSON.stringify(legacyDims), JSON.stringify(legacyBucket)]
+    });
+    rawDb.close();
+
+    // Reading legacy row before any new writes defaults missing reasoning keys to 0.
+    const before = await store.metrics({ since: hour, until: start + 10000 });
+    const legacyRead = before.buckets.find(b => b.dimensions.type === 'attempt.finish')!;
+    expect(legacyRead.reasoningTokens).toBe(0);
+    expect(legacyRead.unknownReasoning).toBe(0);
+
+    // Recording new events in the same hour merges cleanly via coalesce without producing NULL.
     store.record({ version: 1, id: randomUUID(), requestId: randomUUID(), at: start + 1000, type: 'attempt.finish', kind: 'user', source: 'darus', outcome: 'passed', inputTokens: 500, outputTokens: 120, reasoningTokens: 45 });
     store.record({ version: 1, id: randomUUID(), requestId: randomUUID(), at: start + 2000, type: 'attempt.finish', kind: 'user', source: 'darus', outcome: 'passed', inputTokens: 300, outputTokens: 80 });
     await store.flush();
 
-    const metrics = await store.metrics();
+    const metrics = await store.metrics({ since: hour, until: start + 10000 });
     const bucket = metrics.buckets.find(b => b.dimensions.type === 'attempt.finish')!;
-    expect(bucket.inputTokens).toBe(800);
-    expect(bucket.outputTokens).toBe(200);
-    expect(JSON.stringify(metrics)).not.toContain('reasoningTokens');
+    expect(bucket.inputTokens).toBe(900);
+    expect(bucket.outputTokens).toBe(240);
+    expect(bucket.reasoningTokens).toBe(45);
+    expect(bucket.unknownReasoning).toBe(1);
+    expect(JSON.stringify(metrics)).not.toMatch(/finishReason|hadToolCalls/);
 
     const summary = await store.summary({ since: start });
     expect(summary.attempts.reasoningTokens).toBe(45);
@@ -262,6 +296,8 @@ describe('UI snapshot aggregation and 3-tier remaining usage', () => {
     expect(snap.totals.input).toBe(182000);
     expect(snap.totals.output).toBe(41000);
     expect(snap.totals.reasoning).toBe(11000);
+    expect(snap.history).toHaveLength(1);
+    expect(snap.history[0]?.reasoning).toBe(11000);
 
     const darus = snap.routes.find(r => r.id === 'darus')!;
     expect(darus.remaining.tier).toBe('verified');
@@ -278,6 +314,111 @@ describe('UI snapshot aggregation and 3-tier remaining usage', () => {
 
     expect(snap.earliestResetRoute).toBe('MillionSeek');
     expect(snap.earliestResetAt).toBe(now + 3600000);
+  });
+
+  it('keeps daily policy estimates independent of display window and falls back to unknown when coverage is incomplete', async () => {
+    // 10:30 UTC so UTC midnight is 10.5 hours earlier than now (wider than 1h display window).
+    const now = Date.UTC(2026, 10, 27, 10, 30, 0);
+    const utcDayStart = Date.UTC(2026, 10, 27, 0, 0, 0);
+    const earlierHour = Date.UTC(2026, 10, 27, 4, 0, 0);
+    const recentHour = Date.UTC(2026, 10, 27, 10, 0, 0);
+
+    const allBuckets = [
+      {
+        hour: earlierHour,
+        dimensions: { type: 'attempt.finish', kind: 'user', outcome: 'passed', source: 'goedel' },
+        count: 2, durationCount: 2, durationSumMs: 2000, durationMaxMs: 1100,
+        durationHistogram: [0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0],
+        inputTokens: 200000, outputTokens: 30000, reasoningTokens: 8000, unknownInput: 0, unknownOutput: 0, unknownReasoning: 0
+      },
+      {
+        hour: recentHour,
+        dimensions: { type: 'attempt.finish', kind: 'user', outcome: 'passed', source: 'goedel' },
+        count: 1, durationCount: 1, durationSumMs: 1000, durationMaxMs: 1000,
+        durationHistogram: [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+        inputTokens: 50000, outputTokens: 12000, reasoningTokens: 4000, unknownInput: 0, unknownOutput: 0, unknownReasoning: 0
+      }
+    ];
+
+    const windowedFetcher = (coveragePatch: Record<string, unknown> = {}): typeof fetch => async (input) => {
+      const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+      if (url.pathname === '/v1/status') {
+        return Response.json({
+          version: 1, updatedAt: now, activeRequests: 0,
+          sources: [{ id: 'goedel', state: 'ready', active: 0, routable: true }]
+        });
+      }
+      if (url.pathname === '/v1/observe') {
+        return Response.json({
+          version: 1, observedAt: now,
+          daemon: { version: '0.10.20', uptimeMs: 1000, readiness: 'ready', config: { host: '127.0.0.1', port: 8788 } },
+          diagnostics: { historyAvailable: true, health: { enabled: true, available: true, queued: 0, droppedEvents: 0 }, losses: null },
+          inFlight: [], completed: [], routes: []
+        });
+      }
+      if (url.pathname === '/v1/diagnostics/metrics') {
+        const since = Number(url.searchParams.get('since') ?? 0);
+        const alignedSince = Math.floor(since / 3600000) * 3600000;
+        return Response.json({
+          version: 1, streamId: '00000000-0000-4000-8000-000000000002',
+          window: { since, until: now, alignedSince, alignedUntil: recentHour + 3600000 },
+          coverage: {
+            startedAt: utcDayStart - 3600000,
+            retainedFrom: utcDayStart - 3600000,
+            deduplicationFloor: 0,
+            droppedLateEvents: 0,
+            overflowEvents: 0,
+            available: true,
+            droppedEvents: 0,
+            persistentDroppedEvents: 0,
+            ...coveragePatch
+          },
+          ingestionHealth: { enabled: true, available: true, queued: 0, droppedEvents: 0 },
+          histogram: { upperBoundsMs: [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000, 60000, 180000, 600000, 3600000], overflowBucket: true, cumulative: false },
+          buckets: allBuckets.filter(b => b.hour >= alignedSince),
+          limits: { retentionDays: 30, maxRows: 50000, maxSeriesPerHour: 256, maxSeenEventIds: 200000 }
+        });
+      }
+      if (url.pathname === '/v1/diagnostics/summary') {
+        return Response.json({
+          streamId: null, window: { since: utcDayStart, until: now },
+          requests: { total: 0, succeeded: 0, failed: 0, cancelled: 0 },
+          attempts: { total: 0, succeeded: 0, failed: 0, cancelled: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0, unknownInput: 0, unknownOutput: 0, unknownReasoning: 0 },
+          providers: [], health: { enabled: true, available: true, queued: 0, droppedEvents: 0 }
+        });
+      }
+      return new Response('Not found', { status: 404 });
+    };
+
+    const snap1h = await collectUiSnapshot({ daemonPort: 8788, window: '1h', fetcher: windowedFetcher(), now: () => now });
+    const snap24h = await collectUiSnapshot({ daemonPort: 8788, window: '24h', fetcher: windowedFetcher(), now: () => now });
+
+    // Display chart/totals follow the selected window (1h shows only recentHour; 24h shows both).
+    expect(snap1h.totals.input).toBe(50000);
+    expect(snap1h.history).toHaveLength(1);
+    expect(snap1h.history[0]?.reasoning).toBe(4000);
+    expect(snap24h.totals.input).toBe(250000);
+    expect(snap24h.history).toHaveLength(2);
+    expect(snap24h.history.map(h => h.reasoning)).toEqual([8000, 4000]);
+
+    // Policy remaining estimate stays identical across 1h and 24h display windows (600,000 - 250,000 = 350,000).
+    expect(snap1h.routes[0]?.remaining).toMatchObject({ tier: 'estimate', used: 250000, remaining: 350000, limit: 600000 });
+    expect(snap24h.routes[0]?.remaining).toMatchObject({ tier: 'estimate', used: 250000, remaining: 350000, limit: 600000 });
+
+    // Incomplete coverage (started after UTC midnight, or dropped events) falls back to unknown.
+    const snapLateStart = await collectUiSnapshot({
+      daemonPort: 8788, window: '24h',
+      fetcher: windowedFetcher({ startedAt: utcDayStart + 3600000 }),
+      now: () => now
+    });
+    expect(snapLateStart.routes[0]?.remaining.tier).toBe('unknown');
+
+    const snapDropped = await collectUiSnapshot({
+      daemonPort: 8788, window: '24h',
+      fetcher: windowedFetcher({ droppedEvents: 2 }),
+      now: () => now
+    });
+    expect(snapDropped.routes[0]?.remaining.tier).toBe('unknown');
   });
 
   it('reports daemonReachable false without throwing when daemon is offline', async () => {
@@ -317,6 +458,12 @@ describe('UI server security boundaries, DESIGN.md assets, and headless modes', 
     expect(UI_CSS).toContain('prefers-reduced-motion');
     expect(UI_CLIENT_JS).not.toContain('innerHTML');
     expect(UI_CLIENT_JS).not.toContain('style:');
+    // Reasoning tokens are a subset of outputTokens and must never be added on top of output.
+    expect(UI_CLIENT_JS).not.toContain('+ t.reasoning');
+    expect(UI_CLIENT_JS).not.toContain('+ b.reasoning');
+    expect(UI_CLIENT_JS).not.toContain('+ cur.reasoning');
+    expect(UI_CLIENT_JS).not.toContain('+ r.tokens.reasoning');
+    expect(UI_CLIENT_JS).not.toContain('+ trsn');
 
     // Host rebinding rejected.
     const badHost = await app.request('http://evil.example:8789/', { headers: { Host: 'evil.example:8789' } });
@@ -466,8 +613,13 @@ describe('UI server security boundaries, DESIGN.md assets, and headless modes', 
     expect(openSpy).not.toHaveBeenCalled();
     expect(headlessLines.join('\n')).toContain('ssh -N -L');
 
-    // Verify renderStaticSnapshotHtml directly contains zero scripts.
+    // Verify renderStaticSnapshotHtml directly contains zero scripts and does not double-count reasoning tokens.
     const snap = await collectUiSnapshot({ daemonPort: 8788, window: '24h', fetcher: mockDaemonFetcher(now), now: () => now });
-    expect(renderStaticSnapshotHtml(snap)).not.toContain('<script');
+    const staticHtml = renderStaticSnapshotHtml(snap);
+    expect(staticHtml).not.toContain('<script');
+    // 182,000 input + 41,000 output = 223K (NOT 234K with 11K reasoning added twice).
+    expect(staticHtml).toContain('223K');
+    expect(staticHtml).not.toContain('234K');
+    expect(staticHtml).toContain('incl. 11.0K rsn');
   });
 });
