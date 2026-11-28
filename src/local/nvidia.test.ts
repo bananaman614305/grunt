@@ -6,7 +6,7 @@ import { createLocalApp } from './api.js';
 import { Sources } from './source.js';
 import { configure } from './main.js';
 import { Nvidia, NVIDIA_DEEPSEEK, readNvidiaGrant, writeNvidiaGrant } from './nvidia.js';
-import { RefusalSource } from './provider-refusal.js';
+import type { RefusalSource } from './provider-refusal.js';
 import { BrowserSquire, setup } from './setup.js';
 import { setupFallbacks } from './fallback-setup.js';
 import { bundledRegistry, validateRegistry } from '../registry.js';
