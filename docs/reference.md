@@ -202,12 +202,14 @@ completion pauses unfinished signups; verified daemon routes remain usable.
 
 `/v1/status` uses the same loopback Host/Origin restrictions as inference and
 `Cache-Control: no-store`. Its version-1 JSON contains the snapshot timestamp,
-active call count and per-source observations, including safe failure codes,
-last success/timing and finite retry timestamps when known. `checkedAgoSeconds`
-is the age of the last admission or reply evidence. `routable` is true when the
-state is open (`available`, `ready` or `answering`) and no fresh (30 s) negative
-check bars the source, so routing would consider it now. A source with older
-positive evidence stays routable; routing re-checks its access before dispatch.
+top-level `poolState` (`idle`, `working`, `switching`, `transient_error`,
+`provider_exhausted`, `globally_exhausted`) and `pool` summary, active call
+count, and per-source observations including safe failure codes, `failureCause`,
+HTTP status, last success/timing, and finite retry timestamps when known.
+`checkedAgoSeconds` is the age of the last admission or reply evidence;
+`routable` is true whenever the source is eligible to receive a request
+(`ready`, `available`, or `answering`), while `probeFresh` is true only when
+the cached admission check is still within the 30-second freshness window.
 Neither field guarantees dispatch. Observations reset
 when the daemon restarts, then rebuild from normal runtime activity.
 
@@ -1245,9 +1247,15 @@ omits Retry-After. Nous and Vikey also consume documented reset metadata.
 In registry routing, other upstream failures, timeouts and provider refusals
 switch immediately under the [router back-off and retirement policy](router.md#2-score-back-off-retirement).
 Caller cancellation stops the chain.
-When no eligible adapter remains, the API returns HTTP 429 and, when known,
-the earliest Retry-After. Agent adapters return final text, so streaming headers
-are sent after completion; quota failures retain their HTTP status.
+When no eligible adapter remains, the API distinguishes short transient waits
+from hard global exhaustion: if a route will recover within 60 seconds (or
+`IMAGE_WAIT_SECONDS` for an image request), the API returns HTTP 429 with
+`Retry-After` and `X-Grunt-Pool-State: transient_error`; otherwise it fails
+fast with HTTP 402, `x-should-retry: false`, no `Retry-After`,
+`X-Grunt-Pool-State: globally_exhausted`, and `error.code: "globally_exhausted"`
+so coding harnesses stop spinning and show the cause to the user. Agent
+adapters return final text, so streaming headers are sent after completion;
+quota and exhaustion failures retain their HTTP status.
 
 On handoff, the next adapter receives the original task, working-tree status,
 the diff against a task-start `git stash create` checkpoint, the previous

@@ -30,6 +30,7 @@ import {
 import { nousQuotaDelay, readQuotaError } from './quota-timing.js';
 import type { BrowserSquire, SetupSquire } from './setup.js';
 import { SetupRefusal } from './setup-failure.js';
+import { classifyHttpFailure, observeAvailabilityFailure } from './provider-error.js';
 import {
   SourceError,
   completionEnding,
@@ -405,13 +406,13 @@ export class DeclarativeApi implements Source {
   private async responseFailure(response: Response, endpoint: 'models' | 'chat.completions'): Promise<never> {
     const body = await readQuotaError(response);
     const retry = nousQuotaDelay(response.headers, body, this.now);
-    throw new SourceError(
-      response.status === 401 ? 'logged_out' : [402, 429].includes(response.status) ? 'quota' : response.status === 403 ? 'refused' : 'upstream',
-      `${this.id} returned HTTP ${response.status}`,
-      retry,
-      undefined,
-      { httpStatus: response.status, transport: 'http', httpMethod: endpoint === 'chat.completions' ? 'POST' : 'GET', endpointLabel: endpoint }
-    );
+    throw classifyHttpFailure({
+      source: this.id,
+      status: response.status,
+      ...(retry === undefined ? {} : { retryAfter: retry }),
+      httpMethod: endpoint === 'chat.completions' ? 'POST' : 'GET',
+      endpointLabel: endpoint
+    });
   }
 
   private async verifiedAccess(caller?: AbortSignal): Promise<{ adapter: DeclarativeAdapter; grant: FreeApiGrant } | undefined> {
@@ -452,6 +453,7 @@ export class DeclarativeApi implements Source {
     try { return !!(await this.verifiedAccess(signal)); }
     catch (error) {
       if (error instanceof SourceError && error.code === 'quota') throw error;
+      observeAvailabilityFailure(error);
       return false;
     }
   }

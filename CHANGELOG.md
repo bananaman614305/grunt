@@ -2,7 +2,13 @@
 
 ## [Unreleased]
 
-- Send required anonymous usage telemetry (daily heartbeat, per-route totals and setup completion) straight to US PostHog instead of the Fly gateway. Every build uses a built-in public write-only project key. Setup states that telemetry is on and required. `GRUNT_FLEET_REPORTING` and `GRUNT_ADOPTION_REPORTING` no longer apply, and `/v1/observe` reports `config.telemetry`. A daily workflow adds `usegrunt` npm downloads to the same PostHog project.
+## 0.10.20 — 2026-11-27
+
+- Remove the Fly gateway server, SQLite admin console, and Fly/Docker deployment files, and commit a synced `site/registry.json` so Cloudflare Pages serves `/registry.json` and `/v1/registry` directly (#265).
+- Publish the static adapter registry on Cloudflare Pages with a `/v1/registry` rewrite, sync live registry hints into `registry/adapters.json`, and point daemon registry sync at `https://grunt.run/registry.json` with a raw GitHub fallback (#263).
+- Send required anonymous usage telemetry (daily heartbeat, per-route totals and setup completion) straight to US PostHog instead of the Fly gateway. Every build uses a built-in public write-only project key. Setup states that telemetry is on and required. `GRUNT_FLEET_REPORTING` and `GRUNT_ADOPTION_REPORTING` no longer apply, and `/v1/observe` reports `config.telemetry`. A daily workflow adds `usegrunt` npm downloads to the same PostHog project (#262).
+- Route using local observations and git adapter weights only, removing the remote registry score factor and `GET /scores` fetches from `RouteFeedback` (#261).
+- Move operator scripts out of `ops/` to the private `grunt-ops` repository (#258).
 
 ## 0.10.19 — 2026-11-27
 

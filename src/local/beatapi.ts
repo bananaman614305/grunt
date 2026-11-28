@@ -18,6 +18,7 @@ import {
 } from './vault.js';
 import { JsonToolBridge } from './json-tool-bridge.js';
 import { MetadataFlights } from './metadata-flight.js';
+import { classifyHttpFailure, observeAvailabilityFailure } from './provider-error.js';
 import { lengthLimited, truncatedCompletion, withObservedEnding, SourceError, requestRefusal } from './source.js';
 import { bannedResponse } from './provider-refusal.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
@@ -161,8 +162,15 @@ async function status(response: Response): Promise<void> {
   let banned = false;
   if (response.status >= 400 && response.status < 500 && response.status !== 429) banned = await bannedResponse(response);
   else void response.body?.cancel().catch(() => {});
-  throw new SourceError(banned ? 'refused' : response.status === 401 ? 'logged_out' : response.status === 429 ? 'quota' : [402, 403].includes(response.status) ? 'refused' : 'upstream',
-    `BeatAPI returned HTTP ${response.status}${banned ? ' (account banned)' : ''}`, response.status === 429 ? Math.max(1, Number.isFinite(retry) ? Math.ceil(retry) : 60) : undefined, undefined, { httpStatus: response.status, transport: 'http' });
+  const error = classifyHttpFailure({
+    source: 'BeatAPI',
+    status: response.status,
+    ...(banned ? { message: `BeatAPI returned HTTP ${response.status} (account banned)` } : {}),
+    ...(response.status === 429 ? { retryAfter: Math.max(1, Number.isFinite(retry) ? Math.ceil(retry) : 60) } : {}),
+    paymentAsRefusal: true
+  });
+  if (banned) error.code = 'refused';
+  throw error;
 }
 export interface BeatAPIUsage { credit_balance: number; credits_settled: 0 }
 // Public nonbillable API metadata. The published -free contract sets the price
@@ -264,7 +272,7 @@ export class BeatAPI implements Source {
           requestId: context.requestId, kind: context.kind, source: this.id });
       } catch { /* Observation cannot change account eligibility. */ }
       return true;
-    } catch { return false; } })());
+    } catch (error) { observeAvailabilityFailure(error); return false; } })());
   }
   async healthCheck() { return this.available(); }
   async complete(request: ModelRequest, caller: AbortSignal): Promise<Completion> {

@@ -169,8 +169,11 @@ export async function observeDaemon(sources: Sources, limit: number, runtime: Ob
   const completed = [...finishes.values()].reverse().sort((a, b) => b.at - a.at)
     .filter(event => !activeIds.has(event.requestId)).slice(0, limit)
     .map(event => observeRequest(recent.get(event.requestId)!, at));
+  const status = sources.status(false);
   return {
     version: 1, observedAt: at,
+    poolState: status.poolState ?? 'idle',
+    ...(status.pool ? { pool: status.pool } : {}),
     daemon: {
       version: runtime.version ?? null, uptimeMs: Math.max(0, at - runtime.startedAt), readiness: runtime.readiness ?? 'ready',
       config: { host: '127.0.0.1', port: runtime.port, ...runtime.config, ...sources.observationConfig() }

@@ -62,7 +62,9 @@ it('models, failover, last typed error and loopback binding', async () => {
   expect((await (await app.request('http://localhost:8788/v1/chat/completions', { method: 'POST', headers: {'Content-Type':'application/json'}, body })).json()).choices[0].message.content).toBe('hello');
   for (const path of paths) {
     const response = await createLocalApp(new Sources([bad])).request(`http://localhost:8788/v1/${path}`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ input: 'hello', messages: [{ role: 'user', content: 'hello' }] }) });
-    expect(response.status).toBe(429); expect((await response.json()).error.code).toBe('quota');
+    expect(response.status).toBe(402);
+    expect(response.headers.get('x-should-retry')).toBe('false');
+    expect((await response.json()).error.code).toBe('globally_exhausted');
   }
   const server = serve({ fetch: app.fetch, hostname: HOST, port: 0 });
   await new Promise<void>(resolve => server.once('listening', resolve));

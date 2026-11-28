@@ -161,12 +161,10 @@ it('reports the age of the last check and whether routing would consider the sou
     expect(row('kilo').routable).toBe(false);
     await sources.complete(ask('warm', false), AbortSignal.timeout(2000));
     const { state } = row('kilo');
-    expect(row('kilo')).toMatchObject({ checkedAgoSeconds: 0, routable: true });
+    expect(row('kilo')).toMatchObject({ checkedAgoSeconds: 0, routable: true, probeFresh: true });
     clock += 31_000;
-    // Older positive evidence still routes: the next request re-checks access first.
-    expect(row('kilo')).toMatchObject({ checkedAgoSeconds: 31, routable: true, state });
-    // Routing checked livekit's access while serving the request; that open state also routes.
-    expect(row('livekit')).toMatchObject({ state: 'available', routable: true });
+    expect(row('kilo')).toMatchObject({ checkedAgoSeconds: 31, routable: true, probeFresh: false, state });
+    expect(row('livekit')).toMatchObject({ routable: true, probeFresh: false });
   } finally { await sources.close(); }
 });
 
