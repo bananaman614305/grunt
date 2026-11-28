@@ -36,6 +36,8 @@ const policies: Readonly<Record<string, QuotaPolicy>> = {
     documentation: 'https://www.runcrate.ai/inference/free' },
   'mistral-vibe': { refill: 'unpublished', detail: 'Vibe CLI limits depend on the account plan. The provider does not publish a fixed free CLI quota or reset for this route.',
     documentation: 'https://docs.mistral.ai/vibe/code/cli/install-setup' },
+  omi: { refill: 'rolling', detail: 'Omi CLI Free ($0/mo) enforces rolling 5-hour and weekly usage windows with no fixed published token or request cap. The CLI reports remaining usage and reset timing when a window is exhausted.',
+    documentation: 'https://cli.builditomi.com/' },
   livekit: { refill: 'monthly', limits: [{ amount: 100, unit: 'requests', period: 'minute', scope: 'free projects' },
     { amount: 600000, unit: 'tokens', period: 'minute', scope: 'free projects' }], detail: 'Build allowances reset on the first day of the month. Inference rate limits use sliding 60-second windows shared across the account’s free projects.',
     documentation: 'https://docs.livekit.io/deploy/admin/quotas-and-limits/' },
