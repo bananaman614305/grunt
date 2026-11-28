@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -51,4 +51,12 @@ it('completes one guarded Squire signup then checks newly captured metadata', as
   await recordDataSharingConsent(directory, ['millionseek']); vi.spyOn(MillionSeek.prototype, 'available').mockResolvedValueOnce(false).mockResolvedValueOnce(true);
   const { options, squire } = fixture(); squire.call.mockResolvedValueOnce({ credentials: [] }).mockResolvedValueOnce({ credentials: [key()] });
   await setupMillionSeek(options); expect(squire.signup).toHaveBeenCalledTimes(1); expect(squire.signup).toHaveBeenCalledWith('100milionseek', 'https://100milionseek.top/signup', expect.stringContaining('Never add payment details')); expect(squire.call).toHaveBeenCalledTimes(2);
+});
+it('supplies the Grunt profile email and a goal that types it', async () => {
+  await recordDataSharingConsent(directory, ['millionseek']); vi.spyOn(MillionSeek.prototype, 'available').mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+  await mkdir(join(directory, 'browser-profile', 'Default'), { recursive: true });
+  await writeFile(join(directory, 'browser-profile', 'Default', 'Preferences'), JSON.stringify({ account_info: [{ email: 'person@example.com' }] }));
+  const { options, squire } = fixture(); squire.call.mockResolvedValueOnce({ credentials: [] }).mockResolvedValueOnce({ credentials: [key()] });
+  await setupMillionSeek(options);
+  expect(squire.signup).toHaveBeenCalledWith('100milionseek', 'https://100milionseek.top/signup', expect.stringContaining("type the supplied email into 'Email'"), { email: 'person@example.com' });
 });
