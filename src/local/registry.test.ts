@@ -184,3 +184,39 @@ it('upgrades a pre-v2 cached v1 feed cleanly to the v2 feed containing Omi at bo
   await upgraded.sync();
   expect(upgraded.enabled.some(adapter => adapter.id === 'omi')).toBe(true);
 });
+
+it('rejects same-timestamp content changes on custom GRUNT_REGISTRY_URL and tampered default feed migrations', async () => {
+  const futureV2 = {
+    ...structuredClone(publishedRegistry(bundledRegistry)),
+    published: new Date(Date.parse(bundledRegistry.published) + 60_000).toISOString()
+  };
+  const futureV1 = publishedV1Registry(futureV2);
+
+  // 1. Custom GRUNT_REGISTRY_URL never allows same-timestamp replacement even from a pre-v2 cache.
+  const customDir = await directory();
+  await writeFile(join(customDir, 'registry.json'), JSON.stringify({ registry: futureV1, etag: '"custom-v1"' }), { mode: 0o600 });
+  const customFetcher = vi.fn<typeof fetch>()
+    .mockResolvedValueOnce(Response.json(futureV2, { headers: { ETag: '"custom-v2"' } }))
+    .mockResolvedValueOnce(new Response(null, { status: 304 }));
+  const custom = new RegistrySync({ directory: customDir, url: 'https://custom.example/registry.json', fetcher: customFetcher });
+  await custom.load();
+  await custom.sync();
+  expect(custom.current).toEqual(futureV1);
+  expect(custom.enabled.some(adapter => adapter.id === 'omi')).toBe(false);
+  await custom.sync();
+  expect(customFetcher.mock.calls[1]![1]?.headers).toEqual({ 'If-None-Match': '"custom-v1"' });
+
+  // 2. Default feed migration still rejects same-timestamp changes to non-declarative:app entries.
+  const tampered = structuredClone(futureV2);
+  tampered.adapters.find(adapter => adapter.id === 'zro')!.hints = 'Tampered hint at same timestamp.';
+  const defaultDir = await directory();
+  await writeFile(join(defaultDir, 'registry.json'), JSON.stringify({ registry: futureV1, etag: '"v1-future"' }), { mode: 0o600 });
+  const defaultSync = new RegistrySync({
+    directory: defaultDir,
+    fetcher: async () => Response.json(tampered, { headers: { ETag: '"tampered"' } })
+  });
+  await defaultSync.load();
+  await defaultSync.sync();
+  expect(defaultSync.current).toEqual(futureV1);
+  expect(defaultSync.enabled.some(adapter => adapter.id === 'omi')).toBe(false);
+});

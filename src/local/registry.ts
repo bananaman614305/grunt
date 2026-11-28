@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { bundledRegistry, isSupportedAdapter, validateRegistry } from '../registry.js';
+import { bundledRegistry, isSupportedAdapter, publishedV1Registry, validateRegistry } from '../registry.js';
 import type { Registry } from '../registry.js';
 import { hasOwnerMode } from './private-file.js';
 
@@ -53,14 +53,18 @@ export class RegistrySync {
     exchange?: () => Promise<void>;
   }) {}
   get enabled() { return this.current.adapters.filter(adapter => isSupportedAdapter(adapter)); }
-  private accepts(registry: Registry) {
+  private accepts(registry: Registry, allowFeedMigration = false) {
     const incoming = Date.parse(registry.published), current = Date.parse(this.current.published);
     // Each publication is immutable. A release's bundled list is the initial
-    // floor; only a newer publication may add, change or revoke its entries
-    // (except when replacing a pre-v2 cache with the v2 feed at the same timestamp).
-    return incoming > current || incoming === current && (this.legacyCache || isDeepStrictEqual(
-      { ...registry, published: '' }, { ...this.current, published: '' }
-    ));
+    // floor; only a newer publication may add, change or revoke its entries.
+    // The sole same-timestamp exception is migrating a default pre-v2 cache to
+    // the v2 feed whose v1 projection matches the cached v1 registry exactly.
+    if (incoming > current) return true;
+    if (incoming !== current) return false;
+    if (isDeepStrictEqual({ ...registry, published: '' }, { ...this.current, published: '' })) return true;
+    return allowFeedMigration && !this.options.url && this.legacyCache && isDeepStrictEqual(
+      { ...publishedV1Registry(registry), published: '' }, { ...this.current, published: '' }
+    );
   }
   async load() {
     try {
@@ -69,7 +73,7 @@ export class RegistrySync {
       if (this.accepts(registry)) {
         this.current = registry;
         this.etag = typeof saved.etag === 'string' ? saved.etag : undefined;
-        this.legacyCache = saved.feed !== 2;
+        this.legacyCache = !this.options.url && saved.feed !== 2;
       }
     } catch { /* A missing or damaged cache uses the packaged registry. */ }
     this.options.changed?.(this.current);
@@ -90,7 +94,7 @@ export class RegistrySync {
           if (response.status === 304) { unchanged = true; break; }
           if (response.status === 200) {
             const candidate = validateRegistry(await response.json());
-            if (!this.accepts(candidate)) continue;
+            if (!this.accepts(candidate, true)) continue;
             registry = candidate; etag = response.headers.get('ETag') ?? undefined;
             break;
           }

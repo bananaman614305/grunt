@@ -5,7 +5,8 @@ import { disabledAdapters } from "./registry.js";
 const html = readFileSync(new URL("../site/index.html", import.meta.url), "utf8");
 const cname = readFileSync(new URL("../site/CNAME", import.meta.url), "utf8");
 const siteWorkflow = readFileSync(new URL("../.github/workflows/site.yml", import.meta.url), "utf8");
-const registry = JSON.parse(readFileSync(new URL("../registry/adapters.json", import.meta.url), "utf8")) as { adapters: { id: string }[] };
+// The landing page "+ N more" badge tracks the live v1 feed served to current releases today.
+const registry = JSON.parse(readFileSync(new URL("../site/registry.json", import.meta.url), "utf8")) as { adapters: { id: string }[] };
 const enabled = registry.adapters.map((a) => a.id).filter((id) => !disabledAdapters.has(id));
 const idOf = (name: string) => name.toLowerCase().replace(/\s+/g, "");
 const texts = (pattern: RegExp) => [...html.matchAll(pattern)].map((m) => m[1].trim());
