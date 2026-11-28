@@ -13,7 +13,8 @@ import { acquireFreePiAccountLease } from './freepi-lock.js';
 import { quotaRetryAfter } from './quota-timing.js';
 import { observeAttemptDispatch, diagnosticFetch } from './diagnostics.js';
 import { lengthLimited, truncatedCompletion, withObservedEnding, SourceError, requestRefusal } from './source.js';
-import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
+import type { Completion, ModelRequest, QuotaWindow, Source, ToolCall } from './source.js';
+import type { ObservedQuota } from './quota-policy.js';
 
 export const FREEPI_ID = 'freepi';
 export const FREEPI_BASE = 'https://api.freepi.ai';
@@ -76,7 +77,26 @@ export class FreePi implements Source {
   readonly supportsFunctionTools = true;
   private readonly shutdown = new AbortController();
   private readonly session = randomUUID();
+  private window: QuotaWindow | undefined;
+  private observed: ObservedQuota | undefined;
   constructor(private options: { directory?: string; fetcher?: typeof fetch; now?: () => number; loadToken?: () => Promise<string>; lockDirectory?: string } = {}) {}
+  quotaWindow() { return this.window ? { ...this.window } : undefined; }
+  quotaObserved() { return this.observed ? { ...this.observed } : undefined; }
+  private recordObservedQuota(account: Record<string, unknown>, now: number) {
+    const resetAt = typeof account.refill_at === 'string' ? Date.parse(account.refill_at) : NaN;
+    if (Number.isFinite(resetAt) && resetAt > now) this.window = { startedAt: resetAt - 86400000, resetAt };
+    if (count(account.remaining_credits_today)) {
+      const remaining = account.remaining_credits_today;
+      const limit = count(account.allowance_credits) && account.allowance_credits >= remaining ? account.allowance_credits : undefined;
+      this.observed = {
+        unit: 'credits',
+        remaining,
+        ...(limit === undefined ? {} : { limit, used: limit - remaining }),
+        observedAt: now,
+        source: 'provider_api'
+      };
+    }
+  }
   acceptsRequest(request: ModelRequest) { return request.publicContext === true && !request.handoffPrompt && !request.imageInput; }
   private get directory() { return this.options.directory ?? configRoot(); }
   private async token() {
@@ -102,7 +122,14 @@ export class FreePi implements Source {
     const models = Array.isArray(catalog.models) ? catalog.models.map(object).filter(model => model.id === FREEPI_MODEL) : [];
     if (models.length !== 1 || models[0]!.free !== true || models[0]!.stats_id !== 'deepseek/deepseek-v4.1-flash-1017') throw new SourceError('refused', 'Free-Pi exact free model offer is unavailable');
     const account = await this.read('/me/stats', signal, token);
-    assertFreePiAccount(account, (this.options.now ?? Date.now)());
+    const now = (this.options.now ?? Date.now)();
+    try {
+      assertFreePiAccount(account, now);
+      this.recordObservedQuota(account, now);
+    } catch (error) {
+      if (error instanceof SourceError && error.code === 'quota') this.recordObservedQuota(account, now);
+      throw error;
+    }
   }
   async available() {
     const signal = AbortSignal.any([this.shutdown.signal, AbortSignal.timeout(10000)]);

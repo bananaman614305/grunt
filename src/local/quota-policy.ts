@@ -114,3 +114,37 @@ export function sellerQuota(value: unknown): SellerQuota | undefined {
   const perIp = natural(row.perIp, 10_000_000) ? row.perIp : undefined;
   if (perAddress || perIp) return { windowSeconds: row.windowSeconds, ...(perAddress ? { perAddress } : {}), ...(perIp ? { perIp } : {}) };
 }
+
+export interface ObservedQuota {
+  unit: 'tokens' | 'credits' | 'requests' | 'usd';
+  remaining: number;
+  limit?: number;
+  used?: number;
+  observedAt: number;
+  source: 'provider_header' | 'provider_api';
+}
+
+const observedUnits = new Set<ObservedQuota['unit']>(['tokens', 'credits', 'requests', 'usd']);
+const observedSources = new Set<ObservedQuota['source']>(['provider_header', 'provider_api']);
+
+export function observedQuota(value: unknown): ObservedQuota | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+  const row = value as Record<string, unknown>;
+  const amount = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1e15;
+  if (typeof row.unit !== 'string' || !observedUnits.has(row.unit as ObservedQuota['unit'])) return;
+  if (typeof row.source !== 'string' || !observedSources.has(row.source as ObservedQuota['source'])) return;
+  if (!amount(row.remaining)) return;
+  if (typeof row.observedAt !== 'number' || !Number.isSafeInteger(row.observedAt) || row.observedAt <= 0 || row.observedAt > 8640000000000000) return;
+  const limit = amount(row.limit) ? row.limit : undefined;
+  const used = amount(row.used) ? row.used : undefined;
+  if (row.limit !== undefined && limit === undefined) return;
+  if (row.used !== undefined && used === undefined) return;
+  return {
+    unit: row.unit as ObservedQuota['unit'],
+    remaining: row.remaining,
+    ...(limit === undefined ? {} : { limit }),
+    ...(used === undefined ? {} : { used }),
+    observedAt: row.observedAt,
+    source: row.source as ObservedQuota['source']
+  };
+}

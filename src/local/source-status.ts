@@ -1,6 +1,6 @@
 import type { Completion, ErrorCode, ModelRequest, QuotaWindow, Source } from './source.js';
 import { SourceError, needsFunctionTools, toolCapable, endingOf, guardToolCalls, isOutputDeadlineFailure } from './source.js';
-import type { providerQuotaPolicy, SellerQuota } from './quota-policy.js';
+import type { ObservedQuota, providerQuotaPolicy, SellerQuota } from './quota-policy.js';
 import { routingOutputProgress, acceptRoutingCompletion } from './routing.js';
 import type { MaintenanceEntry } from './maintenance.js';
 import { randomUUID } from 'node:crypto';
@@ -31,6 +31,7 @@ export interface SourceSnapshot {
   retryAt?: number;
   supportsFunctionTools?: boolean;
   quotaWindow?: QuotaWindow;
+  quotaObserved?: ObservedQuota;
   quotaPolicy?: NonNullable<ReturnType<typeof providerQuotaPolicy>>;
   scheduledQuotaRefillAt?: number;
   sellerQuota?: SellerQuota;
