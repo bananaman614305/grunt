@@ -1,6 +1,6 @@
 {
   "name": "usegrunt",
-  "version": "0.10.21",
+  "version": "0.10.22",
   "type": "module",
   "engines": {
     "node": ">=22"

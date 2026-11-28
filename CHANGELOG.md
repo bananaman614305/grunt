@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## 0.10.22 — 2026-11-28
+
+- Reserve room inside the diagnostics journal's 50,000-row cap for the newest `request.start` and `request.finish` lifecycle markers (with a dedicated partial index), so `usegrunt observe` no longer drops new requests when incident events fill the journal (#273).
+- Update `usegrunt status` to show the active provider and dispatched model for each in-flight route, the last successful route when idle, and per-provider state, usage, remaining quota, and separate cooldown and quota reset times (labeling local estimates clearly and leaving unknown balances unknown), and ship the `skills/grunt-status/SKILL.md` Agent Skill in the npm package (#272).
+- Add Phase 1 of the generalized sandboxed declarative CLI app adapter (`declarative:app`) with isolated Linux/macOS sandboxes, npm/uv/archive installers, ACP client and oneshot execution support, browser-URL and device-code auth capture, `usegrunt apps <list|clean [<id>|--all]>` management commands, and setup/registry integration (#271).
+- Deploy `grunt.run` and the static adapter registry (`registry.json` plus an identical static `/v1/registry` copy for older daemons) via GitHub Pages instead of Cloudflare Pages (#270).
+
 ## 0.10.21 — 2026-11-28
 
 - Keep quota-limited and transiently failing provider keys during setup instead of deleting them, fall back to Kilo's anonymous free route when a saved Kilo token returns HTTP 401, stop re-signing up when a provider refuses or bans an account (cleared with `usegrunt add <provider> --force`), reuse verified saved Squire keys for Pollinations and BeatAPI, serialize and stage Zro vault/receipt updates safely, omit expired offers from the published registry, and mark `nous` inactive in the registry because `qwen/qwen4-max:free` is no longer free (#264).
