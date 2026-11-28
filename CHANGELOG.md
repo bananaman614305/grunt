@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## 0.10.23 — 2026-11-28
+
+- Move the packaged `grunt-status` Agent Skill into `dist/skills/grunt-status/SKILL.md` (declared in `package.json`'s `pi.skills` manifest) so `usegrunt update` on existing installations accepts the release archive without `vetArchive` rejecting top-level `package/skills/` paths, and add a packaging test that validates real `npm pack` output with `vetArchive`.
+
 ## 0.10.22 — 2026-11-28
 
 - Reserve room inside the diagnostics journal's 50,000-row cap for the newest `request.start` and `request.finish` lifecycle markers (with a dedicated partial index), so `usegrunt observe` no longer drops new requests when incident events fill the journal (#273).

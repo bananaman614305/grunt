@@ -1,6 +1,6 @@
 {
   "name": "usegrunt",
-  "version": "0.10.22",
+  "version": "0.10.23",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -48,9 +48,13 @@
   "description": "One-command setup for grunt",
   "files": [
     "dist",
-    "skills",
     "README.md"
   ],
+  "pi": {
+    "skills": [
+      "./dist/skills"
+    ]
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/bananaman614305/grunt.git"

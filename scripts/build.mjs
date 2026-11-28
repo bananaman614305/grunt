@@ -1,6 +1,6 @@
 import { build } from 'esbuild';
 import { execFileSync } from 'node:child_process';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 const { version } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
@@ -42,3 +42,6 @@ await mkdir('dist/registry', { recursive: true });
 // The packaged registry leaves out offers whose end date has passed (src/registry.ts publishedRegistry).
 const { publishedRegistry, validateRegistry } = await import('../dist/registry.js');
 await writeFile('dist/registry/adapters.json', `${JSON.stringify(validateRegistry(publishedRegistry(JSON.parse(await readFile('registry/adapters.json', 'utf8')))), null, 2)}\n`);
+
+await mkdir('dist/skills/grunt-status', { recursive: true });
+await copyFile('skills/grunt-status/SKILL.md', 'dist/skills/grunt-status/SKILL.md');
