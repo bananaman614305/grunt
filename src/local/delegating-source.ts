@@ -28,6 +28,7 @@ export class DelegatingSource implements Source {
     return this.source.available(signal);
   }
   quotaWindow() { return this.source.quotaWindow?.(); }
+  quotaObserved() { return this.source.quotaObserved?.(); }
   sellerQuota() { return this.source.sellerQuota?.(); }
   failed(error: SourceError) { this.source.failed?.(error); }
 

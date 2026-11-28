@@ -10,6 +10,7 @@ import { OpenCode } from './opencode.js';
 import { SourceError, Sources } from './source.js';
 import { DATA_SHARING_POLICIES, readDataSharingConsent, registryDataSharingPolicies, requiresDataSharing, requiresExplicitDataSharing } from './data-sharing.js';
 import type { Source } from './source.js';
+import { assertProviderNotRefused, isAccountRefusal, recordProviderRefusal } from './provider-refusal.js';
 import { setupFailureReason } from './setup-failure.js';
 
 export type Signup = Pick<BrowserSquire, 'signup' | 'credentials'>;
@@ -95,12 +96,14 @@ export async function setupFallbacks(options: {
         const verify = options.verify ?? (() => verifyOpenCode(new OpenCode(), options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(120000)]) : AbortSignal.timeout(120000)));
         try { await verify(); }
         catch (error) {
+          if (isAccountRefusal(error)) throw await recordProviderRefusal(options.directory, 'opencode', error);
           if (!(error instanceof SourceError) || error.code !== 'logged_out') throw error;
           await connect();
           const findCredential = async () => (await squire.credentials.list()).find(c => c.service?.trim().toLowerCase() === 'opencode'
             && c.auth_strategy !== 'username_password' && c.field_names.some(field => /^(?:api_?key|token|key)$/i.test(field)));
           let credential = await findCredential();
           if (!credential) {
+            await assertProviderNotRefused(options.directory, 'opencode');
             await squire.signup('opencode', 'https://opencode.ai/auth', "Use the user's existing OpenCode account or sign up for free access. Use operate_extract to store an OpenCode Zen API key directly in this user's Squire vault under service opencode. Never include its value in your answer. No payment, paid plans, extra accounts or account switching. Stop if free access requires payment. Report human verification for browser handoff; do not bypass it.");
             credential = await findCredential();
           }

@@ -6,40 +6,55 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  pages: write
+  id-token: write
 concurrency:
-  group: deploy-grunt-site
-  cancel-in-progress: true
+  group: pages
+  cancel-in-progress: false
 jobs:
   deploy:
+    if: github.event.repository.private == false
     runs-on: ubuntu-latest
-    env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      PAGES_PROJECT: ${{ vars.CLOUDFLARE_PAGES_PROJECT }}
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
       - run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Validate and stage registry
+      - name: Validate and stage site
         run: |
           pnpm exec tsx src/registry.ts registry/adapters.json
-          cp registry/adapters.json site/registry.json
-          pnpm exec tsx src/registry.ts site/registry.json
-      - name: Check the page is there
+          rm -rf dist/site
+          mkdir -p dist/site/v1
+          cp site/index.html site/404.html site/grunt.svg site/favicon.svg site/og.png site/CNAME dist/site/
+          touch dist/site/.nojekyll
+          pnpm exec tsx src/registry.ts registry/adapters.json --publish dist/site/registry.json
+          pnpm exec tsx src/registry.ts dist/site/registry.json
+          cp dist/site/registry.json dist/site/v1/registry
+      - name: Check staged site
         run: |
-          test -f site/index.html
-          test -f site/grunt.svg
-          test -f site/404.html
-          test -f site/og.png
-          test -f site/registry.json
-          test -f site/_redirects
-          test -f site/_headers
-      - name: Deploy site/ to Cloudflare Pages
-        if: env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' && env.PAGES_PROJECT != ''
-        run: npx --yes wrangler@4 pages deploy site --project-name "$PAGES_PROJECT" --branch main
-      - name: Say why nothing was deployed
-        if: env.CLOUDFLARE_API_TOKEN == '' || env.CLOUDFLARE_ACCOUNT_ID == '' || env.PAGES_PROJECT == ''
-        run: echo "::warning::grunt.run was not deployed. Add the CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID secrets and the CLOUDFLARE_PAGES_PROJECT variable to this repository, then re-run this workflow."
+          test -f dist/site/index.html
+          test -f dist/site/404.html
+          test -f dist/site/grunt.svg
+          test -f dist/site/favicon.svg
+          test -f dist/site/og.png
+          test -f dist/site/CNAME
+          test "$(tr -d '\r\n' < dist/site/CNAME)" = "grunt.run"
+          test -f dist/site/.nojekyll
+          test -f dist/site/registry.json
+          test -f dist/site/v1/registry
+          cmp -s dist/site/registry.json dist/site/v1/registry
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
+        with:
+          path: dist/site
+          include-hidden-files: true
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5

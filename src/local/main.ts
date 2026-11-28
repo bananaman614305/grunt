@@ -38,6 +38,7 @@ import { Numes, NUMES_DEEPSEEK_FLASH_MODEL } from './numes.js';
 import { FREE_API_PROVIDERS } from './free-api.js';
 import { RegistrySource } from './registry-source.js';
 import { ConsentSource } from './consent-source.js';
+import { RefusalSource } from './provider-refusal.js';
 import { DATA_SHARING_OPT_OUT, readDataSharingConsent, refreshDataSharingConsent, registryDataSharingPolicies, requiresDataSharing } from './data-sharing.js';
 import { Codex } from './codex.js';
 import { OpenCode, DEFAULT_OPENCODE_MODELS } from './opencode.js';
@@ -131,7 +132,9 @@ export function configure(env = process.env, registry: () => Registry = () => bu
     if (source && !registered.includes(source)) registered.push(source);
     if (!source) throw new Error(`Unknown grunt source: ${id}`);
     const consent = requiresDataSharing(id) && !['tokenharbor', 'nous', 'goedel', 'crowllm', 'fikra', 'openference', 'darus', 'aperture-ai'].includes(id) ? new ConsentSource(source, configDir(env)) : source;
-    return !routing && (knownAdapters.has(id) || localOptIns.has(id) || declarative || declarativeApp) ? new RegistrySource(consent, routingRegistry) : consent;
+    // A provider that refused this account stays off until `usegrunt add <id> --force` clears it.
+    const guarded = new RefusalSource(consent, configDir(env));
+    return !routing && (knownAdapters.has(id) || localOptIns.has(id) || declarative || declarativeApp) ? new RegistrySource(guarded, routingRegistry) : guarded;
   };
   const sources = new Sources(ids.map(id => build(id)), routing, disabledAdapters);
   sources.setChainRegistry(routingRegistry, localOptIns);
@@ -216,9 +219,9 @@ export function start(env = process.env) {
       const ids: string[] = [];
       for (const adapter of recommendedAdapters(registry)) {
         const source = sources.sources.find(source => source.id === adapter.id);
-        if (!source || !routable(source.id)) continue;
+        if (!source || !routable(source.id) || !sources.needsSignup(source.id)) continue;
         if (isDeclarativeAppAdapter(adapter) && await isDeclarativeAppBackedOff(adapter.id, directory)) continue;
-        if (await configuredAccess(source) === false) ids.push(source.id);
+        if (await configuredAccess(source) === false && sources.needsSignup(source.id)) ids.push(source.id);
       }
       return ids;
     },
@@ -308,6 +311,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
     const { HARNESSES } = await import('./harnesses.js');
     try { await statusCommand(process.argv.slice(3), { harnesses: HARNESSES }); }
     catch (error) { console.error(error instanceof Error ? error.message : 'Could not read grunt status'); process.exitCode = 1; }
+  } else if (process.argv[2] === 'ui' || process.argv[2] === 'dashboard') {
+    try { const { uiCommand } = await import('./ui-server.js'); await uiCommand(process.argv.slice(3)); }
+    catch (error) { console.error(error instanceof Error ? error.message : 'Could not start the local Grunt UI'); process.exitCode = 1; }
   } else if (process.argv[2] === 'observe') {
     try { const { observeCommand } = await import('./observe-cli.js'); await observeCommand(process.argv.slice(3)); }
     catch (error) { console.error(error instanceof Error ? error.message : 'Could not observe the local Grunt daemon'); process.exitCode = 1; }
@@ -336,11 +342,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
       await appsCommand(process.argv.slice(3));
     } catch (error) { console.error(error instanceof Error ? error.message : 'Grunt apps command failed'); process.exitCode = 1; }
   } else if (['--help', '-h'].includes(process.argv[2] ?? '')) {
-    console.log('Usage: usegrunt [setup | update | add <provider> | apps <list|clean [<id>|--all]> | vault <list|set|export|remove> | status [--watch] [--json] [--port <port>] | observe [--limit <N>] [--json] [--port <port>] | efficiency metrics [--port <port>] [--since <epoch-ms>] [--until <epoch-ms>] | execution-host <serve|tick|status> --config <private-policy.json>]\n\nRun setup to connect free sources, apps to inspect or clean sandboxed CLI apps, vault to manage direct local API keys, update to refresh the installed daemon, status --watch to view the pool.\nRun observe --help for request, attempt, and daemon diagnostics.');
+    console.log('Usage: usegrunt [setup | update | add <provider> [--force] | apps <list|clean [<id>|--all]> | vault <list|set|export|remove> | status [--watch] [--json] [--port <port>] | ui [--port <port>] [--ui-port <port>] [--no-open] [--bind <ip> | --tailscale] [--snapshot <file.html>] | observe [--limit <N>] [--json] [--port <port>] | efficiency metrics [--port <port>] [--since <epoch-ms>] [--until <epoch-ms>] | execution-host <serve|tick|status> --config <private-policy.json>]\n\nRun setup to connect free sources, apps to inspect or clean sandboxed CLI apps, vault to manage direct local API keys, update to refresh the installed daemon, status --watch for the terminal view, or ui (alias dashboard) for the local web console.\nRun observe --help for request, attempt, and daemon diagnostics.');
   } else if (['setup', 'add'].includes(process.argv[2] ?? '') || (!process.argv[2] && basename(process.argv[1]) === 'usegrunt' && process.env.GRUNT_DAEMON !== '1')) {
     const { wizard } = await import('./wizard.js');
     try {
-      await wizard(process.argv[2] === 'add' ? process.argv[3] ?? '' : undefined);
+      await wizard(process.argv[2] === 'add' ? process.argv[3] ?? '' : undefined, undefined, { force: process.argv[2] === 'add' && process.argv.slice(4).includes('--force') });
     }
     catch (error) { console.error(error instanceof Error ? error.message : 'grunt setup failed'); process.exitCode = 1; }
   } else if (!process.argv[2] || process.argv[2] === 'serve') start();

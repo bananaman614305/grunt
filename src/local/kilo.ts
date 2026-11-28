@@ -5,6 +5,7 @@ import { providerGrantDirectory, readPrivateProviderGrant, validateProviderGrant
 import { JsonToolBridge } from './json-tool-bridge.js';
 import { readPromotionalStream } from './promotional-api.js';
 import { completionEnding, emitStreamText, endingOf, hasEmittedStreamText, messageText, resetUncommittedStreamReply, withEnding, lengthLimited, truncatedCompletion, needsFunctionTools, SourceError } from './source.js';
+import { observeAvailabilityFailure } from './provider-error.js';
 import { diagnosticFetch, observeAttemptDispatch, recordAttemptFailure } from './diagnostics.js';
 import type { SafeDiagnosticMetadata } from './diagnostics.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
@@ -62,7 +63,8 @@ function status(response: Response) {
   if (response.ok) return;
   const raw = response.headers.get('retry-after'), seconds = raw === null ? NaN : /^\d+(?:\.\d+)?$/.test(raw) ? Number(raw) : (Date.parse(raw) - Date.now()) / 1000;
   void response.body?.cancel().catch(() => {});
-  throw new SourceError(response.status === 429 ? 'quota' : [401, 402, 403].includes(response.status) ? 'refused' : 'upstream',
+  // 401 means Kilo rejected the saved sign-in token, not the request.
+  throw new SourceError(response.status === 429 ? 'quota' : response.status === 401 ? 'logged_out' : [402, 403].includes(response.status) ? 'refused' : 'upstream',
     `Kilo returned HTTP ${response.status}`, response.status === 429 ? Math.max(1, Number.isFinite(seconds) ? Math.ceil(seconds) : 60) : undefined, undefined,
     { httpStatus: response.status, transport: 'http' });
 }
@@ -189,6 +191,8 @@ export class Kilo implements Source {
   readonly id: 'kilo' | 'reflection-beam'; readonly supportsFunctionTools = true;
   // The model that answered last is tried first; a quota reply moves on to the next.
   private preferred: string | undefined;
+  // In-memory only: the saved token Kilo answered with HTTP 401, so it is not resent.
+  private rejectedToken: string | undefined;
   private cachedModels: { catalog: KiloCatalog; at: number } | undefined;
   private shutdown = new AbortController(); private pending = new Set<Promise<unknown>>();
   constructor(private options: { directory?: string; fetcher?: typeof fetch; timeout?: number; anonymous?: () => boolean; reflectionBeam?: boolean; now?: () => number } = {}) {
@@ -213,10 +217,16 @@ export class Kilo implements Source {
   private async track<T>(task: Promise<T>) { this.pending.add(task); try { return await task; } finally { this.pending.delete(task); } }
   async available() {
     return this.track((async () => { try {
-      if (this.shutdown.signal.aborted || !await this.approved()) return false;
+      if (this.shutdown.signal.aborted) return false;
+      if (!await this.approved()) {
+        const consent = new SourceError('refused', 'Kilo data sharing is not approved; rerun usegrunt setup');
+        consent.failureCause = 'unconfigured';
+        observeAvailabilityFailure(consent);
+        return false;
+      }
       await this.verify(this.shutdown.signal);
       return !this.shutdown.signal.aborted;
-    } catch { return false; } })());
+    } catch (error) { observeAvailabilityFailure(error); return false; } })());
   }
   async healthCheck() { return this.available(); }
   complete(request: ModelRequest, caller: AbortSignal, output?: () => void): Promise<Completion> { return this.track(this.retryBadCalls(request, caller, output)); }
@@ -256,17 +266,27 @@ export class Kilo implements Source {
       if (wantsImage && !models.length) {
         throw requestFailure('No Kilo :free model currently supports image input with at least 200K context', 'request_body');
       }
-      const grant = this.id === 'reflection-beam' || this.options.anonymous?.() ? undefined : await this.grant();
-      const origin = grant ? `${grant.base_url}/api/gateway` : KILO_ORIGIN;
+      let grant = this.id === 'reflection-beam' || this.options.anonymous?.() ? undefined : await this.grant();
+      // Kilo already rejected this saved token in this process; use the anonymous free route.
+      if (grant && grant.token === this.rejectedToken) grant = undefined;
+      let origin = grant ? `${grant.base_url}/api/gateway` : KILO_ORIGIN;
       const agentic = needsFunctionTools(request) ? models.filter(id => !KILO_NOT_FOR_TOOL_WORK.has(id)) : models;
       const rotation = agentic.length ? agentic : models;
       const order = this.preferred && rotation.includes(this.preferred) ? [this.preferred, ...rotation.filter(id => id !== this.preferred)] : rotation;
       let quota: SourceError | undefined, last: SourceError | undefined;
-      for (const model of order) {
+      for (let index = 0; index < order.length; index++) {
+        const model = order[index]!;
         try {
           const completion = await this.ask(model, wire(model, catalog.toolChoiceModels.includes(model)), origin, grant, request, messages, validators, limit, signal, output);
           this.preferred = model; return completion;
         } catch (error) {
+          // A revoked or expired saved token gets HTTP 401. Anonymous free access
+          // does not use that token, so retry this model once without it.
+          if (grant && error instanceof SourceError && error.code === 'logged_out' && error.diagnostics?.httpStatus === 401
+            && !signal.aborted && !hasEmittedStreamText()) {
+            this.rejectedToken = grant.token; grant = undefined; origin = KILO_ORIGIN; index--;
+            continue;
+          }
           if (error instanceof SourceError && (error.diagnostics?.failureReason === 'completion_model' || error.diagnostics?.failureReason === 'completion_billing')) {
             this.cachedModels = undefined;
           }

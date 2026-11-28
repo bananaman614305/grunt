@@ -5,6 +5,7 @@ import type { SafeDiagnosticMetadata } from './diagnostics.js';
 import { readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
 import type { FreeApiGrant } from './free-api.js';
 import { nousQuotaDelay, readQuotaError } from './quota-timing.js';
+import { classifyHttpFailure, observeAvailabilityFailure } from './provider-error.js';
 import { completionEnding, emitStreamText, withEnding, lengthLimited, truncatedCompletion, SourceError } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 
@@ -88,7 +89,20 @@ export class PromotionalApi implements Source {
     if (this.now >= expires) return;
     return grant;
   }
-  async available() { try { return !!await this.freeGrant(); } catch { return false; } }
+  async available() {
+    try {
+      if (this.now >= Date.parse(this.spec.expires)) {
+        const expired = new SourceError('refused', `${this.id} free promotion expired`);
+        expired.failureCause = 'offer_ended';
+        observeAvailabilityFailure(expired);
+        return false;
+      }
+      return !!await this.freeGrant();
+    } catch (error) {
+      observeAvailabilityFailure(error);
+      return false;
+    }
+  }
   async complete(request: ModelRequest, caller: AbortSignal, progress?: () => void): Promise<Completion> {
     caller.throwIfAborted();
     if (![this.id, 'grunt'].includes(request.model) || request.tools.some(tool => tool.type !== 'function')) throw new SourceError('refused', 'Unsupported promotional request');
@@ -109,8 +123,13 @@ export class PromotionalApi implements Source {
       });
       if (!response.ok) {
         const retry = nousQuotaDelay(response.headers, await readQuotaError(response), this.now);
-        throw new SourceError(response.status === 401 ? 'logged_out' : [402, 429].includes(response.status) ? 'quota' : response.status === 403 ? 'refused' : 'upstream',
-          `${this.id} returned HTTP ${response.status}`, retry, undefined, { httpStatus: response.status, transport: 'http', httpMethod: 'POST', endpointLabel: 'chat.completions' });
+        throw classifyHttpFailure({
+          source: this.id,
+          status: response.status,
+          ...(retry === undefined ? {} : { retryAfter: retry }),
+          httpMethod: 'POST',
+          endpointLabel: 'chat.completions'
+        });
       }
       if (this.id === 'openference') return await readPromotionalStream(response, this.spec.model, signal, { ...(progress ? { progress } : {}), ...(request.stream ? { text: delta => emitStreamText(delta) } : {}), failure: reason => { completionFailure = reason; }, cleanup: () => {
         recordTransport({ source: this.id, outcome: 'failed', transport: 'http', httpMethod: 'POST', endpointLabel: 'chat.completions',

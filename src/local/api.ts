@@ -6,7 +6,7 @@ import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { housekeeping, userText } from './harness.js';
-import { RequestError, SourceError, answeredBy, currentStreamReplyId, messageText, needsFunctionTools, observeRequestInput } from './source.js';
+import { PoolExhaustedError, RequestError, SourceError, answeredBy, currentStreamReplyId, messageText, needsFunctionTools, observeRequestInput } from './source.js';
 import type { Completion, ContentPart, ImageContentPart, Message, MessageContent, ModelRequest, Tool, ToolCall, Sources, StreamTextObserver } from './source.js';
 import { currentDiagnosticContext, withDiagnosticContext } from './diagnostics.js';
 import type { DiagnosticContext } from './diagnostics.js';
@@ -448,7 +448,10 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
         const err = e instanceof SourceError ? e : new SourceError('upstream', 'grunt source failed');
         if (context) context.errorCode = signal.aborted ? 'cancelled' : err.code;
         const invalid = err instanceof RequestError;
-        return { err, body: { ...(api === 'messages' ? { type: 'error' } : {}), error: { type: invalid ? 'invalid_request_error' : api === 'messages' ? 'api_error' : 'server_error', code: err.code, message: err.message } } };
+        const exhausted = err instanceof PoolExhaustedError && err.terminal;
+        const type = invalid ? 'invalid_request_error' : exhausted ? 'pool_exhausted' : api === 'messages' ? 'api_error' : 'server_error';
+        const code = exhausted ? 'globally_exhausted' : err.code;
+        return { err, exhausted, body: { ...(api === 'messages' ? { type: 'error' } : {}), error: { type, code, message: err.message } } };
       };
       try {
         if (request.cwdSource === 'scratch') await mkdir(request.cwd, { recursive: true });
@@ -496,6 +499,7 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
             if (context) context.responseBytes = Buffer.byteLength(completion.text);
             const source = answeredBy.get(completion);
             if (source) c.header('X-Grunt-Source', source);
+            c.header('X-Grunt-Pool-State', sources.poolState());
             if (sources.preparing.size) c.header('X-Grunt-Preparing', [...sources.preparing].join(','));
             const result = encode(completion, request.model, api, request.responseNamespaces);
             return sendStream(async stream => {
@@ -503,6 +507,7 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
             });
           }
           if (startedSource) c.header('X-Grunt-Source', startedSource);
+          c.header('X-Grunt-Pool-State', sources.poolState());
           if (sources.preparing.size) c.header('X-Grunt-Preparing', [...sources.preparing].join(','));
           return sendStream(async stream => {
             stream.onAbort(notify);
@@ -613,6 +618,7 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
         if (context) context.responseBytes = Buffer.byteLength(completion.text);
         const source = answeredBy.get(completion);
         if (source) c.header('X-Grunt-Source', source);
+        c.header('X-Grunt-Pool-State', sources.poolState());
         if (sources.preparing.size) c.header('X-Grunt-Preparing', [...sources.preparing].join(','));
         const result = encode(completion, request.model, api, request.responseNamespaces);
         if (request.stream) return sendStream(async stream => {
@@ -620,8 +626,14 @@ export function createLocalApp(sources: Sources, options: { cwd?: string; port?:
         });
         return c.json(result);
       } catch (e) {
-        const { err, body } = failure(e);
+        const { err, exhausted, body } = failure(e);
         if (sources.preparing.size) c.header('X-Grunt-Preparing', [...sources.preparing].join(','));
+        const poolState = err instanceof PoolExhaustedError ? err.poolState : sources.poolState();
+        c.header('X-Grunt-Pool-State', poolState);
+        if (exhausted) {
+          c.header('x-should-retry', 'false');
+          return c.json(body, 402);
+        }
         if (err.retryAfter !== undefined) c.header('Retry-After', String(Math.max(1, Math.ceil(err.retryAfter))));
         return c.json(body, err instanceof RequestError ? 400 : err.code === 'quota' ? 429 : err.code === 'timeout' ? 504 : 503);
       }

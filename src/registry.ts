@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import ipaddr from 'ipaddr.js';
 
@@ -588,10 +588,31 @@ export function validateRegistry(value: unknown): Registry {
   }
   return structuredClone(value) as Registry;
 }
+// An adapter whose offer has ended (its `expires` day is over, UTC) is left out
+// of the published registry and the packaged copy, so clients never see it.
+// The rest of its tier is scaled up so the tier keeps its total weight.
+export function publishedRegistry(registry: Registry, now = Date.now()): Registry {
+  const ended = (adapter: Adapter) => adapter.expires !== undefined && now >= Date.parse(adapter.expires) + 24 * 60 * 60 * 1000;
+  const kept = registry.adapters.filter(adapter => !ended(adapter)).map(adapter => structuredClone(adapter));
+  for (const tier of ['stable', 'experimental'] as const) {
+    const before = registry.adapters.filter(adapter => adapter.tier === tier).reduce((sum, adapter) => sum + adapter.weight, 0);
+    const remaining = kept.filter(adapter => adapter.tier === tier);
+    const after = remaining.reduce((sum, adapter) => sum + adapter.weight, 0);
+    if (after > 0 && after !== before) for (const adapter of remaining) adapter.weight = Math.min(1, adapter.weight * before / after);
+  }
+  return { ...structuredClone(registry), adapters: kept };
+}
 const packaged = new URL('./registry/adapters.json', import.meta.url);
 export const bundledRegistry = validateRegistry(JSON.parse(readFileSync(existsSync(packaged) ? packaged : new URL('../registry/adapters.json', import.meta.url), 'utf8')));
 
 if (typeof GRUNT_DAEMON_BUNDLE === 'undefined' && process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  validateRegistry(JSON.parse(readFileSync(process.argv[2] ?? 'registry/adapters.json', 'utf8')));
+  const registry = validateRegistry(JSON.parse(readFileSync(process.argv[2] ?? 'registry/adapters.json', 'utf8')));
+  // `tsx src/registry.ts <input> --publish <output>` writes the registry without ended offers.
+  const publish = process.argv.indexOf('--publish');
+  if (publish > 0) {
+    const output = process.argv[publish + 1];
+    if (!output) throw new Error('Usage: tsx src/registry.ts <input> --publish <output>');
+    writeFileSync(output, `${JSON.stringify(validateRegistry(publishedRegistry(registry)), null, 2)}\n`);
+  }
   console.log('Adapter registry is valid');
 }

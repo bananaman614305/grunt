@@ -5,7 +5,9 @@ import { promisify } from 'node:util';
 import { realpath } from 'node:fs/promises';
 import { setImmediate as metadataTurn } from 'node:timers/promises';
 import { taskTurns } from './harness.js';
-import { Sources, RequestError, SourceError, answeredBy, bridgedTools, canReplay, hasImageInput, needsFunctionTools, toolCapable, withAttemptStream, NO_TOOL_SOURCE } from './source.js';
+import { Sources, RequestError, SourceError, PoolExhaustedError, answeredBy, bridgedTools, canReplay, hasImageInput, needsFunctionTools, toolCapable, withAttemptStream, NO_TOOL_SOURCE } from './source.js';
+import { TRANSIENT_RETRY_WINDOW_SECONDS } from './quota-policy.js';
+import { formatResetCountdown } from './provider-error.js';
 import type { Completion, ErrorCode, ModelRequest, SlowUpstreamPolicy, Source } from './source.js';
 import type { Adapter, Registry } from '../registry.js';
 import { knownAdapters, TIER_TOTALS } from '../registry.js';
@@ -44,8 +46,11 @@ export const NATIVE_TOOL_SOURCES_FIRST = true;
 // A first draw whose ready sources are all busy waits at most this long for the admission checks of sources that
 // may be idle (a fallback waits for them as long as they run). Probes take 0.1 to 2.5 s; each is bounded at 5 s.
 export const FIRST_DRAW_IDLE_WAIT_MS = 3000;
+// Total wall-clock budget for cold admission probes when zero sources are immediately eligible.
+// Prevents a dead or exhausted pool from stalling for tens of seconds before failing fast.
+export const COLD_POOL_PROBE_BUDGET_MS = 6000;
 // An image-capable source benched for longer than this no longer keeps the image in the conversation (see imageUsable).
-export const IMAGE_WAIT_SECONDS = 300;
+export const IMAGE_WAIT_SECONDS = TRANSIENT_RETRY_WINDOW_SECONDS;
 
 export const HEDGE_AFTER_MS = 8000;
 const backupUnavailable = Symbol('backup eligibility changed');
@@ -53,7 +58,7 @@ const attemptProgress = new AsyncLocalStorage<{ commit: () => boolean; progress:
 export const acceptRoutingCompletion = () => attemptProgress.getStore()?.commit() ?? true;
 export const routingOutputProgress = () => attemptProgress.getStore()?.progress;
 
-export interface RoutingOptions { hedgeAfterMs?: number; scheduleRecovery?: (id: string, at: number) => void; registry: () => Registry; localOptIns?: ReadonlySet<string>; unrouted?: ReadonlySet<string>; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; disabled?: ReadonlySet<string>; observation?: SourceStatus; attempt?: (source: Source, request: ModelRequest, signal: AbortSignal) => Promise<Completion>; observe?: (source: string, reason: NonNullable<DiagnosticEvent['reason']>, skipped?: boolean) => void; observeEligible?: (source: string, at: number) => void; dropped?: (source: string) => void }
+export interface RoutingOptions { hedgeAfterMs?: number; coldProbeBudgetMs?: number; scheduleRecovery?: (id: string, at: number) => void; registry: () => Registry; localOptIns?: ReadonlySet<string>; unrouted?: ReadonlySet<string>; random?: () => number; now?: () => number; pending?: ReadonlySet<string>; disabled?: ReadonlySet<string>; observation?: SourceStatus; attempt?: (source: Source, request: ModelRequest, signal: AbortSignal) => Promise<Completion>; observe?: (source: string, reason: NonNullable<DiagnosticEvent['reason']>, skipped?: boolean) => void; observeEligible?: (source: string, at: number) => void; dropped?: (source: string) => void }
 interface Task {
   source?: string; original: string; output: string; checkpoint?: string; switched: boolean; busy: boolean;
   reassessment?: { from: string; source: string; samples: number; at: number };
@@ -69,10 +74,25 @@ export class StickyRouter {
   constructor(private sources: Source[], private options: RoutingOptions) {
     this.observation = options.observation ?? new SourceStatus(sources.map(source => source.id), options.now);
     this.availability = new SourceAvailability(this.observation);
+    const startedAt = this.now();
+    for (const source of sources) if (options.pending?.has(source.id)) this.pendingWorkSince.set(source.id, startedAt);
   }
   private now() { return (this.options.now ?? Date.now)(); }
   // Routes allowed their one half-open trial request right now (see claimTrial).
   private trials = new Set<string>();
+  // Tracks when a route was first observed pending setup or running a half-open trial so the
+  // transient 429 exception stays bounded to TRANSIENT_RETRY_WINDOW_SECONDS instead of spinning indefinitely.
+  private pendingWorkSince = new Map<string, number>();
+  private pendingWithinWindow(id: string) {
+    const now = this.now();
+    let since = this.pendingWorkSince.get(id);
+    if (since === undefined) {
+      since = now;
+      this.pendingWorkSince.set(id, since);
+    }
+    const remainingMs = TRANSIENT_RETRY_WINDOW_SECONDS * 1000 - (now - since);
+    return remainingMs > 0 ? Math.ceil(remainingMs / 1000) : 0;
+  }
   // Sources a task has drawn and not yet finished with. A draw claims its source in the same tick, before
   // any await (handoff) and for the whole attempt, so concurrent new tasks see it as busy and spread out.
   private reservations = new Map<string, number>();
@@ -105,7 +125,11 @@ export class StickyRouter {
   claimTrial(id: string): () => void {
     if (!this.dueTrial(id) || this.trials.has(id)) return () => {};
     this.trials.add(id);
-    return () => { this.trials.delete(id); };
+    if (!this.pendingWorkSince.has(id)) this.pendingWorkSince.set(id, this.now());
+    return () => {
+      this.trials.delete(id);
+      if (!this.options.pending?.has(id) && !this.trialBusy(id)) this.pendingWorkSince.delete(id);
+    };
   }
   private dueTrial(id: string) {
     const general = generalHold(this.observation.routingBackoff(id)), tool = this.applicableTool(id);
@@ -234,20 +258,60 @@ export class StickyRouter {
     const prompt = `Original task:\n${task.original}\n${work}\nPrevious adapter output (last 4 KB):\n${Buffer.from(task.output).subarray(-4096).toString('utf8')}\nContinue this task from the current state. Do not restart.`;
     return { ...request, messages: [...request.messages, { role: 'user', content: prompt }], handoffPrompt: prompt };
   }
-  private exhausted(toolsRequired: boolean, retryTimes: number[], refused = 0, transient = true) {
+  private exhausted(
+    toolsRequired: boolean,
+    retryTimes: number[],
+    refused = 0,
+    transient = true,
+    pendingWait?: number,
+    counts: { limited: number; unconfigured: number; errored: number } = { limited: 0, unconfigured: 0, errored: 0 }
+  ) {
     const now = this.now();
     const next = Math.min(...retryTimes);
+    const immediate = Number.isFinite(next) && next <= now;
     const seconds = Number.isFinite(next) && next > now ? Math.ceil((next - now) / 1000) : undefined;
+    const shortRetry = immediate || (seconds !== undefined && seconds <= TRANSIENT_RETRY_WINDOW_SECONDS);
+    const shortPending = pendingWait !== undefined && pendingWait > 0;
+    const shortTransient = shortRetry || shortPending;
+    const transientRetryAfter = shortRetry
+      ? seconds
+      : shortPending
+        ? Math.min(seconds ?? pendingWait, pendingWait, TRANSIENT_RETRY_WINDOW_SECONDS)
+        : undefined;
     // Sources that refused the request's own shape never contacted a provider and are not rate limited. Say
     // so, and when nothing is merely waiting (cooling, limited, busy, pending, failed this call), answer as an
     // invalid request rather than a quota wait. Any transient source keeps the retryable error.
     if (refused) {
       const detail = `${refused} adapter${refused === 1 ? '' : 's'} refused this conversation's tool definitions or tool history locally, before any provider was contacted`;
+      const retryAfter = shortTransient ? transientRetryAfter : seconds;
       return !transient
         ? new RequestError(`${detail}, and no other tool-capable adapter is available; this request cannot be served as sent`)
-        : new SourceError('quota', `${detail}; the other tool-capable adapters are cooling down or limited; retry after the reset`, seconds);
+        : new PoolExhaustedError(`${detail}; the other tool-capable adapters are cooling down or limited; retry after the reset`, {
+          terminal: !shortTransient,
+          ...(retryAfter === undefined ? {} : { retryAfter })
+        });
     }
-    return new SourceError('quota', toolsRequired ? NO_TOOL_SOURCE : 'No eligible adapter is available; finish setup or retry after quota resets', seconds);
+    if (!shortTransient) {
+      const reasons: string[] = [];
+      if (counts.limited) reasons.push(`${counts.limited} quota-limited${seconds !== undefined ? ` (earliest reset in ${formatResetCountdown(seconds)})` : ''}`);
+      if (counts.errored) reasons.push(`${counts.errored} errored or barred`);
+      if (counts.unconfigured) reasons.push(`${counts.unconfigured} unconfigured`);
+      const summary = reasons.length ? ` (${reasons.join(', ')})` : '';
+      const message = toolsRequired
+        ? `Grunt pool globally exhausted: ${NO_TOOL_SOURCE}${summary}. Run usegrunt status or usegrunt setup.`
+        : `Grunt pool globally exhausted: No eligible adapter can serve right now${summary}. Run usegrunt status or usegrunt setup.`;
+      return new PoolExhaustedError(message, {
+        terminal: true,
+        ...(seconds === undefined ? {} : { retryAfter: seconds })
+      });
+    }
+    return new PoolExhaustedError(
+      toolsRequired ? NO_TOOL_SOURCE : 'No eligible adapter is available; finish setup or retry after quota resets',
+      {
+        terminal: false,
+        ...(transientRetryAfter === undefined ? {} : { retryAfter: transientRetryAfter })
+      }
+    );
   }
   private fasterContinuation(task: Task, request: ModelRequest, candidates: Candidate[], adapters: Adapter[], workload: RoutingWorkload) {
     const reset = () => { delete task.reassessment; return undefined; };
@@ -390,7 +454,7 @@ export class StickyRouter {
       withDiagnosticContext(context, () => observeEligible(id, at));
     };
     let hedged = false;
-    let yieldedMetadata = false, idleWaitEnds: number | undefined;
+    let yieldedMetadata = false, idleWaitEnds: number | undefined, coldProbeEnds: number | undefined;
     const observation = this.observation;
     const skip = (source: string, reason: NonNullable<DiagnosticEvent['reason']>) => {
       this.options.observe?.(source, reason, true);
@@ -425,6 +489,11 @@ export class StickyRouter {
         const unknown: Source[] = [];
         const retryTimes: number[] = [];
         let transient = false;
+        let pendingWait: number | undefined;
+        const counts = { limited: 0, unconfigured: 0, errored: 0 };
+        for (const id of this.pendingWorkSince.keys()) {
+          if (!this.options.pending?.has(id) && !this.trialBusy(id)) this.pendingWorkSince.delete(id);
+        }
         for (const source of this.sources) {
           signal.throwIfAborted();
           // Sources outside the registry are never drawn or reported as skipped;
@@ -442,13 +511,36 @@ export class StickyRouter {
             if (source.id === request.model) throw new SourceError('refused', `${source.id} requires approved request context`);
             continue;
           }
-          if (this.options.pending?.has(source.id)) { transient = true; skip(source.id, 'pending_setup'); continue; }
+          if (this.options.pending?.has(source.id)) {
+            const wait = this.pendingWithinWindow(source.id);
+            if (wait > 0) {
+              transient = true;
+              pendingWait = pendingWait === undefined ? wait : Math.min(pendingWait, wait);
+            } else {
+              counts.unconfigured++;
+            }
+            skip(source.id, 'pending_setup');
+            continue;
+          }
           if (toolsRequired && !toolCapable(source)) { skip(source.id, 'tools_unsupported'); continue; }
-          if (this.retired(source.id)) { skip(source.id, 'retired'); continue; }
-          if (this.trialBusy(source.id)) { transient = true; skip(source.id, 'trial_in_progress'); continue; }
-          const until = this.cooldown(source.id)?.until;
+          if (this.retired(source.id)) { counts.errored++; skip(source.id, 'retired'); continue; }
+          if (this.trialBusy(source.id)) {
+            const wait = this.pendingWithinWindow(source.id);
+            if (wait > 0) {
+              transient = true;
+              pendingWait = pendingWait === undefined ? wait : Math.min(pendingWait, wait);
+            } else {
+              counts.errored++;
+            }
+            skip(source.id, 'trial_in_progress');
+            continue;
+          }
+          const cooldown = this.cooldown(source.id);
+          const until = cooldown?.until;
           if (until !== undefined && until > this.now()) {
             if (Number.isFinite(until)) { retryTimes.push(until); transient = true; }
+            if (cooldown?.code === 'quota') counts.limited++;
+            else counts.errored++;
             skip(source.id, 'cooldown');
             continue;
           }
@@ -466,10 +558,24 @@ export class StickyRouter {
           else if (available === undefined) unknown.push(source);
           else {
             // This live allowance check can discover a reset the router did not know at entry.
-            const checkedUntil = this.cooldown(source.id)?.until;
-            if (checkedUntil !== undefined && checkedUntil > this.now() && Number.isFinite(checkedUntil)) retryTimes.push(checkedUntil);
-            // Unavailable without a known reset (limited, still checking) may recover; only a permanent bar cannot.
-            if (checkedUntil !== Infinity) transient = true;
+            const checked = this.cooldown(source.id);
+            const checkedUntil = checked?.until;
+            const cause = observation.failureCause(source.id);
+            if (checkedUntil !== undefined && checkedUntil > this.now() && Number.isFinite(checkedUntil)) {
+              retryTimes.push(checkedUntil);
+              transient = true;
+              if (checked?.code === 'quota') counts.limited++;
+              else counts.errored++;
+            } else if (cause === 'transient' || cause === 'exhausted') {
+              transient = true;
+              if (cause === 'exhausted') counts.limited++;
+              else counts.errored++;
+            } else if (checkedUntil === Infinity || checked?.code === 'refused' || checked?.code === 'logged_out'
+              || (cause !== undefined && cause !== 'unconfigured')) {
+              counts.errored++;
+            } else {
+              counts.unconfigured++;
+            }
             skip(source.id, 'unavailable');
           }
         }
@@ -491,12 +597,20 @@ export class StickyRouter {
           continue;
         }
         if (!eligible.length) {
-          if (unknown.length && this.availability.hasPending()) { observeRequestPhase('checking_routes'); await this.availability.changed(signal); continue; }
+          if (unknown.length && this.availability.hasPending()) {
+            coldProbeEnds ??= Date.now() + (this.options.coldProbeBudgetMs ?? COLD_POOL_PROBE_BUDGET_MS);
+            const left = coldProbeEnds - Date.now();
+            if (left > 0) {
+              observeRequestPhase('checking_routes');
+              await this.availability.changed(signal, left);
+              continue;
+            }
+          }
           // No source lists image input at all: that is the request's shape, not quota, so say so as an invalid request.
           const imageRefused = imageRequest && !this.sources.some(source => (!explicit || source.id === request.model) && !this.options.unrouted?.has(source.id) && this.imageListed(source.id));
           const failure = imageRefused ? new RequestError('This conversation contains an image, but no source on this route accepts image input; remove the image or continue in text')
             : imageRefusal && !transient ? new SourceError('refused', imageRefusal.message, undefined, undefined, imageRefusal.diagnostics)
-            : this.exhausted(toolsRequired, retryTimes, refused.size, transient);
+            : this.exhausted(toolsRequired, retryTimes, refused.size, transient, pendingWait, counts);
           // Keep the task reserved until its fallback has settled.
           if (!explicit && fallback) return await fallback(failure, signal);
           throw failure;
@@ -562,7 +676,9 @@ export class StickyRouter {
         // Claim the source now, in the same tick as the draw: handoff below awaits, and concurrent tasks must
         // not draw the same idle source meanwhile. Released when this attempt ends or the selection is dropped.
         const unreserve = this.reserve(selected.source.id);
+        const previousSource = task.source;
         const switched = task.switched || (!bound && task.source !== undefined);
+        const endSwitch = switched ? observation.beginSwitch(previousSource, selected.source.id) : () => {};
         let release = () => {};
         try {
           // A provider with a request scope guard may only receive the client-approved
@@ -633,7 +749,7 @@ export class StickyRouter {
           signal.throwIfAborted();
           if (!canReplay(failure)) throw failure;
           task.switched = true;
-        } finally { release(); unreserve(); }
+        } finally { release(); unreserve(); endSwitch(); }
       }
     } finally {
       stopObserving?.();

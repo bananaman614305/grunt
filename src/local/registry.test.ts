@@ -111,7 +111,7 @@ it('accepts a later revocation and persists it through an offline restart', asyn
   expect(fetcher.mock.calls[0]![1]?.headers).toEqual({ 'If-None-Match': '"revoked"' });
 });
 
-it('syncs from static Cloudflare Pages URL with raw GitHub fallback, redirect: error, and GRUNT_REGISTRY_URL override', async () => {
+it('syncs from static GitHub Pages URL with raw GitHub fallback, redirect: error, and GRUNT_REGISTRY_URL override', async () => {
   expect(REGISTRY_URLS).toEqual([
     'https://grunt.run/registry.json',
     'https://raw.githubusercontent.com/bananaman614305/grunt/main/registry/adapters.json'

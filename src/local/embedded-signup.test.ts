@@ -1137,7 +1137,9 @@ it('lets a paused profile-lease holder resume its open dialog when queued signup
 
   expect(zroTurns).toBe(2);
   expect(peakConcurrentBrowsers).toBe(1);
-  expect(startedProviders).toEqual(['zro', 'groq', 'cerebras', 'nvidia']);
+  // Zro holds the profile lease first; the three queued signups launch concurrently, so their start order varies.
+  expect(startedProviders[0]).toBe('zro');
+  expect([...startedProviders.slice(1)].sort()).toEqual(['cerebras', 'groq', 'nvidia']);
   expect(queueEvents).toContainEqual({ provider: 'nvidia', state: 'waiting' });
   expect(queueEvents).toContainEqual({ provider: 'nvidia', state: 'started' });
   expect(state.browserStarts).toBe(4);

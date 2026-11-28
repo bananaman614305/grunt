@@ -18,7 +18,9 @@ import {
 } from './vault.js';
 import { JsonToolBridge } from './json-tool-bridge.js';
 import { MetadataFlights } from './metadata-flight.js';
+import { classifyHttpFailure, observeAvailabilityFailure } from './provider-error.js';
 import { lengthLimited, truncatedCompletion, withObservedEnding, SourceError, requestRefusal } from './source.js';
+import { bannedResponse } from './provider-refusal.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 
 export const BEATAPI_MODEL = 'deepseek-v4.1-flash-free';
@@ -153,12 +155,22 @@ async function json(response: Response, signal: AbortSignal, limit: number): Pro
     return obj(JSON.parse(Buffer.concat(chunks).toString('utf8')));
   } finally { void reader.cancel().catch(() => {}); }
 }
-function status(response: Response): void {
+async function status(response: Response): Promise<void> {
   if (response.ok) return;
   const raw = response.headers.get('retry-after'), retry = raw === null ? NaN : /^\d+(?:\.\d+)?$/.test(raw) ? Number(raw) : (Date.parse(raw) - Date.now()) / 1000;
-  void response.body?.cancel().catch(() => {});
-  throw new SourceError(response.status === 401 ? 'logged_out' : response.status === 429 ? 'quota' : [402, 403].includes(response.status) ? 'refused' : 'upstream',
-    `BeatAPI returned HTTP ${response.status}`, response.status === 429 ? Math.max(1, Number.isFinite(retry) ? Math.ceil(retry) : 60) : undefined, undefined, { httpStatus: response.status, transport: 'http' });
+  // A banned account must stop setup. Only that fact is kept, never the body text.
+  let banned = false;
+  if (response.status >= 400 && response.status < 500 && response.status !== 429) banned = await bannedResponse(response);
+  else void response.body?.cancel().catch(() => {});
+  const error = classifyHttpFailure({
+    source: 'BeatAPI',
+    status: response.status,
+    ...(banned ? { message: `BeatAPI returned HTTP ${response.status} (account banned)` } : {}),
+    ...(response.status === 429 ? { retryAfter: Math.max(1, Number.isFinite(retry) ? Math.ceil(retry) : 60) } : {}),
+    paymentAsRefusal: true
+  });
+  if (banned) error.code = 'refused';
+  throw error;
 }
 export interface BeatAPIUsage { credit_balance: number; credits_settled: 0 }
 // Public nonbillable API metadata. The published -free contract sets the price
@@ -166,7 +178,7 @@ export interface BeatAPIUsage { credit_balance: number; credits_settled: 0 }
 export async function verifyBeatAPIAccess(grant: BeatAPIAccess, options: { fetcher?: typeof fetch; signal?: AbortSignal } = {}): Promise<BeatAPIUsage> {
   const auth = access(grant), signal = AbortSignal.any([...(options.signal ? [options.signal] : []), AbortSignal.timeout(5000)]);
   try {
-    const response = await abortable(diagnosticFetch(options.fetcher ?? fetch, 'beatapi', 'account')(`${auth.base_url}/v1/usage`, { headers: { Authorization: `Bearer ${auth.token}` }, redirect: 'error', signal }), signal); status(response);
+    const response = await abortable(diagnosticFetch(options.fetcher ?? fetch, 'beatapi', 'account')(`${auth.base_url}/v1/usage`, { headers: { Authorization: `Bearer ${auth.token}` }, redirect: 'error', signal }), signal); await status(response);
     const usage = obj((await json(response, signal, 131072)).data);
     if (usage.object !== 'usage' || typeof usage.credit_balance !== 'number' || !Number.isFinite(usage.credit_balance) || usage.credit_balance < 0 || usage.credit_balance > 2
       || usage.credits_settled !== 0 || ('lifetime_paid' in usage && usage.lifetime_paid !== 0)
@@ -187,7 +199,7 @@ export async function verifyBeatAPIModelAccess(grant: BeatAPIAccess, options: { 
     const response = await abortable(diagnosticFetch(options.fetcher ?? fetch, 'beatapi', 'models')(`${auth.base_url}/v1/models`, {
       headers: { Authorization: `Bearer ${auth.token}` }, redirect: 'error', signal
     }), signal);
-    status(response);
+    await status(response);
     const models = (await json(response, signal, 32768)).data;
     if (Array.isArray(models) && models.length === 1 && obj(models[0]).id === BEATAPI_MODEL) return false;
     if (!Array.isArray(models) || models.length !== BEATAPI_MODELS.length
@@ -260,7 +272,7 @@ export class BeatAPI implements Source {
           requestId: context.requestId, kind: context.kind, source: this.id });
       } catch { /* Observation cannot change account eligibility. */ }
       return true;
-    } catch { return false; } })());
+    } catch (error) { observeAvailabilityFailure(error); return false; } })());
   }
   async healthCheck() { return this.available(); }
   async complete(request: ModelRequest, caller: AbortSignal): Promise<Completion> {
@@ -287,7 +299,7 @@ export class BeatAPI implements Source {
       if (grant.version === 2 && (response.status === 404 || response.status === 410)) {
         this.nextModel = model === BEATAPI_MODEL ? 1 : 0;
       }
-      status(response);
+      await status(response);
       // This read must be fresh and separate from overlapping availability checks:
       // sharing pre-inference evidence would defeat the balance-change guard.
       const body = await json(response, signal, 2 * 1024 * 1024), after = await verifyBeatAPIAccess(grant, guards);

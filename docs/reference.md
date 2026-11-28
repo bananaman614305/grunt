@@ -17,9 +17,9 @@ It refuses to run while the repository is private and does not upload artifacts
 or use Actions caches. Static site deployment and npm publication remain separate
 from CI; their workflows are not enabled by turning CI on.
 
-`site/` is served directly on Cloudflare Pages (`https://grunt.run`), including
-`site/registry.json` (kept identical to `registry/adapters.json`) and a `200`
-rewrite from `/v1/registry` to `/registry.json`. There is no Grunt gateway
+`site/` is served directly on GitHub Pages (`https://grunt.run`), including
+`registry.json` (the published form of `registry/adapters.json`) and an
+identical static copy at `/v1/registry` for older daemons. There is no Grunt gateway
 server, SQLite admin backend, custom web dashboard, Jev, billing, roster
 service, worker tooling or monorepo.
 
@@ -202,12 +202,15 @@ completion pauses unfinished signups; verified daemon routes remain usable.
 
 `/v1/status` uses the same loopback Host/Origin restrictions as inference and
 `Cache-Control: no-store`. Its version-1 JSON contains the snapshot timestamp,
-active call count and per-source observations, including safe failure codes,
-last success/timing and finite retry timestamps when known. `checkedAgoSeconds`
-is the age of the last admission or reply evidence and `routable` is true only
-when that evidence is a fresh (30 s) positive and the state is open; `state`
-alone can read `available` for a source routing would first have to re-check, and
-neither field guarantees dispatch. Observations reset
+top-level `poolState` (`idle`, `working`, `switching`, `transient_error`,
+`provider_exhausted`, `globally_exhausted`) and `pool` summary, active call
+count, and per-source observations including safe failure codes, `failureCause`,
+HTTP status, last success/timing, and finite retry timestamps when known.
+`checkedAgoSeconds` is the age of the last admission or reply evidence;
+`routable` is true whenever the source is eligible to receive a request
+(`ready`, `available`, or `answering`), while `probeFresh` is true only when
+the cached admission check is still within the 30-second freshness window.
+Neither field guarantees dispatch. Observations reset
 when the daemon restarts, then rebuild from normal runtime activity.
 
 ### Persistent local diagnostics
@@ -909,6 +912,12 @@ Use `usegrunt add <provider>` to set up a supported provider. For example,
 `usegrunt add kilo` checks the [anonymous Kilo free-model catalog](#kilo-free-models)
 after current approval without creating an account or capturing a provider key.
 
+If a provider answers a saved key with HTTP 403, or says the account is banned,
+setup stops for that provider instead of signing up again. It records the refusal
+in `refused-providers/<provider>.json` in Grunt's configuration directory, and the daemon
+stops routing to that source. Setup starts no new signup for it until you run
+`usegrunt add <provider> --force`, which clears the refusal and retries.
+
 When the first account-dependent job needs Squire and no session exists, setup
 runs Squire's own connect installer with the OpenCode target. Parallel jobs share
 that pending bootstrap rather than starting duplicate installers. Its supported
@@ -1238,9 +1247,15 @@ omits Retry-After. Nous and Vikey also consume documented reset metadata.
 In registry routing, other upstream failures, timeouts and provider refusals
 switch immediately under the [router back-off and retirement policy](router.md#2-score-back-off-retirement).
 Caller cancellation stops the chain.
-When no eligible adapter remains, the API returns HTTP 429 and, when known,
-the earliest Retry-After. Agent adapters return final text, so streaming headers
-are sent after completion; quota failures retain their HTTP status.
+When no eligible adapter remains, the API distinguishes short transient waits
+from hard global exhaustion: if a route will recover within 60 seconds (or
+`IMAGE_WAIT_SECONDS` for an image request), the API returns HTTP 429 with
+`Retry-After` and `X-Grunt-Pool-State: transient_error`; otherwise it fails
+fast with HTTP 402, `x-should-retry: false`, no `Retry-After`,
+`X-Grunt-Pool-State: globally_exhausted`, and `error.code: "globally_exhausted"`
+so coding harnesses stop spinning and show the cause to the user. Agent
+adapters return final text, so streaming headers are sent after completion;
+quota and exhaustion failures retain their HTTP status.
 
 On handoff, the next adapter receives the original task, working-tree status,
 the diff against a task-start `git stash create` checkpoint, the previous
@@ -1250,10 +1265,13 @@ git repository, only task text and output are sent. If the next adapter is
 Gödel Machines, it receives the approved request payload without generated
 handoff context.
 
-The static registry is maintained in `registry/adapters.json` and mirrored
-byte-for-byte in `site/registry.json` so Cloudflare Pages serves it directly at
-`https://grunt.run/registry.json` (with `/v1/registry` rewritten to
-`/registry.json` as HTTP `200`). A shipped adapter id, an entry whose `install`
+The static registry is maintained in `registry/adapters.json`. Its published
+form goes to `site/registry.json` (and the npm package's `dist/registry/adapters.json`):
+an adapter whose `expires` day has passed is left out, and the rest of its tier is
+scaled to keep the tier weight. `tsx src/registry.ts registry/adapters.json --publish site/registry.json`
+writes it. GitHub Pages serves it directly at
+`https://grunt.run/registry.json` (with an identical static copy at
+`/v1/registry` for older daemons). A shipped adapter id, an entry whose `install`
 is `declarative:openai` (with a strictly validated `declarative`
 OpenAI-compatible config), or an entry whose `install` is `npm:<package>`, goes
 in `adapters`; any other id goes in a top-level `candidates` list of providers

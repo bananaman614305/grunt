@@ -17,7 +17,7 @@ export interface DiagnosticMetricDimensions {
 export interface DiagnosticMetricBucket {
   hour: number; dimensions: DiagnosticMetricDimensions; count: number;
   durationCount: number; durationSumMs: number; durationMaxMs: number; durationHistogram: number[];
-  inputTokens: number; outputTokens: number; unknownInput: number; unknownOutput: number;
+  inputTokens: number; outputTokens: number; reasoningTokens: number; unknownInput: number; unknownOutput: number; unknownReasoning: number;
 }
 export interface DiagnosticMetrics {
   version: 1; streamId: string | null; window: { since: number; until: number; alignedSince: number; alignedUntil: number };
@@ -66,7 +66,8 @@ export async function recordDiagnosticMetrics(tx: Transaction, events: Diagnosti
     let bucket = grouped.get(key);
     if (!bucket) {
       bucket = { hour: atHour, dimensions, count: 0, durationCount: 0, durationSumMs: 0, durationMaxMs: 0,
-        durationHistogram: Array.from({ length: DIAGNOSTIC_LATENCY_BOUNDS_MS.length + 1 }, () => 0), inputTokens: 0, outputTokens: 0, unknownInput: 0, unknownOutput: 0 };
+        durationHistogram: Array.from({ length: DIAGNOSTIC_LATENCY_BOUNDS_MS.length + 1 }, () => 0),
+        inputTokens: 0, outputTokens: 0, reasoningTokens: 0, unknownInput: 0, unknownOutput: 0, unknownReasoning: 0 };
       grouped.set(key, bucket);
     }
     bucket.count++;
@@ -78,16 +79,19 @@ export async function recordDiagnosticMetrics(tx: Transaction, events: Diagnosti
     if (event.type === 'attempt.finish') {
       if (event.inputTokens === undefined) bucket.unknownInput++; else bucket.inputTokens += event.inputTokens;
       if (event.outputTokens === undefined) bucket.unknownOutput++; else bucket.outputTokens += event.outputTokens;
+      if (event.reasoningTokens === undefined) bucket.unknownReasoning++; else bucket.reasoningTokens += event.reasoningTokens;
     }
   }
   if (overflowEvents) await setMeta(tx, 'overflow_events', Number(await getMeta(tx, 'overflow_events') ?? 0) + overflowEvents);
   for (const bucket of grouped.values()) await tx.execute({ sql: aggregateUpsert, args: [bucket.hour, JSON.stringify(bucket.dimensions), JSON.stringify(bucket)] });
 }
-const sums = ['count', 'durationCount', 'durationSumMs', 'inputTokens', 'outputTokens', 'unknownInput', 'unknownOutput'];
+const sums = ['count', 'durationCount', 'durationSumMs', 'inputTokens', 'outputTokens', 'reasoningTokens', 'unknownInput', 'unknownOutput'];
+const legacyUnknownReasoningExpr = "CASE WHEN json_extract(data,'$.dimensions.type')='attempt.finish' THEN coalesce(json_extract(data,'$.count'),0) ELSE 0 END";
 const updates = [
-  ...sums.map(key => "'$." + key + "',json_extract(data,'$." + key + "')+json_extract(excluded.data,'$." + key + "')"),
-  "'$.durationMaxMs',max(json_extract(data,'$.durationMaxMs'),json_extract(excluded.data,'$.durationMaxMs'))",
-  ...Array.from({ length: DIAGNOSTIC_LATENCY_BOUNDS_MS.length + 1 }, (_, i) => "'$.durationHistogram[" + i + "]',json_extract(data,'$.durationHistogram[" + i + "]')+json_extract(excluded.data,'$.durationHistogram[" + i + "]')"),
+  ...sums.map(key => "'$." + key + "',coalesce(json_extract(data,'$." + key + "'),0)+coalesce(json_extract(excluded.data,'$." + key + "'),0)"),
+  "'$.unknownReasoning',coalesce(json_extract(data,'$.unknownReasoning')," + legacyUnknownReasoningExpr + ")+coalesce(json_extract(excluded.data,'$.unknownReasoning'),0)",
+  "'$.durationMaxMs',max(coalesce(json_extract(data,'$.durationMaxMs'),0),coalesce(json_extract(excluded.data,'$.durationMaxMs'),0))",
+  ...Array.from({ length: DIAGNOSTIC_LATENCY_BOUNDS_MS.length + 1 }, (_, i) => "'$.durationHistogram[" + i + "]',coalesce(json_extract(data,'$.durationHistogram[" + i + "]'),0)+coalesce(json_extract(excluded.data,'$.durationHistogram[" + i + "]'),0)"),
 ];
 const aggregateUpsert = 'INSERT INTO diagnostic_metric_hours(hour,series,data) VALUES(?,?,?) ON CONFLICT(hour,series) DO UPDATE SET data=json_set(data,' + updates.join(',') + ')';
 
@@ -132,6 +136,14 @@ export async function readDiagnosticMetrics(db: Client | undefined, streamId: st
   const first = (await db.execute('SELECT min(hour) AS hour FROM diagnostic_metric_hours')).rows[0]?.hour;
   result.coverage.retainedFrom = first === null || first === undefined ? null : Number(first);
   const args: InValue[] = [Math.max(alignedSince, hour(now - retentionMs)), until];
-  result.buckets = (await db.execute({ sql: 'SELECT data FROM diagnostic_metric_hours WHERE hour>=? AND hour<? ORDER BY hour,series', args })).rows.map(row => JSON.parse(String(row.data)) as DiagnosticMetricBucket);
+  result.buckets = (await db.execute({ sql: 'SELECT data FROM diagnostic_metric_hours WHERE hour>=? AND hour<? ORDER BY hour,series', args })).rows.map(row => {
+    const parsed = JSON.parse(String(row.data)) as Partial<DiagnosticMetricBucket>;
+    const legacyUnknownReasoning = parsed.dimensions?.type === 'attempt.finish' && typeof parsed.count === 'number' ? parsed.count : 0;
+    return {
+      ...parsed,
+      reasoningTokens: typeof parsed.reasoningTokens === 'number' ? parsed.reasoningTokens : 0,
+      unknownReasoning: typeof parsed.unknownReasoning === 'number' ? parsed.unknownReasoning : legacyUnknownReasoning
+    } as DiagnosticMetricBucket;
+  });
   return result;
 }

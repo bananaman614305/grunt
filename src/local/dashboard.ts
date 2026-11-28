@@ -1,18 +1,29 @@
 import { installedConfigRoot } from './service-migration.js';
 import { hasOwnerMode, openPrivateFile } from './private-file.js';
 import { gruntEnv } from '../brand.js';
-import { providerQuotaPolicy, scheduledQuotaRefill, sellerQuota } from './quota-policy.js';
+import { observedQuota, providerQuotaPolicy, scheduledQuotaRefill, sellerQuota } from './quota-policy.js';
 import { Chalk } from 'chalk';
 import { stripVTControlCharacters } from 'node:util';
 import { constants } from 'node:fs';
 
 import { join } from 'node:path';
-import type { PoolSnapshot, SourceSnapshot } from './source-status.js';
+import type { PoolSnapshot, PoolState, PoolStateInfo, SourceSnapshot } from './source-status.js';
+import { providerFailureCauses } from './provider-error.js';
+import type { ProviderFailureCause } from './provider-error.js';
 import type { MaintenanceEntry } from './maintenance.js';
 import type { Harness } from './harnesses.js';
 
 const errorCodes = new Set(['not_installed', 'logged_out', 'quota', 'timeout', 'upstream', 'refused', 'cancelled']);
 const states = new Set(['unknown', 'available', 'ready', 'answering', 'connecting', 'verifying', 'limited', 'error', 'disabled', 'unavailable', 'approval']);
+const poolStates = new Set<PoolState>(['idle', 'working', 'switching', 'transient_error', 'provider_exhausted', 'globally_exhausted']);
+const poolStateLabels: Record<PoolState, string> = {
+  idle: 'idle',
+  working: 'working',
+  switching: 'switching provider',
+  transient_error: 'transient error',
+  provider_exhausted: 'provider exhausted',
+  globally_exhausted: 'GLOBALLY EXHAUSTED'
+};
 const labels: Record<string, string> = {
   unknown: '? Unknown', available: '~ Available', ready: '✓ Ready', answering: '→ Answering',
   connecting: '~ Connecting', verifying: '~ Verifying', limited: '! Limited', error: '× Error',
@@ -109,7 +120,21 @@ export function renderDashboard(snapshot: PoolSnapshot, options: DashboardRender
       else line += (line ? ' · ' : '') + piece;
     }
     add(line);
-    add(chalk.gray(fit(`${snapshot.activeRequests} request${snapshot.activeRequests === 1 ? '' : 's'} active`, columns)));
+    const activeLabel = `${snapshot.activeRequests} request${snapshot.activeRequests === 1 ? '' : 's'} active`;
+    const poolState = snapshot.poolState;
+    if (poolState === 'globally_exhausted') {
+      const reset = snapshot.pool?.earliestResetAt && snapshot.pool.earliestResetAt > now
+        ? ` · next reset in ${countdown(snapshot.pool.earliestResetAt, now)}`
+        : '';
+      add(chalk.red(fit(`× GLOBALLY EXHAUSTED${reset} · run usegrunt setup`, columns)));
+    } else if (poolState && poolState !== 'idle' && poolState !== 'working') {
+      const tag = poolStateLabels[poolState];
+      const painted = poolState === 'transient_error' ? chalk.red(tag) : chalk.yellow(tag);
+      const plain = `${activeLabel} · ${tag}`;
+      add(width(plain) <= columns ? chalk.gray(`${activeLabel} · `) + painted : chalk.gray(fit(plain, columns)));
+    } else {
+      add(chalk.gray(fit(activeLabel, columns)));
+    }
   }
   add();
   const wide = columns >= 72, mid = columns >= 48;
@@ -120,9 +145,11 @@ export function renderDashboard(snapshot: PoolSnapshot, options: DashboardRender
   // Keep source selection visible even in short split panes.
   const hasApproval = !offline && approvals.size > 0;
   const hasHidden = !options.showDisabled && all.some(source => source.state === 'disabled');
-  const maintenance = options.details ? visible[selectedIndex]?.maintenance : undefined;
+  const selectedDetails = options.details ? visible[selectedIndex] : undefined;
+  const maintenance = selectedDetails?.maintenance;
   const maintenanceLines = maintenance ? 2 + (maintenance.lastCheckedAt !== undefined ? 1 : 0) : 0;
-  const reserved = 4 + (hasApproval ? 2 : 0) + (hasHidden ? 1 : 0) + (options.details ? 7 + maintenanceLines : 0);
+  const causeLines = selectedDetails?.failureCause && !offline ? 1 : 0;
+  const reserved = 4 + (hasApproval ? 2 : 0) + (hasHidden ? 1 : 0) + (options.details ? 7 + maintenanceLines + causeLines : 0);
   let rowLimit = Math.max(1, (options.height ?? 100) - lines.length - reserved);
   if (rowLimit < visible.length) rowLimit = Math.max(1, rowLimit - 1);
   const start = Math.max(0, selectedIndex - rowLimit + 1), rows = visible.slice(start, start + rowLimit);
@@ -143,6 +170,10 @@ export function renderDashboard(snapshot: PoolSnapshot, options: DashboardRender
     add(); add(chalk.bold(fit(names[selected.id] ?? selected.id, columns)));
     add(fit(`Model: ${selected.model ?? 'Not observed'}`, columns));
     if (selected.detail && !offline) add(chalk.gray(fit(selected.detail, columns)));
+    if (selected.failureCause && !offline) {
+      const http = selected.httpStatus !== undefined ? ` (HTTP ${selected.httpStatus})` : '';
+      add(chalk.yellow(fit(`Cause: ${selected.failureCause}${http}`, columns)));
+    }
     if (selected.lastSuccessAt) add(chalk.gray(fit(`Last success: ${new Date(selected.lastSuccessAt).toISOString()}`, columns)));
     if (selected.retryAt && !offline) add(chalk.yellow(fit(`Retry in ${countdown(selected.retryAt, now)} (reported or routing cooldown)`, columns)));
     if (maintenance) {
@@ -213,6 +244,8 @@ export function parseStatus(value: unknown): PoolSnapshot {
     const window = source.quotaWindow as { startedAt?: unknown; resetAt?: unknown } | null | undefined;
     if (number(window?.startedAt) && number(window?.resetAt) && window.resetAt > window.startedAt
       && window.resetAt - window.startedAt <= 31 * 86400000) result.quotaWindow = { startedAt: window.startedAt, resetAt: window.resetAt };
+    const observed = observedQuota(source.quotaObserved);
+    if (observed) result.quotaObserved = observed;
     if (source.maintenance !== undefined) result.maintenance = parseMaintenance(source.maintenance);
     if (source.modelKind !== undefined) {
       if (source.modelKind !== 'registry') throw new Error('Invalid local source status');
@@ -222,6 +255,26 @@ export function parseStatus(value: unknown): PoolSnapshot {
       if (typeof source.errorCode !== 'string' || !errorCodes.has(source.errorCode)) throw new Error('Invalid local source status');
       result.errorCode = source.errorCode as NonNullable<SourceSnapshot['errorCode']>;
     }
+    if (source.failureCause !== undefined) {
+      if (typeof source.failureCause !== 'string' || !providerFailureCauses.has(source.failureCause as ProviderFailureCause)) throw new Error('Invalid local source status');
+      result.failureCause = source.failureCause as ProviderFailureCause;
+    }
+    if (source.httpStatus !== undefined) {
+      if (!number(source.httpStatus) || !Number.isInteger(source.httpStatus) || source.httpStatus < 100 || source.httpStatus > 599) throw new Error('Invalid local source status');
+      result.httpStatus = source.httpStatus;
+    }
+    if (source.routable !== undefined) {
+      if (typeof source.routable !== 'boolean') throw new Error('Invalid local source status');
+      result.routable = source.routable;
+    }
+    if (source.probeFresh !== undefined) {
+      if (typeof source.probeFresh !== 'boolean') throw new Error('Invalid local source status');
+      result.probeFresh = source.probeFresh;
+    }
+    if (source.checkedAgoSeconds !== undefined) {
+      if (!number(source.checkedAgoSeconds) || !Number.isInteger(source.checkedAgoSeconds)) throw new Error('Invalid local source status');
+      result.checkedAgoSeconds = source.checkedAgoSeconds;
+    }
     for (const key of ['model', 'detail'] as const) {
       if (source[key] !== undefined) { if (typeof source[key] !== 'string' || source[key].length > 512) throw new Error('Invalid local source status'); result[key] = safe(source[key]); }
     }
@@ -230,7 +283,39 @@ export function parseStatus(value: unknown): PoolSnapshot {
     }
     return result;
   });
-  return { version: 1, updatedAt: item.updatedAt, activeRequests: item.activeRequests, sources };
+  let poolState: PoolState | undefined;
+  if (item.poolState !== undefined) {
+    if (typeof item.poolState !== 'string' || !poolStates.has(item.poolState as PoolState)) throw new Error('Invalid local status');
+    poolState = item.poolState as PoolState;
+  }
+  let pool: PoolStateInfo | undefined;
+  if (item.pool !== undefined) {
+    if (!item.pool || typeof item.pool !== 'object' || Array.isArray(item.pool)) throw new Error('Invalid local status');
+    const rawPool = item.pool as Record<string, unknown>;
+    if (typeof rawPool.state !== 'string' || !poolStates.has(rawPool.state as PoolState)
+      || typeof rawPool.detail !== 'string' || rawPool.detail.length > 512
+      || !number(rawPool.exhaustedCount) || !number(rawPool.readyCount)
+      || !number(rawPool.unconfiguredCount) || !number(rawPool.errorCount)) throw new Error('Invalid local status');
+    pool = {
+      state: rawPool.state as PoolState,
+      detail: safe(rawPool.detail),
+      exhaustedCount: rawPool.exhaustedCount,
+      readyCount: rawPool.readyCount,
+      unconfiguredCount: rawPool.unconfiguredCount,
+      errorCount: rawPool.errorCount
+    };
+    if (rawPool.earliestResetAt !== undefined) {
+      if (!number(rawPool.earliestResetAt) || rawPool.earliestResetAt > 8640000000000000) throw new Error('Invalid local status');
+      pool.earliestResetAt = rawPool.earliestResetAt;
+    }
+    for (const key of ['switchingFrom', 'switchingTo'] as const) {
+      if (rawPool[key] !== undefined) {
+        if (typeof rawPool[key] !== 'string' || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(rawPool[key])) throw new Error('Invalid local status');
+        pool[key] = rawPool[key];
+      }
+    }
+  }
+  return { version: 1, updatedAt: item.updatedAt, ...(poolState ? { poolState } : {}), ...(pool ? { pool } : {}), activeRequests: item.activeRequests, sources };
 }
 export async function fetchStatus(options: { port: number; fetcher?: typeof fetch; signal?: AbortSignal }): Promise<PoolSnapshot> {
   if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65535) throw new Error('Invalid Grunt port');

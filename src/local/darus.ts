@@ -7,8 +7,10 @@ import { readPromotionalStream } from './promotional-api.js';
 import { readPrivateProviderGrant, validateProviderGrant } from './provider-grant.js';
 import { nousQuotaDelay, readQuotaError } from './quota-timing.js';
 import { MetadataFlights } from './metadata-flight.js';
+import { classifyHttpFailure } from './provider-error.js';
 import { lengthLimited, truncatedCompletion, withObservedEnding, SourceError } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
+import type { ObservedQuota } from './quota-policy.js';
 
 export const DARUS_MODEL = 'darus/deepseek-v4.1-flash-1017-FREE';
 export const DARUS_HOST = 'gateway.darusalfatah.id';
@@ -45,9 +47,11 @@ export class Darus implements Source {
   private readonly shutdown = new AbortController();
   private readonly metadata = new MetadataFlights();
   private window: { startedAt: number; resetAt: number } | undefined;
+  private observed: ObservedQuota | undefined;
   constructor(private options: { directory?: string; fetcher?: typeof fetch; now?: () => number; loadGrant?: () => Promise<FreeApiGrant> } = {}) {}
   private get now() { return (this.options.now ?? Date.now)(); }
   quotaWindow() { return this.window ? { ...this.window } : undefined; }
+  quotaObserved() { return this.observed ? { ...this.observed } : undefined; }
 
   private async freeGrant(caller?: AbortSignal) {
     const signal = AbortSignal.any([this.shutdown.signal, ...(caller ? [caller] : [])]);
@@ -85,6 +89,7 @@ export class Darus implements Source {
       || !count(status.used) || !count(status.remaining) || status.used > status.allowance
       || status.remaining !== status.allowance - status.used) return;
     this.window = { startedAt, resetAt: startedAt + dayMs };
+    this.observed = { unit: 'tokens', limit: status.allowance as number, used: status.used as number, remaining: status.remaining as number, observedAt: now, source: 'provider_api' };
     if (!status.remaining) throw new SourceError('quota', 'Darus daily free allowance exhausted', Math.ceil((startedAt + dayMs - now) / 1000));
     return { grant, day, remaining: status.remaining };
   }
@@ -122,8 +127,13 @@ export class Darus implements Source {
       });
       if (!response.ok) {
         const retry = nousQuotaDelay(response.headers, await readQuotaError(response), this.now);
-        throw new SourceError(response.status === 401 ? 'logged_out' : [402, 429].includes(response.status) ? 'quota' : response.status === 403 ? 'refused' : 'upstream',
-          `Darus returned HTTP ${response.status}`, retry, undefined, { httpStatus: response.status, transport: 'http', httpMethod: 'POST', endpointLabel: 'chat.completions' });
+        throw classifyHttpFailure({
+          source: 'Darus',
+          status: response.status,
+          ...(retry === undefined ? {} : { retryAfter: retry }),
+          httpMethod: 'POST',
+          endpointLabel: 'chat.completions'
+        });
       }
       if (response.headers.has('x-darus-model-failover')) {
         await response.body?.cancel();

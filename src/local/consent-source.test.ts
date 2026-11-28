@@ -6,6 +6,7 @@ import { RegistrySource } from './registry-source.js';
 import { ConsentSource } from './consent-source.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 import { configure } from './main.js';
+import { RefusalSource } from './provider-refusal.js';
 import type { ModelRequest } from './source.js';
 
 const directories: string[] = [];
@@ -34,7 +35,8 @@ it.each(['freebuff', 'opencode', 'kilo'])('gates %s before consulting installed 
 
 it('guards explicit vetted adapters while preserving a Codex source', async () => {
   const sources = configure({ GRUNT_CONFIG_DIR: await directory(), GRUNT_SOURCES: 'freebuff,apinex,opencode,kilo,codex,zro' });
-  expect(sources.sources.filter(source => source instanceof RegistrySource && source.source instanceof ConsentSource).map(source => source.id)).toEqual(['opencode', 'kilo']);
+  expect(sources.sources.filter(source => source instanceof RegistrySource && source.source instanceof RefusalSource
+    && source.source.source instanceof ConsentSource).map(source => source.id)).toEqual(['opencode', 'kilo']);
   expect(sources.sources.map(source => source.id)).toEqual(['opencode', 'kilo', 'codex', 'zro']);
   for (const source of sources.sources.filter(source => ['opencode', 'kilo'].includes(source.id))) expect(await source.available()).toBe(false);
   await sources.close();

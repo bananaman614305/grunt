@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "published": "2026-11-27T22:38:00.000Z",
+  "published": "2026-11-28T03:05:00.000Z",
   "adapters": [
     {
       "id": "opencode",
@@ -142,7 +142,8 @@
       "install": "builtin:nous",
       "signup": "https://portal.nousresearch.com/login",
       "model": "qwen/qwen4-max:free",
-      "hints": "On portal.nousresearch.com/login type the Squire email in 'Email' and press 'Continue with email'. There is no separate signup page and no password. On the next page type the 6-digit code into 'Enter the 6-digit code' (from no-reply@auth-mail.nousresearch.com, subject 'Sign up for Nous Research', valid 10 minutes). If it does not arrive, press 'Resend code (30s)' and read the inbox again. The page text says 'By logging in I agree to the Terms & Privacy Policy'; there is no terms checkbox, name, phone or onboarding. The account lands on /orgs/.../billing at $0.00. Leave the optional 'Use your ChatGPT plan' banner unused. On API Keys the page says 'You need available funds to create or use API keys'. The Free Hermes plan is free models only; API keys always bill credits (Stripe top-up, minimum +$10). The free tier does not give a usable API key. Stop here. Never press a top-up or billing control, never add a card, and never buy credits. The shipped model id qwen/qwen4-max:free is paid. Current free model ids on /models are meituan/longcat-2.5:free, stepfun/step-3.7-flash:free, tencent/hy4-flash:free and upstage/solar-mini4:free."
+      "hints": "On portal.nousresearch.com/login type the Squire email in 'Email' and press 'Continue with email'. There is no separate signup page and no password. On the next page type the 6-digit code into 'Enter the 6-digit code' (from no-reply@auth-mail.nousresearch.com, subject 'Sign up for Nous Research', valid 10 minutes). If it does not arrive, press 'Resend code (30s)' and read the inbox again. The page text says 'By logging in I agree to the Terms & Privacy Policy'; there is no terms checkbox, name, phone or onboarding. The account lands on /orgs/.../billing at $0.00. Leave the optional 'Use your ChatGPT plan' banner unused. On API Keys the page says 'You need available funds to create or use API keys'. The Free Hermes plan is free models only; API keys always bill credits (Stripe top-up, minimum +$10). The free tier does not give a usable API key. Stop here. Never press a top-up or billing control, never add a card, and never buy credits. The shipped model id qwen/qwen4-max:free is paid. Current free model ids on /models are meituan/longcat-2.5:free, stepfun/step-3.7-flash:free, tencent/hy4-flash:free and upstage/solar-mini4:free.",
+      "status": "inactive"
     },
     {
       "id": "kenari",

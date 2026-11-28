@@ -151,7 +151,7 @@ it('probes the most promising sources first: recently positive, then never check
   expect(order).toEqual(['s5', 's2', 's3', 's6']);
 });
 
-it('reports the age of the last check and whether routing could admit the source now, without changing state', async () => {
+it('reports the age of the last check and whether routing would consider the source now, without changing state', async () => {
   let clock = 5_000_000;
   const items = [make('kilo'), make('livekit')];
   const sources = new Sources(items, { registry: () => ({ ...bundledRegistry, adapters: items.map(item => ({ ...bundledRegistry.adapters.find(a => a.id === item.id)!, weight: 1 })) }), random: () => 0, now: () => clock });
@@ -161,9 +161,23 @@ it('reports the age of the last check and whether routing could admit the source
     expect(row('kilo').routable).toBe(false);
     await sources.complete(ask('warm', false), AbortSignal.timeout(2000));
     const { state } = row('kilo');
-    expect(row('kilo')).toMatchObject({ checkedAgoSeconds: 0, routable: true });
+    expect(row('kilo')).toMatchObject({ checkedAgoSeconds: 0, routable: true, probeFresh: true });
     clock += 31_000;
-    expect(row('kilo')).toMatchObject({ checkedAgoSeconds: 31, routable: false, state });
-    expect(row('livekit').routable).toBe(false);
+    expect(row('kilo')).toMatchObject({ checkedAgoSeconds: 31, routable: true, probeFresh: false, state });
+    expect(row('livekit')).toMatchObject({ routable: true, probeFresh: false });
   } finally { await sources.close(); }
+});
+
+it('marks a ready source not routable while a fresh negative check bars it', async () => {
+  let clock = 5_000_000, open = true;
+  const status = new SourceStatus(['s1'], () => clock);
+  const source = make('s1', vi.fn(async () => open));
+  const row = () => status.snapshot({ ids: ['s1'], disabled: new Set(), pending: new Set(), verifying: new Set(), preparing: new Set() }).sources[0]!;
+  await status.complete(source, ask('warm', false), AbortSignal.timeout(2000));
+  clock += 60_000;
+  expect(row()).toMatchObject({ state: 'ready', routable: true });
+  open = false; await status.available(source);
+  expect(row()).toMatchObject({ routable: false });
+  clock += 31_000;
+  expect(row().routable).toBe(false); // state is now unavailable until a positive check
 });

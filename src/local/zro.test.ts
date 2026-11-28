@@ -12,6 +12,7 @@ import { createLocalApp } from './api.js';
 import { configure } from './main.js';
 import { bundledRegistry } from '../registry.js';
 import { recordDataSharingConsent } from './data-sharing.js';
+import { RefusalSource } from './provider-refusal.js';
 import { setupFallbacks } from './fallback-setup.js';
 
 const directories: string[] = [];
@@ -24,7 +25,9 @@ const response = (model = ZRO_DEEPSEEK) => Response.json({ model, choices: [{ me
 it('ships Zro by default and keeps unvetted NVIDIA out of fresh signup', async () => {
   expect(bundledRegistry.adapters.map(a => a.id)).toContain('zro');
   expect(bundledRegistry.adapters.map(a => a.id)).not.toContain('nvidia');
-  expect(configure({}).sources.find(s => s.id === 'zro')).toBeInstanceOf(Zro);
+  const shipped = configure({}).sources.find(s => s.id === 'zro');
+  expect(shipped).toBeInstanceOf(RefusalSource);
+  expect((shipped as RefusalSource).source).toBeInstanceOf(Zro);
   const calls: string[] = [];
   const squire = { signup: vi.fn(), runs: { start: vi.fn(), get: vi.fn() }, credentials: { list: vi.fn(), grant: vi.fn() } };
   await setupFallbacks({ directory: await directory(), adapters: ['zro'], squire, run: async () => {}, notify: () => {}, setupProvider: async (_notify, ids) => { calls.push(...ids); return {}; } });
@@ -75,7 +78,7 @@ it('opens Zro in the browser only after the provider rejects the vaulted key, th
   const path = await directory();
   let captured = false;
   const squire = vaultedZro(async () => { captured = true; return { run: { id: 'zro', state: 'completed' }, decision: 'silent' }; });
-  vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => captured ? response() : paused()));
+  vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => captured ? response() : new Response(null, { status: 401 })));
   const lines: string[] = [];
   await setup(line => lines.push(line), ['zro'], { squire, directory: path });
   expect(squire.runs.start).toHaveBeenCalledOnce();
@@ -115,7 +118,7 @@ it('checks Zro availability from local grant presence without live inference, an
 it('stops Zro setup when the browser refuses after the vaulted key was rejected', async () => {
   const path = await directory();
   const squire = vaultedZro(async () => ({ run: { id: 'zro', state: 'failed' }, decision: 'reject', reason: 'Paid plan active' }));
-  vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => paused()));
+  vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => new Response(null, { status: 401 })));
   await expect(setup(() => {}, ['zro'], { squire, directory: path })).rejects.toThrow('refused');
   expect(squire.runs.start).toHaveBeenCalledOnce();
   await expect(stat(join(path, 'zro.json'))).rejects.toMatchObject({ code: 'ENOENT' });
@@ -123,7 +126,7 @@ it('stops Zro setup when the browser refuses after the vaulted key was rejected'
 
 it.each([
   { status: 200, drives: 0 },
-  { status: 403, drives: 1 }
+  { status: 401, drives: 1 }
 ])('tests the vaulted Token Harbor key first and opens the browser only on a rejection (HTTP $status)', async ({ status, drives }) => {
   const path = await directory(); await recordDataSharingConsent(path, ['tokenharbor']);
   let captured = false;
@@ -278,7 +281,10 @@ it('learns the weekly reset after an earlier short request cooldown expires', as
   try {
     expect((await send('First synthetic request')).headers.get('retry-after')).toBe('30');
     now += 30000;
-    expect((await send('Unrelated synthetic request')).headers.get('retry-after')).toBe('86370');
+    const weekly = await send('Unrelated synthetic request');
+    expect(weekly.status).toBe(402);
+    expect(weekly.headers.get('x-should-retry')).toBe('false');
+    expect(weekly.headers.get('retry-after')).toBeNull();
     expect(sources.status().sources[0]).toMatchObject({ state: 'limited', retryAt: now + 86370000 });
     expect(fetcher).toHaveBeenCalledTimes(4);
   } finally { await sources.close(); }
