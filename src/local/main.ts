@@ -172,13 +172,14 @@ export function start(env = process.env) {
   // Foreground setup ends at its first working route and leaves the remaining
   // signups to the route pass, which cannot start while setup holds its session.
   let foreground = false;
+  let setupReleased = false;
   // Serialize snapshots so an older filesystem read cannot overwrite a newer
   // provider release while requests and registry checks run concurrently.
   let sessionRead: Promise<unknown> = Promise.resolve();
-  const refreshSession = () => {
+  const refreshSession = (passive = false) => {
     const result = sessionRead.then(async () => {
       const session = await readSetupSession(directory);
-      const released = foreground && !session?.owned.size;
+      setupReleased ||= foreground && !session?.owned.size;
       foreground = Boolean(session?.owned.size);
       // Setup owns the Kilo route while it runs; afterwards keep the verified one.
       anonymousKilo = session?.owned.has('kilo') ? session.anonymousKilo === true : await readKiloRoute(directory) === 'anonymous';
@@ -188,7 +189,11 @@ export function start(env = process.env) {
       for (const id of session?.verifying ?? []) if (sources.pending.has(id)) sources.verifying.add(id);
       reconcile();
       // Setup just finished: send its queued setup_completed event now.
-      if (released) { triggerRecovery(); void telemetry.exchange(); }
+      if (setupReleased && !foreground && !passive) {
+        setupReleased = false;
+        triggerRecovery();
+        void telemetry.exchange();
+      }
       return session;
     });
     sessionRead = result.catch(() => {});
@@ -267,7 +272,7 @@ export function start(env = process.env) {
   const consent = sync.load().then(() => refreshDataSharingConsent(directory, env, registryDataSharingPolicies(registry))).then(renewed => {
     if (renewed.length) console.error(`Data sharing on: ${renewed.join(', ')}. Off: ${DATA_SHARING_OPT_OUT}`);
   }).catch(() => console.error('Data-sharing approvals could not be renewed; rerun usegrunt setup'));
-  const ready = Promise.all([diagnosticReady, routingHistory.ready, consent]).then(refreshSession);
+  const ready = Promise.all([diagnosticReady, routingHistory.ready, consent]).then(() => refreshSession());
   let readiness: NonNullable<ObservationRuntime['readiness']> = 'starting';
   void ready.then(() => { readiness = 'ready'; }, () => { readiness = 'failed'; });
   void ready.then(() => sync.start()).catch(() => console.error('Registry sync could not start; using the bundled list'));
@@ -281,8 +286,16 @@ export function start(env = process.env) {
       registry: env.GRUNT_REGISTRY_URL ? 'custom' : 'bundled_and_public', redactedSettings
     } }) });
   const server = serve({ fetch: async request => {
-    // Observation remains available during startup and while session refresh is stalled.
-    if (request.method !== 'GET' || new URL(request.url).pathname !== OBSERVATION_PATH) { await ready; await refreshSession(); }
+    const path = new URL(request.url).pathname;
+    // Observation stays available during startup and stalled session refreshes.
+    if (request.method !== 'GET' || path !== OBSERVATION_PATH) {
+      await ready;
+      // Status still shows setup progress without starting the next acquisition pass.
+      if (request.method !== 'GET' || path !== '/v1/diagnostics/metrics') {
+        const passive = request.method === 'GET' && path === '/v1/status' && request.headers.get('X-Grunt-Setup-Complete') !== '1';
+        await refreshSession(passive);
+      }
+    }
     return app.fetch(request);
   }, hostname: HOST, port }, () => console.error(`grunt model API: http://${HOST}:${port}/v1`));
   let closing = false;

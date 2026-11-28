@@ -317,10 +317,12 @@ export function parseStatus(value: unknown): PoolSnapshot {
   }
   return { version: 1, updatedAt: item.updatedAt, ...(poolState ? { poolState } : {}), ...(pool ? { pool } : {}), activeRequests: item.activeRequests, sources };
 }
-export async function fetchStatus(options: { port: number; fetcher?: typeof fetch; signal?: AbortSignal }): Promise<PoolSnapshot> {
+export async function fetchStatus(options: { port: number; fetcher?: typeof fetch; signal?: AbortSignal; setupComplete?: boolean }): Promise<PoolSnapshot> {
   if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65535) throw new Error('Invalid Grunt port');
   const signal = AbortSignal.any([AbortSignal.timeout(3000), ...(options.signal ? [options.signal] : [])]);
-  const response = await (options.fetcher ?? fetch)(`http://127.0.0.1:${options.port}/v1/status`, { signal, redirect: 'error', headers: { Accept: 'application/json' } });
+  const headers: Record<string, string> = { Accept: 'application/json' };
+  if (options.setupComplete) headers['X-Grunt-Setup-Complete'] = '1';
+  const response = await (options.fetcher ?? fetch)(`http://127.0.0.1:${options.port}/v1/status`, { signal, redirect: 'error', headers });
   if (!response.ok || !response.body) throw new Error('Local Grunt status unavailable');
   const reader = response.body.getReader(), chunks: Uint8Array[] = [];
   let length = 0;
@@ -469,8 +471,17 @@ export async function statusCommand(args: string[], options: StatusCommandOption
   let snapshot: PoolSnapshot;
   try { snapshot = await fetchStatus({ port, ...(options.fetcher ? { fetcher: options.fetcher } : {}), ...(options.signal ? { signal: options.signal } : {}) }); }
   catch { throw new Error(`Grunt status unavailable on 127.0.0.1:${port}. Run usegrunt setup if the daemon is stopped.`); }
-  output.write((json ? JSON.stringify(snapshot, null, 2) : renderDashboard(snapshot, { width: output.columns ?? 80, color: output.isTTY === true && env.NO_COLOR === undefined && env.TERM !== 'dumb', interactive: false })) + '\n');
-  if (json || !options.harnesses) return;
+  if (json) {
+    output.write(JSON.stringify(snapshot, null, 2) + '\n');
+    return;
+  }
+  if (watch) {
+    output.write(renderDashboard(snapshot, { width: output.columns ?? 80, color: output.isTTY === true && env.NO_COLOR === undefined && env.TERM !== 'dumb', interactive: false }) + '\n');
+  } else {
+    const { statusReport } = await import('./status-report.js');
+    output.write(await statusReport(snapshot, port, options.fetcher ?? fetch, options.signal) + '\n');
+  }
+  if (!options.harnesses) return;
   const { configuredHarnesses, launchLines } = await import('./harnesses.js');
   const lines = launchLines(await configuredHarnesses([...options.harnesses], env.PATH), port);
   if (lines.length) output.write(lines.join('\n') + '\n');

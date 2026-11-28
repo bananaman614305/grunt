@@ -524,10 +524,9 @@ export async function smokeTest(port: number, signal: AbortSignal) {
     if (!result.choices?.[0]?.message?.content?.trim()) throw new Error('grunt printed no answer');
   } finally { await rm(directory, { recursive: true, force: true }); }
 }
-// The daemon re-reads the setup session on every request. One status read after
-// setup releases it starts the daemon's route pass for the remaining signups.
+// Setup explicitly hands off the remaining signups after releasing its session.
 export async function resumeBackground(port: number) {
-  await fetchStatus({ port }).catch(() => {});
+  await fetchStatus({ port, setupComplete: true }).catch(() => {});
 }
 type HarnessOptions = { harnesses?: Harness[]; choose?: (found: Harness[]) => Promise<Harness[]>; run?: typeof runHarness; table?: SetupTable };
 type HarnessPlan = (() => Promise<Harness[]>) & { discoverLater?: true };

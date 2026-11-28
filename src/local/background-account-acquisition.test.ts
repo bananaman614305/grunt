@@ -82,7 +82,7 @@ it.each([
   expect(daemon.serverClose).toHaveBeenCalledOnce(); expect(daemon.syncClose).toHaveBeenCalledOnce();
 });
 
-it('starts the route pass once foreground setup releases its session, and only then', async () => {
+it('keeps status passive and starts the route pass once setup hands off its released session', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'grunt-account-release-')); directories.push(directory);
   const { beginSetupSession } = await import('./setup-session.js');
   // Setup claims its session before it starts the daemon.
@@ -97,16 +97,24 @@ it('starts the route pass once foreground setup releases its session, and only t
   try {
     await vi.waitFor(() => expect(daemon.started).toHaveBeenCalledOnce(), WAIT);
     const { fetch } = daemon.serve.mock.calls[0]![0] as { fetch: (request: Request) => Promise<Response> };
-    const status = async () => (await fetch(new Request('http://127.0.0.1:18795/v1/status'))).json() as Promise<{ sources: { id: string; state: string }[] }>;
+    const base = 'http://127.0.0.1:18795';
+    const status = async () => (await fetch(new Request(`${base}/v1/status`))).json() as Promise<{ sources: { id: string; state: string }[] }>;
     // The startup pass runs into the held session; a status read while setup holds it starts nothing.
     expect(trigger).toHaveBeenCalledOnce();
     expect((await status()).sources).toContainEqual(expect.objectContaining({ id: 'pollinations', state: 'connecting' }));
     expect(trigger).toHaveBeenCalledOnce();
     await session.close();
     await status();
+    await (await fetch(new Request(`${base}/v1/observe?limit=0`))).json();
+    await (await fetch(new Request(`${base}/v1/diagnostics/metrics?since=0`))).json();
+    expect(trigger).toHaveBeenCalledOnce();
+    const { resumeBackground } = await import('./wizard.js');
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => fetch(new Request(input, init)));
+    await resumeBackground(18795);
     expect(trigger).toHaveBeenCalledTimes(2);
     // Later reads find no session either way and start nothing more.
     await status();
+    await resumeBackground(18795);
     expect(trigger).toHaveBeenCalledTimes(2);
   } finally {
     await session.close();

@@ -16,12 +16,20 @@ afterEach(async () => {
   })));
 });
 
-async function daemon(body: unknown, status = 200) {
+async function daemon(body: unknown, status = 200, diagnostics: {
+  observe?: unknown;
+  metrics?: (url: URL) => unknown;
+} = {}) {
   const paths: string[] = [];
   const server = createServer((request, response) => {
     paths.push(`${request.method} ${request.url}`);
-    response.writeHead(status, { 'Content-Type': 'application/json' });
-    response.end(JSON.stringify(body));
+    const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+    const reply = url.pathname === '/v1/status' ? body
+      : url.pathname === '/v1/observe' ? diagnostics.observe
+      : url.pathname === '/v1/diagnostics/metrics' ? diagnostics.metrics?.(url)
+      : undefined;
+    response.writeHead(reply === undefined ? 404 : status, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify(reply ?? {}));
   });
   servers.push(server);
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -55,6 +63,111 @@ it('prints a single plain snapshot for a piped watch command', async () => {
   expect(stdout.toLowerCase()).toContain('kilo');
   expect(stdout.toLowerCase()).toContain('answering');
   expect(stdout).not.toContain('\u001b');
+  expect(paths).toEqual(['GET /v1/status']);
+});
+
+it('reports concurrent live routes, measured zero, estimates, and separate cooldown and reset times', async () => {
+  const now = Date.now();
+  const retryAt = now + 60_000;
+  const resetAt = now + 600_000;
+  const iso = (at: number) => new Date(at).toISOString();
+  const snapshot = {
+    version: 1, updatedAt: now, activeRequests: 2, poolState: 'working',
+    sources: [
+      { id: 'kilo', state: 'answering', active: 1, model: 'Free model rotation' },
+      { id: 'perch', state: 'answering', active: 1 },
+      { id: 'millionseek', state: 'limited', active: 0, lastSuccessAt: now - 2000,
+        quotaWindow: { startedAt: now - 85400000, resetAt },
+        quotaObserved: { unit: 'tokens', used: 1_000, remaining: 0, limit: 1_000, source: 'provider_header', observedAt: now - 1000 } },
+      { id: 'kenari', state: 'ready', active: 0 },
+      { id: 'zro', state: 'unavailable', active: 0, detail: 'private diagnostic text' },
+      { id: 'apinex', state: 'disabled', active: 0 }
+    ]
+  };
+  const observe = {
+    version: 1,
+    inFlight: [
+      { kind: 'user', state: 'waiting_for_output', caller: 'private caller', attempts: [
+        { provider: 'failed-route', model: 'old-model', endedAt: now },
+        { provider: 'kilo', model: 'particle/flash:free', endedAt: null }
+      ] },
+      { kind: 'user', state: 'receiving_output', attempts: [{ provider: 'perch', model: 'perch-flash', endedAt: null }] },
+      { kind: 'user', state: 'queued', attempts: [{ provider: 'queued-route', model: 'queued-model', endedAt: null }] },
+      { kind: 'maintenance', state: 'waiting_for_output', attempts: [{ provider: 'health-check', model: 'probe-model', endedAt: null }] }
+    ],
+    routes: [{ id: 'millionseek', cooldown: { until: retryAt, reason: 'quota' } }]
+  };
+  const { port, paths } = await daemon(snapshot, 200, { observe, metrics: url => {
+    const since = Number(url.searchParams.get('since'));
+    return {
+      version: 1, window: { until: Number(url.searchParams.get('until')), alignedSince: since },
+      coverage: { available: true, startedAt: since - 1, deduplicationFloor: 0, droppedEvents: 0, droppedLateEvents: 0, overflowEvents: 0 },
+      limits: { retentionDays: 30 },
+      buckets: [{ hour: since, dimensions: { type: 'attempt.finish', source: 'kenari' }, count: 7,
+        inputTokens: 0, outputTokens: 0, unknownInput: 7, unknownOutput: 7 }]
+    };
+  } });
+
+  const { stdout } = await cli(['status', '--port', String(port)]);
+
+  expect(stdout).toContain('Serving now: kilo / particle/flash:free, perch / perch-flash');
+  expect(stdout).toContain(`Last successful route: millionseek at ${iso(now - 2000)}`);
+  expect(stdout).toContain('Used 1000 tokens · remaining 0 tokens · limit 1000 tokens (measured via provider header');
+  expect(stdout).toContain(`quota reset ${iso(resetAt)} · cooldown ${iso(retryAt)}`);
+  expect(stdout).toContain('Used 7 requests · remaining 43 requests · limit 50 requests (estimate from local usage, day/account)');
+  expect(stdout).toContain('zro · unavailable\n    Used unknown · remaining unknown · quota reset unknown');
+  expect(stdout).toContain('apinex · disabled');
+  expect(stdout).not.toMatch(/private|failed-route|queued-route|health-check|\u001b/);
+  expect(paths).toHaveLength(3);
+  expect(paths).toEqual(expect.arrayContaining(['GET /v1/status', 'GET /v1/observe?limit=0', expect.stringMatching(/^GET \/v1\/diagnostics\/metrics\?since=\d+&until=\d+$/)]));
+});
+
+it('reports idle and keeps the last success separate from the configured model', async () => {
+  const now = Date.now();
+  const { port, paths } = await daemon({ version: 1, updatedAt: now, activeRequests: 0, poolState: 'idle',
+    sources: [{ id: 'zro', state: 'ready', active: 0, model: 'configured-flash', lastSuccessAt: now - 1000,
+      quotaObserved: { unit: 'credits', used: 0, remaining: 2.5, source: 'provider_api', observedAt: now - 1000 } }] },
+  200, { observe: { version: 1, inFlight: [], routes: [] } });
+  const { stdout } = await cli(['status'], { GRUNT_PORT: String(port) });
+  expect(stdout).toContain('Serving now: idle\nLast successful route: zro at ');
+  expect(stdout).toContain('configured model configured-flash');
+  expect(stdout).toContain('Used 0 credits · remaining 2.5 credits (measured via provider API');
+  expect(paths).toEqual(['GET /v1/status', 'GET /v1/observe?limit=0']);
+});
+
+it('keeps confirmed status when observation or quota diagnostics are absent or incomplete', async () => {
+  const now = Date.now();
+  const snapshot = { version: 1, updatedAt: now, activeRequests: 1, sources: [
+    { id: 'kenari', state: 'answering', active: 1, model: 'configured-model', lastSuccessAt: now - 1000 },
+    { id: 'pollinations', state: 'ready', active: 0,
+      quotaObserved: { unit: 'credits', remaining: 0, source: 'provider_api', observedAt: now - 1000 } }
+  ] };
+  const olderDaemon = await daemon(snapshot);
+  const partialDaemon = await daemon(snapshot, 200, {
+    observe: { version: 1, inFlight: [{ kind: 'user', state: 'receiving_output', attempts: [
+      { provider: 'kenari', model: 'https://private-endpoint.invalid', endedAt: null }
+    ] }], routes: [] },
+    metrics: url => ({
+      version: 1, window: { until: Number(url.searchParams.get('until')), alignedSince: Number(url.searchParams.get('since')) },
+      coverage: { available: true, startedAt: now, deduplicationFloor: 0, droppedEvents: 0, droppedLateEvents: 0, overflowEvents: 0 },
+      limits: { retentionDays: 30 }, buckets: []
+    })
+  });
+  const [older, partial] = await Promise.all([olderDaemon, partialDaemon].map(({ port }) => cli(['status', '--port', String(port)])));
+  expect(older!.stdout).toContain('Serving now: unknown (live route diagnostics unavailable)');
+  expect(partial!.stdout).toContain('Serving now: kenari / unknown');
+  for (const { stdout } of [older!, partial!]) {
+    expect(stdout).toContain('kenari · answering · 1 active · configured model configured-model\n    Used unknown · remaining unknown');
+    expect(stdout).toContain('Used unknown · remaining 0 credits (measured via provider API');
+    expect(stdout).not.toMatch(/private-endpoint|estimate from local usage/);
+  }
+});
+
+it('reports unreachable status without fetching diagnostics or exposing the response body', async () => {
+  const { port, paths } = await daemon({ error: 'private daemon error' }, 503);
+  await expect(cli(['status', '--port', String(port)])).rejects.toMatchObject({
+    code: 1, stdout: '', stderr: `Grunt status unavailable on 127.0.0.1:${port}. Run usegrunt setup if the daemon is stopped.\n`
+  });
   expect(paths).toEqual(['GET /v1/status']);
 });
 

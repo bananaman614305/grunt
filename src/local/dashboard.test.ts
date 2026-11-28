@@ -170,16 +170,21 @@ it('finds the installed port safely and lets explicit configuration override a b
   await writeFile(hint, '8792\n', { mode: 0o600 });
   const output = new Output(); output.isTTY = false;
   const stub = fetcher(); const env = { GRUNT_CONFIG_DIR: directory };
+  const expectReadsOn = (port: string) => {
+    expect(stub).toHaveBeenCalledWith(`http://127.0.0.1:${port}/v1/status`, expect.anything());
+    expect(new Set(vi.mocked(stub).mock.calls.map(([url]) => new URL(String(url)).port))).toEqual(new Set([port]));
+    vi.mocked(stub).mockClear();
+  };
   await statusCommand([], { env, output, fetcher: stub });
-  expect(stub).toHaveBeenLastCalledWith('http://127.0.0.1:8792/v1/status', expect.anything());
+  expectReadsOn('8792');
   await writeFile(hint, '{bad}');
   await expect(statusCommand([], { env, output, fetcher: stub })).rejects.toThrow('Invalid saved Grunt port');
   await statusCommand(['--port', '8793'], { env, output, fetcher: stub });
-  expect(stub).toHaveBeenLastCalledWith('http://127.0.0.1:8793/v1/status', expect.anything());
+  expectReadsOn('8793');
   await statusCommand([], { env: { ...env, GRUNT_PORT: '8794' }, output, fetcher: stub });
-  expect(stub).toHaveBeenLastCalledWith('http://127.0.0.1:8794/v1/status', expect.anything());
+  expectReadsOn('8794');
   await statusCommand([], { env: { ...env, GRUNT_PORT: '8792' }, output, fetcher: stub });
-  expect(stub).toHaveBeenLastCalledWith('http://127.0.0.1:8792/v1/status', expect.anything());
+  expectReadsOn('8792');
   await writeFile(hint, '8792'); await chmod(hint, 0o644);
   await expect(statusCommand([], { env, output, fetcher: stub })).rejects.toThrow('Invalid saved Grunt port');
   await rm(hint); await symlink('/dev/null', hint);
