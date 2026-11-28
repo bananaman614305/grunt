@@ -19,7 +19,7 @@ import { bundledRegistry, disabledAdapters, isDeclarativeAdapter, knownAdapters,
 import type { Registry } from '../registry.js';
 import { BROWSER_CONCURRENCY } from './parallel.js';
 import { Nvidia, writeNvidiaGrant } from './nvidia.js';
-import { Zro, readZroGrant, writeZroGrant } from './zro.js';
+import { Zro, readZroGrant, readZroReceiptFingerprint, writeZroGrant } from './zro.js';
 import { TokenHarbor, writeTokenHarborGrant } from './tokenharbor.js';
 import { Runcrate, RuncrateVerificationError, readRuncrateGrant, validateRuncrateVerification, verifyRuncrateDirectGrant, verifyRuncrateSquireGrant, writeRuncrateGrant } from './runcrate.js';
 import type { RuncrateGrantContext, RuncrateGrantVerifier } from './runcrate.js';
@@ -54,12 +54,13 @@ import {
   isVaultProvider,
   listVaultEntries,
   providerAllowedRequestOrigins,
+  readVaultEntry,
   readVaultGrant,
   redactVaultSecrets,
   validateDirectOrigin,
   writeVaultEntry
 } from './vault.js';
-import type { VaultProvider } from './vault.js';
+import type { VaultEntry, VaultProvider } from './vault.js';
 import {
   ensureEmbeddedSignupSession,
   guardedSignupChoice,
@@ -1536,23 +1537,32 @@ export async function setup(notify = console.log, providers: string[] = [], opti
       let limited = false, stale = false;
       const isQuota = (error: unknown) => error instanceof SourceError && error.code === 'quota';
       // The daemon accepts zro.json only when it matches the local vault key.
-      // Decide before writing anything: a different vault key is replaced only for a
-      // direct key with explicit vault export opt-in; otherwise the installed key stays.
+      // Setup never writes the vault here. Only a passkey-approved Squire export
+      // replaces the vault key, and it does so before this check, so a candidate
+      // that differs from the vault key was not approved and the installed key stays.
       const install = async (grant: { base_url: string; token: string }) => {
         const vaulted = await readVaultGrant('zro', location).catch(() => undefined);
         if (vaulted && credentialFingerprint(vaulted) !== credentialFingerprint(grant)) {
-          let origin: string | undefined;
-          try { origin = validateDirectOrigin('zro', grant.base_url); } catch { /* Egress grant: the daemon cannot load it beside this vault key. */ }
-          if (!origin || options.exportToVault !== true) {
-            throw new Error('Zro key verified, but the local Grunt vault holds a different zro key; the installed key was kept. Rerun setup with vault export enabled, or review it with usegrunt vault');
-          }
-          await writeVaultEntry('zro', { api_key: grant.token, origin, source: 'squire' }, location);
+          throw new Error('Zro key verified, but the local Grunt vault holds a different zro key; the installed key was kept. Rerun setup with vault export enabled and approve the Squire passkey export, or review it with usegrunt vault');
         }
         await writeZroGrant(grant, location);
         const loaded = await readZroGrant(location).catch(() => undefined);
         if (!loaded || credentialFingerprint(loaded) !== credentialFingerprint(grant)) {
           throw new Error('Zro key verified but the daemon cannot load it; review the zro entry with usegrunt vault');
         }
+      };
+      // A passkey-approved export writes the vault before its key is probed, and a
+      // failed probe deletes that entry. Afterwards, put back the vault entry that
+      // the installed zro.json was verified against.
+      const snapshot = await readVaultEntry('zro', location);
+      const entryFingerprint = (entry?: VaultEntry) => entry && credentialFingerprint({ base_url: entry.origin, token: entry.api_key });
+      const restoreZroVault = async () => {
+        const current = await readVaultEntry('zro', location).catch(() => undefined);
+        const receipt = await readZroReceiptFingerprint(location);
+        if (receipt !== undefined && entryFingerprint(current) === receipt) return;
+        if (entryFingerprint(current) === entryFingerprint(snapshot)) return;
+        if (snapshot) await writeVaultEntry('zro', { api_key: snapshot.api_key, origin: snapshot.origin, source: snapshot.source }, location);
+        else await deleteVaultEntry('zro', location);
       };
       try {
         const result = await setupProviders(squire, {
@@ -1581,7 +1591,10 @@ export async function setup(notify = console.log, providers: string[] = [], opti
         }, { providers: ['zro'], notify, signal: options.signal, directory: location, ...(options.background !== undefined ? { background: options.background } : {}),
           ...(options.exportToVault !== undefined ? { exportToVault: options.exportToVault } : {}) });
         if (result.dropped.length) throw new Error('Zro setup incomplete; rerun usegrunt setup');
-      } finally { await source.close(); }
+      } finally {
+        await source.close();
+        await restoreZroVault();
+      }
       providers = providers.filter(provider => provider !== 'zro');
       if (!providers.length) return {};
     }

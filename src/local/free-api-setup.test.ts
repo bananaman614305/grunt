@@ -9,7 +9,7 @@ import { Zro, readZroGrant, writeZroGrant } from './zro.js';
 import { TokenHarbor } from './tokenharbor.js';
 import { recordDataSharingConsent } from './data-sharing.js';
 import { SourceError } from './source.js';
-import { writeVaultEntry } from './vault.js';
+import { readVaultEntry, writeVaultEntry } from './vault.js';
 import * as mistralSetup from './mistral-vibe-setup.js';
 
 let directory: string;
@@ -419,10 +419,11 @@ async function installLimitedVaultZro() {
   await writeVaultEntry('zro', { api_key: 'vault-limited', origin: ZRO_ORIGIN, source: 'local' }, directory);
   await writeZroGrant({ base_url: ZRO_ORIGIN, token: 'vault-limited' }, directory);
   await expect(readZroGrant(directory)).resolves.toMatchObject({ token: 'vault-limited', base_url: ZRO_ORIGIN });
-  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) =>
-    new Headers(init!.headers).get('authorization') === 'Bearer working'
-      ? Response.json({ model: 'deepseek-v4.1-flash', choices: [{ message: { content: 'ready' } }] })
-      : new Response(null, { status: 402 }));
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+    const authorization = new Headers(init!.headers).get('authorization');
+    if (authorization === 'Bearer working') return Response.json({ model: 'deepseek-v4.1-flash', choices: [{ message: { content: 'ready' } }] });
+    return new Response(null, { status: authorization === 'Bearer rejected' ? 401 : 402 });
+  });
 }
 const zroSquire = (base_url: string) => ({
   credentials: {
@@ -431,12 +432,37 @@ const zroSquire = (base_url: string) => ({
   }, runs: { start: vi.fn(), get: vi.fn() }
 });
 
-it('replaces a quota-limited Zro vault key with explicit vault export opt-in, and the daemon loads the replacement', async () => {
+// Like the real method, a passkey-approved export writes the vault before the key is probed.
+const exportingZroSquire = (exported: 'refused' | 'rejected' | 'working') => ({
+  ...zroSquire(ZRO_ORIGIN),
+  materializeDirectVaultGrant: vi.fn(async (_provider: string, _reference: string, options: { directory?: string } = {}) => {
+    if (exported === 'refused') throw new Error('Could not export zro key to local Grunt vault (passkey approval timed out)');
+    await writeVaultEntry('zro', { api_key: exported, origin: ZRO_ORIGIN, source: 'squire' }, options.directory);
+    return { base_url: ZRO_ORIGIN, token: exported };
+  })
+});
+
+it('replaces a quota-limited Zro vault key with an approved passkey export, and the daemon loads the replacement', async () => {
   await installLimitedVaultZro();
-  const squire = zroSquire(ZRO_ORIGIN);
+  const squire = exportingZroSquire('working');
   await expect(setup(() => {}, ['zro'], { directory, squire, exportToVault: true })).resolves.toEqual({});
+  expect(squire.materializeDirectVaultGrant).toHaveBeenCalledOnce();
   await expect(readZroGrant(directory)).resolves.toMatchObject({ token: 'working' });
+  await expect(readVaultEntry('zro', directory)).resolves.toMatchObject({ api_key: 'working' });
   await expect(new Zro({ directory }).available()).resolves.toBe(true);
+  expect(squire.runs.start).not.toHaveBeenCalled();
+});
+
+it.each([
+  { name: 'passkey export approval fails', exported: 'refused' as const },
+  { name: 'the exported key fails its probe', exported: 'rejected' as const }
+])('keeps the installed quota-limited Zro vault key when $name', async ({ exported }) => {
+  await installLimitedVaultZro();
+  const squire = exportingZroSquire(exported);
+  await expect(setup(() => {}, ['zro'], { directory, squire, exportToVault: true })).rejects.toThrow();
+  expect(squire.materializeDirectVaultGrant).toHaveBeenCalledOnce();
+  await expect(readVaultEntry('zro', directory)).resolves.toMatchObject({ api_key: 'vault-limited', origin: ZRO_ORIGIN });
+  await expect(readZroGrant(directory)).resolves.toMatchObject({ token: 'vault-limited', base_url: ZRO_ORIGIN });
   expect(squire.runs.start).not.toHaveBeenCalled();
 });
 
