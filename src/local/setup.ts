@@ -19,7 +19,7 @@ import { bundledRegistry, disabledAdapters, isDeclarativeAdapter, knownAdapters,
 import type { Registry } from '../registry.js';
 import { BROWSER_CONCURRENCY } from './parallel.js';
 import { Nvidia, writeNvidiaGrant } from './nvidia.js';
-import { Zro, readZroGrant, writeZroGrant } from './zro.js';
+import { Zro, readZroGrant, writeZroGrant, writeZroReplacementReceipt } from './zro.js';
 import { TokenHarbor, writeTokenHarborGrant } from './tokenharbor.js';
 import { Runcrate, RuncrateVerificationError, readRuncrateGrant, validateRuncrateVerification, verifyRuncrateDirectGrant, verifyRuncrateSquireGrant, writeRuncrateGrant } from './runcrate.js';
 import type { RuncrateGrantContext, RuncrateGrantVerifier } from './runcrate.js';
@@ -1567,7 +1567,7 @@ export async function setup(notify = console.log, providers: string[] = [], opti
       // The daemon accepts zro.json only when it matches the local vault key.
       // A passkey-approved Squire export is staged in memory, never written to the
       // vault before its probe, so the daemon keeps the installed key throughout.
-      // Only after it answers is it published: vault entry first, then zro.json.
+      // Only after it answers is it published, in steps the daemon can load after each.
       // Any other candidate that differs from the vault key leaves the installed key.
       const install = async (grant: { base_url: string; token: string }, exported: boolean) => {
         const vaulted = await readVaultGrant('zro', location).catch(() => undefined);
@@ -1575,6 +1575,9 @@ export async function setup(notify = console.log, providers: string[] = [], opti
           if (!exported || vaulted.source === 'env') {
             throw new Error('Zro key verified, but the local Grunt vault holds a different zro key; the installed key was kept. Rerun setup with vault export enabled and approve the Squire passkey export, or review it with usegrunt vault');
           }
+          // Recoverable at every step: the receipt first accepts both keys, then the vault
+          // takes the replacement, then the final receipt names only the replacement.
+          await writeZroReplacementReceipt(grant, vaulted, location);
           await writeVaultEntry('zro', { api_key: grant.token, origin: validateDirectOrigin('zro', grant.base_url), source: 'squire' }, location);
         }
         await writeZroGrant(grant, location);

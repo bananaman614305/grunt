@@ -40,11 +40,16 @@ export async function readZroGrant(location = directory(), env: NodeJS.ProcessEn
     const raw = JSON.parse(await file.readFile('utf8')) as Record<string, unknown>;
     const vaulted = await readVaultGrant('zro', location, env);
     if (raw && typeof raw === 'object' && !Array.isArray(raw) && raw.credential_source === 'vault') {
+      // While setup swaps in a verified replacement, the receipt also names the key it
+      // replaces, so the daemon can load whichever of the two verified keys the vault holds.
+      const current = vaulted ? credentialFingerprint(vaulted) : undefined;
+      const previous = isCredentialFingerprint(raw.previous_sha256) && raw.previous_sha256 === current ? current : undefined;
       if (raw.token !== undefined || !isCredentialFingerprint(raw.credential_sha256) || !vaulted
-        || credentialFingerprint(vaulted) !== raw.credential_sha256) {
+        || (current !== raw.credential_sha256 && previous === undefined)) {
         throw new Error('Zro free account verification is missing');
       }
-      return validate({ ...raw, base_url: vaulted.base_url, token: vaulted.token });
+      const { previous_sha256: _previous, ...receipt } = raw;
+      return validate({ ...receipt, ...(previous ? { credential_sha256: previous } : {}), base_url: vaulted.base_url, token: vaulted.token });
     }
     const saved = validate(raw);
     if (vaulted && credentialFingerprint(vaulted) !== saved.credential_sha256) {
@@ -64,6 +69,19 @@ export async function writeZroGrant(grant: FreeApiGrant, location = directory(),
   const persisted = isDirect && vaulted && credentialFingerprint(vaulted) === fingerprint
     ? { base_url: value.base_url, credential_source: 'vault', credential_sha256: fingerprint, free_account_verified: true, verified_at: value.verified_at }
     : value;
+  await persistReceipt(persisted, location);
+}
+// First step of replacing the local vault key with a verified one: a vault receipt
+// that accepts either the installed key or its replacement. Setup then writes the
+// vault entry and the final receipt. Stopping after any step leaves the daemon a
+// key it can load: the installed key before the vault write, the replacement after.
+export async function writeZroReplacementReceipt(replacement: FreeApiGrant, installed: FreeApiGrant, location = directory()) {
+  const value = validate({ ...replacement, free_account_verified: true, verified_at: new Date().toISOString() });
+  validateDirectOrigin('zro', value.base_url);
+  await persistReceipt({ base_url: value.base_url, credential_source: 'vault', credential_sha256: value.credential_sha256,
+    previous_sha256: credentialFingerprint(installed), free_account_verified: true, verified_at: value.verified_at }, location);
+}
+async function persistReceipt(persisted: unknown, location: string) {
   const temporary = join(location, `zro.${randomUUID()}.tmp`);
   await mkdir(location, { recursive: true, mode: 0o700 });
   try {
