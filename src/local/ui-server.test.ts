@@ -262,7 +262,7 @@ describe('daemon reasoningTokens and quotaObserved additions', () => {
       loadToken: async () => 'freepi-test-token',
       fetcher: async (input) => {
         const u = String(input);
-        if (u.endsWith('/client-version')) return Response.json({ latest: FREEPI_CLIENT_VERSION, min: '0.6.21', models: [{ id: FREEPI_MODEL, free: true, stats_id: 'deepseek/deepseek-v4.1-flash-1017' }] });
+        if (u.endsWith('/client-version')) return Response.json({ latest: FREEPI_CLIENT_VERSION, min: FREEPI_CLIENT_VERSION, models: [{ id: FREEPI_MODEL, free: true, stats_id: 'deepseek/deepseek-v4.1-flash-1017' }] });
         if (u.endsWith('/me/stats')) return Response.json({ guest: false, lane: 'standard', refill_at: new Date(nextReset).toISOString(), credit_usd: 0, credit_credits: 0, bonus_credits: 0, bonus_wallet_credits: 0, premium_credits: 0, premium_bought_credits: 0, premium_gifted_credits: 0, allowance_credits: 500, remaining_credits_today: 420, remaining_usd_today: 0.42 });
         return new Response('nope', { status: 404 });
       }

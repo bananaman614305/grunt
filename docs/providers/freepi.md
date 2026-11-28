@@ -13,7 +13,7 @@ reviewed-public-context attestation. Worker/handoff and image requests are
 excluded. The integration preserves sponsored response text.
 
 Foreground setup uses the official GitHub device flow reflected in
-`free-pi-cli@0.6.25`, consent contract `4`. Trusty Squire handles the GitHub
+`free-pi-cli@0.6.28`, consent contract `4`. Trusty Squire handles the GitHub
 confirmation with the user's identity. It does not add cards, buy credits,
 collect referral rewards, enable plans or create duplicate accounts. Credentials
 stay in a mode-0600 per-user file under Grunt's private configuration.
@@ -67,4 +67,4 @@ Sources: [models and limits](https://freepi.ai/docs/models-and-limits),
 [model](https://freepi.ai/models/deepseek-v4.1-flash),
 [terms](https://freepi.ai/terms), [privacy](https://freepi.ai/privacy),
 [credits](https://freepi.ai/credits), and the official npm package
-`free-pi-cli@0.6.25` (git head `5a0f628ba3b023d981a4969fd2ef2510f9e3905b`).
+`free-pi-cli@0.6.28` (reviewed against 0.6.25: same device, consent, token and `/me/stats` endpoints and wallet fields; 0.6.28 adds only an optional `/me/signup-src` survey call, which Grunt does not send).
