@@ -273,7 +273,7 @@ export class StickyRouter {
       const summary = reasons.length ? ` (${reasons.join(', ')})` : '';
       const message = toolsRequired
         ? `Grunt pool globally exhausted: ${NO_TOOL_SOURCE}${summary}. Run usegrunt status or usegrunt setup.`
-        : `Grunt pool globally exhausted: no eligible adapter can serve right now${summary}. Run usegrunt status or usegrunt setup.`;
+        : `Grunt pool globally exhausted: No eligible adapter can serve right now${summary}. Run usegrunt status or usegrunt setup.`;
       return new PoolExhaustedError(message, {
         terminal: true,
         ...(seconds === undefined ? {} : { retryAfter: seconds })
@@ -516,11 +516,14 @@ export class StickyRouter {
               transient = true;
               if (checked?.code === 'quota') counts.limited++;
               else counts.errored++;
-            } else if (checkedUntil === Infinity || checked?.code === 'refused' || checked?.code === 'logged_out'
-              || (cause !== undefined && cause !== 'unconfigured')) {
-              counts.errored++;
             } else {
-              counts.unconfigured++;
+              if (checkedUntil !== Infinity) transient = true;
+              if (checkedUntil === Infinity || checked?.code === 'refused' || checked?.code === 'logged_out'
+                || (cause !== undefined && cause !== 'unconfigured')) {
+                counts.errored++;
+              } else {
+                counts.unconfigured++;
+              }
             }
             skip(source.id, 'unavailable');
           }
