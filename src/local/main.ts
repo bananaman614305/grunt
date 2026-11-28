@@ -230,8 +230,7 @@ export function start(env = process.env) {
       }
       return ids;
     },
-    // Count only open coding-capable routes so non-tool agents (opencode) or
-    // public-only sources (freepi, goedel) do not starve coding slots.
+    // Count routes that support client-owned function calls on ordinary requests.
     open: async () => (await Promise.all(sources.sources.filter(source => codingCapableRoute(source, directory)).map(live))).filter(Boolean).length,
     // Driver candidates follow docs/router.md: a coding harness on model grunt,
     // which the router sends to the best open tool-capable route, then each free

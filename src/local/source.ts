@@ -256,8 +256,8 @@ export interface Source {
   close?(): Promise<void>;
 }
 // A request that carries the client's function tools expects tool calls back, so the client
-// keeps the agent loop. Automatic selection skips sources that run their own
-// tools instead (OpenCode). A source the caller names explicitly stays eligible.
+// keeps the agent loop. Automatic selection skips sources without client tool support.
+// A source the caller names explicitly stays eligible.
 export const needsFunctionTools = (request: ModelRequest) => request.tools.some(tool => tool.type === 'function');
 export const hasImageInput = (request: ModelRequest) => request.imageInput === true
   || request.messages.some(message => Array.isArray(message.content) && message.content.some(part => part.type === 'image_url'));
