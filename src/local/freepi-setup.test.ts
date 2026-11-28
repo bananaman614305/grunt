@@ -16,7 +16,7 @@ function fixture() {
     if (path === '/auth/github/device') return Response.json({ session_id: '12345678-1234-1234-1234-123456789abc', verification_uri: 'https://github.com/login/device', user_code: 'ABCD-EFGH', expires_in: 900, interval: 5 });
     if (path === '/auth/consent') { expect(JSON.parse(String(init?.body)).consent_version).toBe('4'); return Response.json({ ok: true }); }
     if (path === '/auth/token') return Response.json({ token: 'synthetic-token' });
-    if (path === '/client-version') return Response.json({ latest: '0.6.25', min: '0.6.21', models: [{ id: 'deepseek-v4.1-flash', free: true, stats_id: 'deepseek/deepseek-v4.1-flash-1017' }] });
+    if (path === '/client-version') return Response.json({ latest: '0.6.28', min: '0.6.28', models: [{ id: 'deepseek-v4.1-flash', free: true, stats_id: 'deepseek/deepseek-v4.1-flash-1017' }] });
     if (path === '/me/stats') return Response.json({ lane: 'standard', refill_at: new Date(Date.now() + 3600000).toISOString(), remaining_usd_today: 1, remaining_credits_today: 1000,
       credit_usd: 0, credit_credits: 0, bonus_credits: 0, bonus_wallet_credits: 0, premium_credits: 0, premium_bought_credits: 0, premium_gifted_credits: 0 });
     throw new Error('Unexpected endpoint');

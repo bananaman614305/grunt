@@ -5,7 +5,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { readDataSharingConsent } from './data-sharing.js';
 import { FreePi, FREEPI_BASE, FREEPI_CLIENT_VERSION, FREEPI_CONSENT_VERSION, readFreePiJson } from './freepi.js';
 
-// The provider's pinned official device OAuth protocol (free-pi-cli 0.6.25).
+// The provider's pinned official device OAuth protocol (free-pi-cli 0.6.28).
 // No guest credentials, browser cookie extraction, third-party proxy or paid plan.
 export async function setupFreePi({ directory, squire, signal: caller, background, notify, fetcher = fetch }: {
   directory: string; squire: { signup(service: string, url: string, instructions: string, facts?: Record<string, string>): Promise<void> };

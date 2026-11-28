@@ -20,7 +20,8 @@ import type { ObservedQuota } from './quota-policy.js';
 export const FREEPI_ID = 'freepi';
 export const FREEPI_BASE = 'https://api.freepi.ai';
 export const FREEPI_MODEL = 'deepseek-v4.1-flash';
-export const FREEPI_CLIENT_VERSION = '0.6.25';
+export const FREEPI_CLIENT_VERSION = '0.6.28';
+export const FREEPI_CLIENT_MIN = '0.6.28';
 export const FREEPI_CONSENT_VERSION = '4';
 const object = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const count = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
@@ -28,7 +29,7 @@ const requiredWallets = ['credit_usd', 'credit_credits', 'bonus_credits', 'bonus
 const wallets = [...requiredWallets, 'premium_expiring_credits', 'regular_wallet_credits'];
 const metadata = ['credit_tiers', 'premium_get_line', 'premium_expires_at', 'use_bonus', 'allowance_credits', 'remaining_credits_today'];
 
-// Match the authenticated 0.6.25 contract, including earned/gifted wallets.
+// Match the authenticated 0.6.28 contract, including earned/gifted wallets.
 // New spending controls fail closed until reviewed; optional is not assumed zero.
 export function assertFreePiAccount(account: Record<string, unknown>, now = Date.now(), allowExhausted = false) {
   if (requiredWallets.some(key => !Object.hasOwn(account, key)) || wallets.some(key => Object.hasOwn(account, key) && account[key] !== 0)
@@ -126,7 +127,7 @@ export class FreePi implements Source {
   }
   private async guard(token: string, signal: AbortSignal) {
     const catalog = await this.read('/client-version', signal);
-    if (catalog.latest !== FREEPI_CLIENT_VERSION || typeof catalog.min !== 'string' || catalog.min !== '0.6.21') throw new SourceError('refused', 'Free-Pi client contract changed; review required');
+    if (catalog.latest !== FREEPI_CLIENT_VERSION || typeof catalog.min !== 'string' || catalog.min !== FREEPI_CLIENT_MIN) throw new SourceError('refused', 'Free-Pi client contract changed; review required');
     const models = Array.isArray(catalog.models) ? catalog.models.map(object).filter(model => model.id === FREEPI_MODEL) : [];
     if (models.length !== 1 || models[0]!.free !== true || models[0]!.stats_id !== 'deepseek/deepseek-v4.1-flash-1017') throw new SourceError('refused', 'Free-Pi exact free model offer is unavailable');
     const account = await this.read('/me/stats', signal, token);

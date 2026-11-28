@@ -10,7 +10,7 @@ import { readDataSharingConsent } from './data-sharing.js';
 const now = Date.parse('2026-11-20T12:00:00Z');
 const account = () => ({ guest: false, lane: 'standard', refill_at: '2026-11-21T00:00:00Z', remaining_usd_today: 1.125, remaining_credits_today: 15000,
   credit_usd: 0, credit_credits: 0, bonus_credits: 0, bonus_wallet_credits: 0, premium_credits: 0, premium_bought_credits: 0, premium_gifted_credits: 0 });
-const catalog = () => ({ latest: '0.6.25', min: '0.6.21', models: [{ id: FREEPI_MODEL, free: true, stats_id: 'deepseek/deepseek-v4.1-flash-1017' }] });
+const catalog = () => ({ latest: '0.6.28', min: '0.6.28', models: [{ id: FREEPI_MODEL, free: true, stats_id: 'deepseek/deepseek-v4.1-flash-1017' }] });
 const reply = () => ({ model: 'deepseek-ai/deepseek-v41-flash-1017', choices: [{ finish_reason: 'stop', message: { content: 'Synthetic hello. Sponsored content unchanged.', tool_calls: null } }], usage: { prompt_tokens: 40, completion_tokens: 19 } });
 const request = (): ModelRequest => ({ model: 'grunt', publicContext: true, messages: [{ role: 'user', content: 'Synthetic hello.' }], tools: [], cwd: '/synthetic', stream: false });
 const token = `x.${Buffer.from(JSON.stringify({ sub: 'synthetic-account' })).toString('base64url')}.x`;
@@ -52,7 +52,7 @@ describe('Free-Pi guarded official API', () => {
     expect(() => assertFreePiAccount({ ...account(), remaining_credits_today: 0 }, now)).toThrowError(expect.objectContaining({ code: 'quota', retryAfter: 43200 }));
     expect(() => assertFreePiAccount({ ...account(), remaining_credits_today: 0 }, now, true)).not.toThrow();
   });
-  it.each([{ ...catalog(), latest: '0.6.26' }, { models: [{ ...catalog().models[0], free: false }] }, { models: [] }])('blocks changed/free-offer contracts', async modelCatalog => {
+  it.each([{ ...catalog(), latest: '0.6.29' }, { ...catalog(), min: '0.6.25' }, { models: [{ ...catalog().models[0], free: false }] }, { models: [] }])('blocks changed/free-offer contracts', async modelCatalog => {
     const f = fixture({ catalog: modelCatalog }); await expect(f.source.complete(request(), AbortSignal.timeout(1000))).rejects.toMatchObject({ code: 'refused' }); expect(f.calls).not.toContain('/v1/chat/completions');
   });
   it('requires explicit current consent and reviewed public context', async () => {
