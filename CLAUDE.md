@@ -3,7 +3,7 @@
 One TypeScript Node CLI and local inference router. Read README.md and docs/reference.md for setup and behavior.
 
 - `src/local/main.ts`: CLI and local daemon entry point (`usegrunt`, `grunt-local`).
-- `registry/adapters.json` and `site/registry.json`: static adapter registry served on GitHub Pages (`grunt.run`). `site/registry.json` is the published form without ended offers (`tsx src/registry.ts registry/adapters.json --publish site/registry.json`).
+- `registry/adapters.json`, `site/registry.json`, and `site/v2/registry.json`: static adapter registry served on GitHub Pages (`grunt.run`). `site/registry.json` is the legacy v1-compatible form without ended offers or `declarative:app` entries (`tsx src/registry.ts registry/adapters.json --publish-v1 site/registry.json`) so older daemons (`<= 0.10.21`) keep syncing; `site/v2/registry.json` is the full published form without ended offers (`tsx src/registry.ts registry/adapters.json --publish site/v2/registry.json`).
 
 Run `pnpm lint`, `pnpm test`, and `pnpm build`. Use Node 22 or later.
 

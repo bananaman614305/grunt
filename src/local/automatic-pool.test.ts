@@ -131,3 +131,25 @@ it('preserves a deliberate local mode and edits made during activation', async (
   expect(await readFile(file, 'utf8')).toBe(manual);
   expect(await migrateAutomaticPool(path, configured)).toBeUndefined();
 });
+
+it('accepts and preserves a declarative:app provider arriving only through cached registry sync', async () => {
+  const path = await directory();
+  const synced = structuredClone(bundledRegistry);
+  synced.published = new Date(Date.parse(bundledRegistry.published) + 60_000).toISOString();
+  const syncedApp = structuredClone(synced.adapters.find(adapter => adapter.id === 'omi')!);
+  syncedApp.id = 'omi-synced';
+  synced.adapters.push(syncedApp);
+  const experimental = synced.adapters.filter(adapter => adapter.tier === 'experimental');
+  for (const adapter of experimental) adapter.weight = 0.2 / experimental.length;
+
+  await writeFile(join(path, 'registry.json'), JSON.stringify({ registry: synced, etag: '"synced-pool"' }), { mode: 0o600 });
+  await writeAutomaticPool(path, configured, [...configured, 'omi-synced']);
+  expect(automaticPoolSelection(path, configured, curated, true).sources).toEqual([...configured, 'omi-synced', 'reflection-beam']);
+
+  const migrateDir = await directory();
+  await writeFile(join(migrateDir, 'registry.json'), JSON.stringify({ registry: synced, etag: '"synced-pool"' }), { mode: 0o600 });
+  await writeFile(join(migrateDir, 'installed-sources.json'), JSON.stringify([...configured, 'omi-synced']), { mode: 0o600 });
+  const rollback = await migrateAutomaticPool(migrateDir, [...configured, 'omi-synced']);
+  expect(rollback).toBeDefined();
+  expect(automaticPoolSelection(migrateDir, [...configured, 'omi-synced'], curated, true).sources).toEqual([...configured, 'omi-synced', 'reflection-beam']);
+});

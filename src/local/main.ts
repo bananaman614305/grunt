@@ -73,7 +73,7 @@ export function configure(env = process.env, registry: () => Registry = () => bu
   const declared = gruntEnv('SOURCES', env)?.split(',').map(id => id.trim()).filter(Boolean);
   const curated = registry().adapters.filter(adapter => isSupportedAdapter(adapter)).map(adapter => adapter.id);
   const managed = gruntEnv('DAEMON', env) === '1';
-  const selection = declared ? automaticPoolSelection(configDir(env), [...new Set(declared)], curated, managed)
+  const selection = declared ? automaticPoolSelection(configDir(env), [...new Set(declared)], curated, managed, registry())
     : { sources: curated, automatic: true, explicit: [] };
   const configured = selection.sources;
   const optedIn = (gruntEnv('OPT_IN_SOURCES', env)?.split(',') ?? []).map(id => id.trim())

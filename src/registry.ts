@@ -591,9 +591,8 @@ export function validateRegistry(value: unknown): Registry {
 // An adapter whose offer has ended (its `expires` day is over, UTC) is left out
 // of the published registry and the packaged copy, so clients never see it.
 // The rest of its tier is scaled up so the tier keeps its total weight.
-export function publishedRegistry(registry: Registry, now = Date.now()): Registry {
-  const ended = (adapter: Adapter) => adapter.expires !== undefined && now >= Date.parse(adapter.expires) + 24 * 60 * 60 * 1000;
-  const kept = registry.adapters.filter(adapter => !ended(adapter)).map(adapter => structuredClone(adapter));
+function projectPublishedRegistry(registry: Registry, keep: (adapter: Adapter) => boolean): Registry {
+  const kept = registry.adapters.filter(keep).map(adapter => structuredClone(adapter));
   for (const tier of ['stable', 'experimental'] as const) {
     const before = registry.adapters.filter(adapter => adapter.tier === tier).reduce((sum, adapter) => sum + adapter.weight, 0);
     const remaining = kept.filter(adapter => adapter.tier === tier);
@@ -602,17 +601,33 @@ export function publishedRegistry(registry: Registry, now = Date.now()): Registr
   }
   return { ...structuredClone(registry), adapters: kept };
 }
+export function publishedRegistry(registry: Registry, now = Date.now()): Registry {
+  const ended = (adapter: Adapter) => adapter.expires !== undefined && now >= Date.parse(adapter.expires) + 24 * 60 * 60 * 1000;
+  return projectPublishedRegistry(registry, adapter => !ended(adapter));
+}
+// Legacy v1 projection for daemons <= 0.10.21 that reject `declarative:app`.
+export function publishedV1Registry(registry: Registry, now = Date.now()): Registry {
+  const ended = (adapter: Adapter) => adapter.expires !== undefined && now >= Date.parse(adapter.expires) + 24 * 60 * 60 * 1000;
+  return projectPublishedRegistry(registry, adapter => !ended(adapter) && adapter.install !== DECLARATIVE_APP_INSTALL);
+}
 const packaged = new URL('./registry/adapters.json', import.meta.url);
 export const bundledRegistry = validateRegistry(JSON.parse(readFileSync(existsSync(packaged) ? packaged : new URL('../registry/adapters.json', import.meta.url), 'utf8')));
 
 if (typeof GRUNT_DAEMON_BUNDLE === 'undefined' && process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const registry = validateRegistry(JSON.parse(readFileSync(process.argv[2] ?? 'registry/adapters.json', 'utf8')));
-  // `tsx src/registry.ts <input> --publish <output>` writes the registry without ended offers.
+  // `tsx src/registry.ts <input> --publish <output>` writes the full v2 registry without ended offers.
+  // `tsx src/registry.ts <input> --publish-v1 <output>` also omits `declarative:app` entries for <= 0.10.21 daemons.
   const publish = process.argv.indexOf('--publish');
   if (publish > 0) {
     const output = process.argv[publish + 1];
     if (!output) throw new Error('Usage: tsx src/registry.ts <input> --publish <output>');
     writeFileSync(output, `${JSON.stringify(validateRegistry(publishedRegistry(registry)), null, 2)}\n`);
+  }
+  const publishV1 = process.argv.indexOf('--publish-v1');
+  if (publishV1 > 0) {
+    const output = process.argv[publishV1 + 1];
+    if (!output) throw new Error('Usage: tsx src/registry.ts <input> --publish-v1 <output>');
+    writeFileSync(output, `${JSON.stringify(validateRegistry(publishedV1Registry(registry)), null, 2)}\n`);
   }
   console.log('Adapter registry is valid');
 }

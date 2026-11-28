@@ -113,7 +113,7 @@ it('accepts a later revocation and persists it through an offline restart', asyn
 
 it('syncs from static GitHub Pages URL with raw GitHub fallback, redirect: error, and GRUNT_REGISTRY_URL override', async () => {
   expect(REGISTRY_URLS).toEqual([
-    'https://grunt.run/registry.json',
+    'https://grunt.run/v2/registry.json',
     'https://raw.githubusercontent.com/bananaman614305/grunt/main/registry/adapters.json'
   ]);
   const path = await directory(), fresh = published(1000);
@@ -124,13 +124,13 @@ it('syncs from static GitHub Pages URL with raw GitHub fallback, redirect: error
   const sync = new RegistrySync({ directory: path, fetcher });
   await sync.sync();
   expect(fetcher.mock.calls.map(([url, init]) => [url, init?.redirect])).toEqual([
-    ['https://grunt.run/registry.json', 'error'],
+    ['https://grunt.run/v2/registry.json', 'error'],
     ['https://raw.githubusercontent.com/bananaman614305/grunt/main/registry/adapters.json', 'error']
   ]);
   expect(sync.current).toEqual(fresh);
 
   await sync.sync();
-  expect(fetcher.mock.calls[2]![0]).toBe('https://grunt.run/registry.json');
+  expect(fetcher.mock.calls[2]![0]).toBe('https://grunt.run/v2/registry.json');
   expect(fetcher.mock.calls[2]![1]).toMatchObject({ headers: { 'If-None-Match': '"github-raw"' }, redirect: 'error' });
 
   const customFetcher = vi.fn<typeof fetch>().mockRejectedValue(new Error('custom offline'));

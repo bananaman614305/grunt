@@ -40,8 +40,9 @@ describe("grunt.run landing page", () => {
     for (const gone of ["dots", "codex"]) expect(html.toLowerCase()).not.toMatch(new RegExp(`\\b${gone}\\b`));
   });
 
-  it("publishes static site, registry.json, and v1/registry to GitHub Pages without Cloudflare secrets", () => {
+  it("publishes static site, legacy v1 registry.json/v1/registry, and v2/registry.json to GitHub Pages without Cloudflare secrets", () => {
     expect(existsSync(new URL("../site/registry.json", import.meta.url))).toBe(true);
+    expect(existsSync(new URL("../site/v2/registry.json", import.meta.url))).toBe(true);
     expect(cname.trim()).toBe("grunt.run");
     expect(existsSync(new URL("../site/_redirects", import.meta.url))).toBe(false);
     expect(existsSync(new URL("../site/_headers", import.meta.url))).toBe(false);
@@ -55,8 +56,10 @@ describe("grunt.run landing page", () => {
     expect(siteWorkflow).toContain("name: github-pages");
     expect(siteWorkflow).toContain("url: ${{ steps.deployment.outputs.page_url }}");
     expect(siteWorkflow).toContain("src/registry.ts registry/adapters.json");
-    expect(siteWorkflow).toContain("src/registry.ts registry/adapters.json --publish dist/site/registry.json");
+    expect(siteWorkflow).toContain("src/registry.ts registry/adapters.json --publish-v1 dist/site/registry.json");
+    expect(siteWorkflow).toContain("src/registry.ts registry/adapters.json --publish dist/site/v2/registry.json");
     expect(siteWorkflow).toContain("dist/site/v1/registry");
+    expect(siteWorkflow).toContain("dist/site/v2/registry.json");
     expect(siteWorkflow).toContain("dist/site/.nojekyll");
     expect(siteWorkflow).toContain("site/CNAME");
     expect(siteWorkflow).toContain("site/favicon.svg");
@@ -65,13 +68,15 @@ describe("grunt.run landing page", () => {
     expect(siteWorkflow).toContain("include-hidden-files: true");
     expect(siteWorkflow).toContain("actions/deploy-pages@");
 
-    const publishIndex = siteWorkflow.indexOf("src/registry.ts registry/adapters.json --publish dist/site/registry.json");
+    const publishV1Index = siteWorkflow.indexOf("src/registry.ts registry/adapters.json --publish-v1 dist/site/registry.json");
     const legacyCopyIndex = siteWorkflow.indexOf("cp dist/site/registry.json dist/site/v1/registry");
+    const publishV2Index = siteWorkflow.indexOf("src/registry.ts registry/adapters.json --publish dist/site/v2/registry.json");
     const uploadIndex = siteWorkflow.indexOf("actions/upload-pages-artifact@");
     const deployIndex = siteWorkflow.indexOf("actions/deploy-pages@");
-    expect(publishIndex).toBeGreaterThan(-1);
-    expect(publishIndex).toBeLessThan(legacyCopyIndex);
-    expect(legacyCopyIndex).toBeLessThan(uploadIndex);
+    expect(publishV1Index).toBeGreaterThan(-1);
+    expect(publishV1Index).toBeLessThan(legacyCopyIndex);
+    expect(legacyCopyIndex).toBeLessThan(publishV2Index);
+    expect(publishV2Index).toBeLessThan(uploadIndex);
     expect(uploadIndex).toBeLessThan(deployIndex);
 
     for (const forbidden of ["wrangler", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_PAGES_PROJECT"]) {

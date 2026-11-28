@@ -1,17 +1,37 @@
+import { constants, closeSync, fstatSync, lstatSync, openSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { bundledRegistry, isSupportedAdapter, validateRegistry } from '../registry.js';
 import type { Registry } from '../registry.js';
+import { hasOwnerMode } from './private-file.js';
 
 // The slow router loop (docs/router.md): re-read the registry, then open routes.
 export const REGISTRY_INTERVAL = 6 * 60 * 60 * 1000;
-// Static registry hosted on GitHub Pages with a raw GitHub fallback.
+// Static v2 registry (includes declarative:app) on GitHub Pages with a raw GitHub fallback.
+// Older daemons <= 0.10.21 continue syncing the v1-compatible /registry.json and /v1/registry feeds.
 export const REGISTRY_URLS = [
-  'https://grunt.run/registry.json',
+  'https://grunt.run/v2/registry.json',
   'https://raw.githubusercontent.com/bananaman614305/grunt/main/registry/adapters.json'
 ];
+// Synchronous read of the private cached registry when newer than the bundle,
+// so synced adapters are recognized before they ship in a release bundle.
+export function readEffectiveRegistry(directory: string): Registry {
+  let fd: number | undefined;
+  try {
+    const parent = lstatSync(directory);
+    if (!parent.isDirectory() || parent.isSymbolicLink() || !hasOwnerMode(parent, 0o700)) return bundledRegistry;
+    const path = join(directory, 'registry.json');
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const info = fstatSync(fd);
+    if (!info.isFile() || !hasOwnerMode(info, 0o600) || info.size > 1024 * 1024) return bundledRegistry;
+    const saved = JSON.parse(readFileSync(fd, 'utf8')) as { registry?: unknown };
+    const cached = validateRegistry(saved.registry);
+    return Date.parse(cached.published) > Date.parse(bundledRegistry.published) ? cached : bundledRegistry;
+  } catch { return bundledRegistry; }
+  finally { if (fd !== undefined) closeSync(fd); }
+}
 export class RegistrySync {
   current: Registry = structuredClone(bundledRegistry);
   private etag: string | undefined;
