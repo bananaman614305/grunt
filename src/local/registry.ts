@@ -35,6 +35,9 @@ export function readEffectiveRegistry(directory: string): Registry {
 export class RegistrySync {
   current: Registry = structuredClone(bundledRegistry);
   private etag: string | undefined;
+  // Pre-v2 caches (written by <= 0.10.23 from /registry.json) lack `feed: 2`.
+  // Allow a single same-timestamp replacement when upgrading to the v2 feed.
+  private legacyCache = false;
   private timer: ReturnType<typeof setInterval> | undefined;
   private pending: Promise<void> | undefined;
   private controller = new AbortController();
@@ -53,10 +56,11 @@ export class RegistrySync {
   private accepts(registry: Registry) {
     const incoming = Date.parse(registry.published), current = Date.parse(this.current.published);
     // Each publication is immutable. A release's bundled list is the initial
-    // floor; only a newer publication may add, change or revoke its entries.
-    return incoming > current || incoming === current && isDeepStrictEqual(
+    // floor; only a newer publication may add, change or revoke its entries
+    // (except when replacing a pre-v2 cache with the v2 feed at the same timestamp).
+    return incoming > current || incoming === current && (this.legacyCache || isDeepStrictEqual(
       { ...registry, published: '' }, { ...this.current, published: '' }
-    );
+    ));
   }
   async load() {
     try {
@@ -65,6 +69,7 @@ export class RegistrySync {
       if (this.accepts(registry)) {
         this.current = registry;
         this.etag = typeof saved.etag === 'string' ? saved.etag : undefined;
+        this.legacyCache = saved.feed !== 2;
       }
     } catch { /* A missing or damaged cache uses the packaged registry. */ }
     this.options.changed?.(this.current);
@@ -96,10 +101,10 @@ export class RegistrySync {
         const temporary = join(this.options.directory, `registry.${randomUUID()}.tmp`);
         try {
           await mkdir(this.options.directory, { recursive: true, mode: 0o700 });
-          await writeFile(temporary, JSON.stringify({ registry, etag }), { mode: 0o600, flag: 'wx' });
+          await writeFile(temporary, JSON.stringify({ registry, etag, feed: 2 }), { mode: 0o600, flag: 'wx' });
           await rename(temporary, join(this.options.directory, 'registry.json'));
         } finally { await rm(temporary, { force: true }); }
-        this.current = registry; this.etag = etag;
+        this.current = registry; this.etag = etag; this.legacyCache = false;
         this.options.changed?.(registry);
       } else if (!unchanged) throw new Error('Registry unavailable');
     } catch { this.options.notify?.('Registry update unavailable; keeping the last good list'); }

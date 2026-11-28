@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { bundledRegistry } from '../registry.js';
+import { bundledRegistry, publishedRegistry, publishedV1Registry } from '../registry.js';
 import type { Registry } from '../registry.js';
 import { REGISTRY_URLS, RegistrySync } from './registry.js';
 
@@ -139,4 +139,48 @@ it('syncs from static GitHub Pages URL with raw GitHub fallback, redirect: error
   expect(customFetcher).toHaveBeenCalledOnce();
   expect(customFetcher.mock.calls[0]![0]).toBe('https://override.example/registry.json');
   expect(customFetcher.mock.calls[0]![1]?.redirect).toBe('error');
+});
+
+it('upgrades a pre-v2 cached v1 feed cleanly to the v2 feed containing Omi at both same and newer timestamps', async () => {
+  // 1. Legacy v1 feed at the bundled timestamp omits declarative:app (omi) so <= 0.10.23 accepts it cleanly.
+  const sameTimeV1 = publishedV1Registry(bundledRegistry);
+  expect(sameTimeV1.adapters.some(adapter => adapter.id === 'omi')).toBe(false);
+  const sameTimeDir = await directory();
+  await writeFile(join(sameTimeDir, 'registry.json'), JSON.stringify({ registry: sameTimeV1, etag: '"v1-same"' }), { mode: 0o600 });
+  const sameTimeSync = new RegistrySync({
+    directory: sameTimeDir,
+    fetcher: async () => Response.json(publishedRegistry(bundledRegistry), { headers: { ETag: '"v2-same"' } })
+  });
+  await sameTimeSync.load();
+  expect(sameTimeSync.enabled.some(adapter => adapter.id === 'omi')).toBe(true);
+  await sameTimeSync.sync();
+  expect(JSON.parse(await readFile(join(sameTimeDir, 'registry.json'), 'utf8'))).toMatchObject({ etag: '"v2-same"', feed: 2 });
+
+  // 2. A newer publication cached by <= 0.10.23 from /registry.json (no `feed: 2`, no `omi`)
+  //    upgrades at the same timestamp once the upgraded >= 0.10.24 client syncs /v2/registry.json.
+  const futureV2 = {
+    ...structuredClone(publishedRegistry(bundledRegistry)),
+    published: new Date(Date.parse(bundledRegistry.published) + 60_000).toISOString()
+  };
+  const futureV1 = publishedV1Registry(futureV2);
+  expect(futureV1.adapters.some(adapter => adapter.id === 'omi')).toBe(false);
+  expect(futureV2.adapters.some(adapter => adapter.id === 'omi')).toBe(true);
+
+  const upgradeDir = await directory();
+  await writeFile(join(upgradeDir, 'registry.json'), JSON.stringify({ registry: futureV1, etag: '"v1-future"' }), { mode: 0o600 });
+  const fetcher = vi.fn<typeof fetch>()
+    .mockResolvedValueOnce(Response.json(futureV2, { headers: { ETag: '"v2-future"' } }))
+    .mockResolvedValueOnce(Response.json(futureV1, { headers: { ETag: '"v1-conflict"' } }));
+  const upgraded = new RegistrySync({ directory: upgradeDir, fetcher });
+  await upgraded.load();
+  expect(upgraded.enabled.some(adapter => adapter.id === 'omi')).toBe(false);
+
+  await upgraded.sync();
+  expect(fetcher.mock.calls[0]![0]).toBe('https://grunt.run/v2/registry.json');
+  expect(upgraded.enabled.some(adapter => adapter.id === 'omi')).toBe(true);
+  expect(JSON.parse(await readFile(join(upgradeDir, 'registry.json'), 'utf8'))).toMatchObject({ etag: '"v2-future"', feed: 2 });
+
+  // After upgrading to feed 2, a conflicting same-timestamp payload (like v1) is rejected again.
+  await upgraded.sync();
+  expect(upgraded.enabled.some(adapter => adapter.id === 'omi')).toBe(true);
 });

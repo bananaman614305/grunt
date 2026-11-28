@@ -1289,7 +1289,12 @@ A v1-compatible projection (`tsx src/registry.ts registry/adapters.json --publis
 also omits `declarative:app` entries and rescales the remaining tier weights,
 published at `https://grunt.run/registry.json` (with an identical static copy
 at `/v1/registry`) so older daemons (`<= 0.10.21`) continue syncing updates
-cleanly. A shipped adapter id, an entry whose `install` is `declarative:openai`
+cleanly. Clients on `0.10.22` and `0.10.23` also query `/registry.json` and
+accept that v1-compatible feed without falling back to raw GitHub, so
+discovering and adding `declarative:app` entries such as `omi` requires
+updating to `usegrunt >= 0.10.24` (which switches primary sync to
+`https://grunt.run/v2/registry.json`, upgrades pre-v2 caches, and uses the
+effective synced registry during `usegrunt add`). A shipped adapter id, an entry whose `install` is `declarative:openai`
 (with a strictly validated `declarative` OpenAI-compatible config), an entry
 whose `install` is `declarative:app` (with a strictly validated `declarativeApp`
 sandboxed CLI config), or an entry whose `install` is `npm:<package>`, goes in
