@@ -171,7 +171,7 @@ async function latest(fetcher: typeof fetch, signal: AbortSignal) {
   if (wanted.length !== digest.length || !timingSafeEqual(digest, wanted)) throw failed('Grunt download integrity verification failed');
   return { version: pkg.version, archive };
 }
-function vetArchive(names: string, verbose: string) {
+export function vetArchive(names: string, verbose: string) {
   const paths = names.trimEnd().split('\n'), entries = verbose.trimEnd().split('\n');
   let expanded = 0;
   if (paths.length > 1024 || new Set(paths).size !== paths.length || entries.length !== paths.length || !paths.includes('package/package.json') || !paths.includes('package/dist/local/main.js')) throw failed('The Grunt archive has an unsupported layout');

@@ -202,10 +202,11 @@ Port selection is `--port`, then `GRUNT_PORT`, then the private numeric
 on a custom port can pass `--port` until setup records it. For example, Chad uses
 `usegrunt status --watch --port 8792`. Invalid saved configuration fails safely.
 
-The npm package includes the Agent Skill at `skills/grunt-status/SKILL.md`.
+The npm package includes the Agent Skill at `dist/skills/grunt-status/SKILL.md`.
 Point your harness at that directory using its skill loader, or copy it into
 its skills directory. In Pi, register the installed package with
-`pi install "$(npm root -g)/usegrunt"` after a global npm install, then invoke
+`pi install "$(npm root -g)/usegrunt"` after a global npm install (Pi reads
+`package.json`'s `pi.skills` manifest entry), then invoke
 `/skill:grunt-status` from a Pi session using Grunt. The skill runs the
 installed `usegrunt` on the daemon host and shares the status summary.
 

@@ -1,6 +1,9 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, it } from "vitest";
+import { vetArchive } from "./local/update.js";
 
 it("tracks only the local app, packaged skill, proof adapters, static site, registry, configuration and five workflows", () => {
   const paths = execFileSync("git", ["ls-files"], { encoding: "utf8" }).trim().split("\n");
@@ -26,4 +29,33 @@ it("packages usegrunt with the primary command and compatibility aliases", () =>
   expect(pkg.version).toMatch(/^\d+\.\d+\.\d+$/);
   expect(pkg.description).toBe("One-command setup for grunt");
   expect(pkg.bin).toEqual({ usegrunt: "dist/local/main.js", "grunt-local": "dist/local/main.js" });
+  expect(pkg.files).toEqual(["dist", "README.md"]);
+  expect(pkg.pi).toEqual({ skills: ["./dist/skills"] });
 });
+
+it("packs a release archive accepted by vetArchive with the skill inside dist/", () => {
+  const pkg = JSON.parse(readFileSync("package.json", "utf8")) as { name: string; version: string };
+  execFileSync(process.execPath, ["scripts/build.mjs"], { stdio: "pipe" });
+  const destination = mkdtempSync(join(tmpdir(), "grunt-pack-test-"));
+  try {
+    const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+    execFileSync(npm, ["pack", "--ignore-scripts", "--pack-destination", destination], { stdio: "pipe" });
+    const archive = join(destination, `${pkg.name}-${pkg.version}.tgz`);
+    const names = execFileSync("tar", ["-tzf", archive], { encoding: "utf8", maxBuffer: 2 * 1024 * 1024 });
+    const verbose = execFileSync("tar", ["-tvzf", archive], { encoding: "utf8", maxBuffer: 2 * 1024 * 1024 });
+    expect(() => vetArchive(names, verbose)).not.toThrow();
+
+    const paths = names.trimEnd().split("\n");
+    expect(paths).toContain("package/dist/skills/grunt-status/SKILL.md");
+    expect(paths.some((path) => path.startsWith("package/skills/"))).toBe(false);
+    expect(execFileSync("tar", ["-xOf", archive, "package/dist/skills/grunt-status/SKILL.md"], { encoding: "utf8" }))
+      .toBe(readFileSync("skills/grunt-status/SKILL.md", "utf8"));
+
+    expect(() => vetArchive(
+      `${names}package/skills/grunt-status/SKILL.md\n`,
+      `${verbose}-rw-r--r-- 0/0 100 2026-11-28 00:00 package/skills/grunt-status/SKILL.md\n`,
+    )).toThrow("unsafe path or link");
+  } finally {
+    rmSync(destination, { recursive: true, force: true });
+  }
+}, 60000);
