@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## 0.10.24 — 2026-11-28
+
+- Fix unattended registry signups: pass Grunt's isolated profile email to signup drives (including 100milionseek and Darus), run CAPTCHA auto-solve observations after unfinished turns, capture API keys shown in `<pre>` blocks or copy buttons via Squire `captureSource`, create dated Pollinations keys with budget filled, stop immediately when verification mail requires missing inbox consent, and log a durable one-line outcome for each background provider opening (#278).
+- Harden the sandboxed `declarative:app` adapter from live corpus trials and add the Omi CLI (`omi`) adapter and quota policy, wire `usegrunt add` and the automatic pool to the effective synced registry, switch default registry sync to `https://grunt.run/v2/registry.json` with one-time pre-v2 cache migration, and keep `https://grunt.run/registry.json` (and `/v1/registry`) as a v1-compatible projection for older daemons (#277).
+
 ## 0.10.23 — 2026-11-28
 
 - Move the packaged `grunt-status` Agent Skill into `dist/skills/grunt-status/SKILL.md` (declared in `package.json`'s `pi.skills` manifest) so `usegrunt update` on existing installations accepts the release archive without `vetArchive` rejecting top-level `package/skills/` paths, and add a packaging test that validates real `npm pack` output with `vetArchive`.
