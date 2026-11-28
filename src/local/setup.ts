@@ -1080,6 +1080,11 @@ export class BrowserSquire implements SetupSquire {
         await this.serviceCall(provider, 'operate_click', { session_id: active, ref: termsButton[0] });
         continue;
       }
+      // Squire keeps polling an inbox this session may not read and reports only
+      // that its budget ended while waiting for verification mail. Without inbox
+      // consent that wait never ends, so stop now instead of re-driving it.
+      if (result.status === 'budget' && /waiting for verification (?:mail|email)/i.test(String(result.reason))
+        && this.signupSession?.consentOperatorInboxOtp === false) return dropped('verification email needs inbox consent');
       if (['budget', 'evaluate_timeout'].includes(String(result.status))) return { run: { id: provider, state: 'running' }, decision: 'silent' };
       if (checkCaptured) {
         // A new vault entry can be tested directly unless the goal also

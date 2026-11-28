@@ -118,3 +118,22 @@ it('reads the single Google identity signed in to the Grunt profile', async () =
   await writeFile(preferences, JSON.stringify({ account_info: [{ email: 'not an email' }] }));
   expect(await signupIdentityEmail(directory)).toBeUndefined();
 });
+
+it('stops at once when Squire waits on verification mail this session may not read', async () => {
+  const waiting = { status: 'budget', session_id: 'tab', reason: 'drive budget ended while waiting for verification mail' };
+  for (const consent of [false, true]) {
+    const squire = new BrowserSquire({ directory, background: true });
+    (squire as unknown as { signupSession: Partial<SignupSession> }).signupSession = { consentOperatorInboxOtp: consent };
+    let drives = 0;
+    vi.spyOn(squire, 'call').mockImplementation(async name => {
+      if (name !== 'operate_drive') return {};
+      return ++drives < 3 ? waiting : { status: 'complete', session_id: 'tab' };
+    });
+    const run = squire.signup('openference', 'https://openference.com/register', 'Create a free key');
+    if (consent) await run;
+    else await expect(run).rejects.toThrow('verification email needs inbox consent');
+    // With consent the drive resumes polling; without it there is nothing to wait for.
+    expect(drives).toBe(consent ? 3 : 1);
+    await squire.close();
+  }
+});
