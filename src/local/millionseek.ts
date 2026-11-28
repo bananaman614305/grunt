@@ -10,6 +10,7 @@ import { readPrivateProviderGrant, validateProviderGrant } from './provider-gran
 import { readPromotionalStream } from './promotional-api.js';
 import { completionEnding, emitStreamText, endingOf, withEnding, lengthLimited, truncatedCompletion, SourceError, requestRefusal } from './source.js';
 import type { Completion, ModelRequest, SlowUpstreamPolicy, Source, ToolCall } from './source.js';
+import type { ObservedQuota } from './quota-policy.js';
 
 export const MILLIONSEEK_MODEL = 'deepseek-v4.1-flash-free';
 export const MILLIONSEEK_HOST = '100milionseek.top';
@@ -59,9 +60,11 @@ export class MillionSeek implements Source {
   private verified: { key: string; at: number } | undefined;
   private shutdown = new AbortController();
   private window: { startedAt: number; resetAt: number } | undefined;
+  private observed: ObservedQuota | undefined;
   constructor(private options: { directory?: string; fetcher?: typeof fetch; now?: () => number; loadGrant?: () => Promise<FreeApiGrant> } = {}) {}
   private get now() { return (this.options.now ?? Date.now)(); }
   quotaWindow() { return this.window && { ...this.window }; }
+  quotaObserved() { return this.observed && { ...this.observed }; }
   private quota(headers: Headers) {
     const numbers = ['x-quota-limit', 'x-quota-used', 'x-quota-remaining'].map(k => {
       const v = headers.get(k); return v !== null && /^\d+$/.test(v) ? Number(v) : NaN;
@@ -71,6 +74,7 @@ export class MillionSeek implements Source {
     const nextReset = new Date(this.now).setUTCHours(24, 0, 0, 0);
     if (!numbers.every(integer) || limit! < 100000000 || used! > limit! || remaining !== limit! - used! || resetAt !== nextReset) throw new Error('Unverified free quota');
     this.window = { startedAt: resetAt - day, resetAt };
+    this.observed = { unit: 'tokens', limit: limit!, used: used!, remaining: remaining!, observedAt: this.now, source: 'provider_header' };
     return remaining!;
   }
   private async checked(caller?: AbortSignal) {

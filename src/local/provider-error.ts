@@ -1,10 +1,10 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { SafeDiagnosticMetadata } from './diagnostics.js';
+import { TRANSIENT_RETRY_WINDOW_SECONDS } from './quota-policy.js';
 import { SourceError } from './source.js';
 import type { ErrorCode } from './source.js';
 
-import { TRANSIENT_RETRY_WINDOW_SECONDS } from './retry-window.js';
-export { TRANSIENT_RETRY_WINDOW_SECONDS };
+export { TRANSIENT_RETRY_WINDOW_SECONDS } from './quota-policy.js';
 
 export type ProviderFailureCause =
   | 'transient'

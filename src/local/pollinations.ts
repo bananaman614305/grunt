@@ -21,6 +21,7 @@ import {
 import { classifyHttpFailure } from './provider-error.js';
 import { lengthLimited, SourceError, requestRefusal } from './source.js';
 import type { Completion, ModelRequest, Source } from './source.js';
+import type { ObservedQuota } from './quota-policy.js';
 import { MetadataFlights } from './metadata-flight.js';
 
 export const POLLINATIONS_MODEL = 'community/morriszdweck/glm-5.3-flash-free';
@@ -179,7 +180,7 @@ function status(response: Response) {
 // Nonbillable metadata only. The authoritative server's zero-budget rule
 // rejects every non-free model even when account funds exist. Quest-only keys
 // cannot consume purchased Pollen. Recheck before each actual inference.
-export async function verifyPollinationsAccess(grant: AccessGrant, options: { fetcher?: typeof fetch; signal?: AbortSignal } = {}): Promise<void> {
+export async function verifyPollinationsAccess(grant: AccessGrant, options: { fetcher?: typeof fetch; signal?: AbortSignal; onBalance?: (tierBalance: number) => void } = {}): Promise<void> {
   const access = accessGrant(grant), deadline = AbortSignal.timeout(5000);
   const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
   const controller = new AbortController(), combined = AbortSignal.any([signal, controller.signal]);
@@ -206,6 +207,9 @@ export async function verifyPollinationsAccess(grant: AccessGrant, options: { fe
       throw new SourceError('refused', 'Pollinations requires a valid zero-budget, Quest-only, minimally scoped free key');
     }
     const funds = object(balance!.accountBalance);
+    if (typeof funds.tier === 'number' && Number.isFinite(funds.tier) && funds.tier >= 0) {
+      options.onBalance?.(funds.tier);
+    }
     if (balance!.balance !== 0 || funds.paid !== 0 || typeof funds.tier !== 'number' || !Number.isFinite(funds.tier) || funds.tier <= 0) {
       throw new SourceError('quota', 'Pollinations free Quest allowance is unavailable');
     }
@@ -254,13 +258,19 @@ export class Pollinations implements Source {
   private shutdown = new AbortController();
   private pending = new Set<Promise<unknown>>();
   private metadata = new MetadataFlights();
+  private observed: ObservedQuota | undefined;
   constructor(private options: { directory?: string; fetcher?: typeof fetch; timeout?: number; loadGrant?: () => Promise<PollinationsGrant> } = {}) {}
+  quotaObserved() { return this.observed ? { ...this.observed } : undefined; }
   private grant() { return (this.options.loadGrant?.() ?? readPollinationsGrant(this.options.directory)).then(validateGrant); }
   private async approved() { return (await readDataSharingConsent(this.options.directory ?? directory(), [this.id])).includes(this.id); }
   private async track<T>(task: Promise<T>): Promise<T> { this.pending.add(task); try { return await task; } finally { this.pending.delete(task); } }
   private verifyAccess(grant: PollinationsGrant, signal: AbortSignal) {
     const key = createHash('sha256').update(JSON.stringify([grant.base_url, grant.token])).digest('hex');
-    return this.metadata.run(key, shared => verifyPollinationsAccess(grant, { fetcher: this.options.fetcher ?? fetch, signal: shared }), signal);
+    return this.metadata.run(key, shared => verifyPollinationsAccess(grant, {
+      fetcher: this.options.fetcher ?? fetch,
+      signal: shared,
+      onBalance: remaining => { this.observed = { unit: 'credits', remaining, observedAt: Date.now(), source: 'provider_api' }; }
+    }), signal);
   }
   async available(caller?: AbortSignal) {
     return this.track((async () => {
