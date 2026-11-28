@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## 0.10.21 — 2026-11-28
+
+- Keep quota-limited and transiently failing provider keys during setup instead of deleting them, fall back to Kilo's anonymous free route when a saved Kilo token returns HTTP 401, stop re-signing up when a provider refuses or bans an account (cleared with `usegrunt add <provider> --force`), reuse verified saved Squire keys for Pollinations and BeatAPI, serialize and stage Zro vault/receipt updates safely, omit expired offers from the published registry, and mark `nous` inactive in the registry because `qwen/qwen4-max:free` is no longer free (#264).
+- Add the local read-only `usegrunt ui` (`usegrunt dashboard`) web console showing live routes, token usage, reasoning-token breakdown, observed quota windows, and reset countdowns, with optional `--bind`/`--tailscale` session-token + QR access and `--snapshot` static offline HTML export (#268).
+- Propagate structured pool states (`idle`, `working`, `switching`, `transient_error`, `provider_exhausted`, `globally_exhausted`) and provider failure details through `/v1/status` and API responses: distinguish short transient waits (HTTP 429 with `Retry-After` and `X-Grunt-Pool-State: transient_error` within 60 seconds) from global exhaustion (fail-fast HTTP 402 with `x-should-retry: false` and `error.code: "globally_exhausted"`), return HTTP 400 on local request refusals, and report `routable` alongside `probeFresh` in `/v1/status` (#267).
+
 ## 0.10.20 — 2026-11-27
 
 - Remove the Fly gateway server, SQLite admin console, and Fly/Docker deployment files, and commit a synced `site/registry.json` so Cloudflare Pages serves `/registry.json` and `/v1/registry` directly (#265).
