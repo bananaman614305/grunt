@@ -604,3 +604,11 @@ it('returns a vision-specific refusal without cooling down Kilo for text request
     expect(legacy.complete).not.toHaveBeenCalled();
   } finally { await pool.close(); await rm(directory, { recursive: true, force: true }); }
 });
+
+it('recognizes bundled declarative:app adapters as registered and listed routes', () => {
+  const router = new StickyRouter([source('omi')], { registry: () => bundledRegistry });
+  expect(router.registered('omi')).toBe(true);
+  expect(router.listed('omi')).toBe(true);
+  expect(router.supportsInput('omi', false)).toBe(true);
+  expect(router.supportsInput('omi', true)).toBe(false);
+});

@@ -13,10 +13,10 @@ import { withTerminal } from './terminal.js';
 import { BrowserSquire, PROVIDERS, setup } from './setup.js';
 import { copyDaemon, daemonFile, legacyDaemonFile } from './daemon-files.js';
 import { RegistrySync } from './registry.js';
-import { bundledRegistry, disabledAdapters, knownAdapters } from '../registry.js';
+import { bundledRegistry, disabledAdapters, isDeclarativeAdapter, isDeclarativeAppAdapter, isSupportedAdapter, knownAdapters } from '../registry.js';
 import { AUTOMATIC_POOL_FILE, writeAutomaticPool } from './automatic-pool.js';
 import { banner } from './banner.js';
-import { approveDataSharing, DATA_SHARING_MANUAL_APPROVAL, DATA_SHARING_OPT_OUT, requiresManualDataSharing } from './data-sharing.js';
+import { approveDataSharing, DATA_SHARING_MANUAL_APPROVAL, DATA_SHARING_OPT_OUT, registryDataSharingPolicies, requiresManualDataSharing } from './data-sharing.js';
 import { configurePi, connectHarness, detectHarnesses, HARNESSES, launchLines, listFreeModels, nextDriver, onPath, probeFreeModel, signupHarness, runHarness } from './harnesses.js';
 import type { Harness } from './harnesses.js';
 import type { EmbeddedSignupRuntime, SignupAgent, SignupCeremonyOpenInfo } from './signup-mcp.js';
@@ -92,11 +92,13 @@ async function enableLinger(signal?: AbortSignal) {
     console.log('– local service: stops at logout until lingering is enabled; run loginctl enable-linger');
   }
 }
+const supportedSourceId = (id: string, registry = bundledRegistry) =>
+  !disabledAdapters.has(id) && (knownAdapters.has(id) || registry.adapters.some(adapter => adapter.id === id && (isDeclarativeAdapter(adapter) || isDeclarativeAppAdapter(adapter))));
 export async function installedSources(directory = installedConfigRoot()) {
   try {
     const sources: unknown = JSON.parse(await readFile(join(directory, 'installed-sources.json'), 'utf8'));
     if (!Array.isArray(sources) || sources.some(id => typeof id !== 'string')) throw new Error('Invalid saved grunt sources');
-    return [...new Set(sources)].filter(id => knownAdapters.has(id) && !disabledAdapters.has(id)).join(',');
+    return [...new Set(sources)].filter(id => supportedSourceId(id)).join(',');
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   return 'opencode,kilo,zro';
 }
@@ -116,7 +118,7 @@ export async function installService(adapters?: string[], options: { signal?: Ab
   options.signal?.throwIfAborted();
   if (!['linux', 'darwin', 'win32'].includes(process.platform)) throw new Error('grunt background service requires systemd, launchd, or Task Scheduler');
   const selected = [...new Set(adapters ?? (await stage(() => installedSources())).split(','))].filter(id => id && !disabledAdapters.has(id));
-  if (selected.some(id => !knownAdapters.has(id))) throw new Error('Invalid grunt service selection');
+  if (selected.some(id => !supportedSourceId(id))) throw new Error('Invalid grunt service selection');
   const directory = resolve(installedConfigRoot()), runtime = join(directory, 'runtime');
   // npx cache entries can disappear. Keep a backend runtime outside that cache.
   const dist = fileURLToPath(new URL(import.meta.url.endsWith('.ts') ? '../../dist/' : '../', import.meta.url));
@@ -559,7 +561,9 @@ export const TELEMETRY_NOTICE = '✓ usage telemetry: on, required to use Grunt 
 export async function wizard(add?: string, actions: Omit<typeof wizardActions, Optional> & Partial<Pick<typeof wizardActions, Optional>> = wizardActions, options: { force?: boolean } = {}) {
   if (add === '') throw new Error('Specify a provider name');
   if (add && disabledAdapters.has(add)) throw new Error(`${add} routing is disabled`);
-  if (add && (!knownAdapters.has(add) || !Object.hasOwn(PROVIDERS, add))) throw new Error(`Choose a supported provider: ${Object.keys(PROVIDERS).filter(id => knownAdapters.has(id)).join(', ')}`);
+  const bundledDeclarativeIds = bundledRegistry.adapters.filter(adapter => isDeclarativeAdapter(adapter) || isDeclarativeAppAdapter(adapter)).map(adapter => adapter.id);
+  const supportedAddIds = [...new Set([...Object.keys(PROVIDERS).filter(id => knownAdapters.has(id)), ...bundledDeclarativeIds])];
+  if (add && !supportedAddIds.includes(add)) throw new Error(`Choose a supported provider: ${supportedAddIds.join(', ')}`);
   // Preliminary steps print as plain lines. The table appears once, for the
   // signups, and stays in place until setup ends.
   const table = new SetupTable(process.stdout, { live: false });
@@ -586,11 +590,12 @@ export async function wizard(add?: string, actions: Omit<typeof wizardActions, O
     const previous = ((await actions.installedSources?.())?.split(',') ?? []).filter(id => id && !disabledAdapters.has(id));
     const { registry } = actions.loadRegistry ? await actions.loadRegistry() : { registry: bundledRegistry };
     squire?.useRegistry?.(() => registry);
-    const requested = add ? [add] : registry.adapters.filter(adapter => knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)).map(adapter => adapter.id);
-    const defaults = bundledRegistry.adapters.filter(adapter => knownAdapters.has(adapter.id) && !disabledAdapters.has(adapter.id)).map(adapter => adapter.id);
+    const requested = add ? [add] : registry.adapters.filter(adapter => isSupportedAdapter(adapter)).map(adapter => adapter.id);
+    const defaults = bundledRegistry.adapters.filter(adapter => isSupportedAdapter(adapter)).map(adapter => adapter.id);
     const sources = add ? [...new Set([...(previous.length ? previous : defaults), add])] : requested;
     let sharingNotice: string | undefined;
-    const consent = await (actions.approveDataSharing ?? approveDataSharing)({ directory: installedConfigRoot(), providers: [...new Set([...sources, 'opencode'])], notice: line => { sharingNotice = line; } });
+    const extraPolicies = registryDataSharingPolicies(registry);
+    const consent = await (actions.approveDataSharing ?? approveDataSharing)({ directory: installedConfigRoot(), providers: [...new Set([...sources, 'opencode'])], ...(extraPolicies.length ? { extraPolicies } : {}), notice: line => { sharingNotice = line; } });
     const manualOff = consent.skipped.filter(requiresManualDataSharing);
     console.log(consent.skipped.length ? `– data sharing: off for ${consent.skipped.join(', ')} (${manualOff.length ? `${DATA_SHARING_MANUAL_APPROVAL}=${manualOff.join(',')} approves after you read its notice` : DATA_SHARING_OPT_OUT})`
       : sharingNotice ? `✓ ${sharingNotice.replace(/^Data sharing on: /, 'data sharing: on for ')}` : '✓ data sharing: on, no new sources');

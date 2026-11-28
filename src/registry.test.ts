@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DECLARATIVE_APP_INSTALL, DECLARATIVE_OPENAI_INSTALL, adapterErrors, bundledRegistry, disabledAdapters, imageAdapters, isDeclarativeAdapter, isDeclarativeAppAdapter, knownAdapters, publishedRegistry, validateRegistry } from './registry.js';
+import { DECLARATIVE_APP_INSTALL, DECLARATIVE_OPENAI_INSTALL, adapterErrors, bundledRegistry, disabledAdapters, imageAdapters, isDeclarativeAdapter, isDeclarativeAppAdapter, isSupportedAdapter, knownAdapters, publishedRegistry, validateRegistry } from './registry.js';
 import type { Adapter } from './registry.js';
 import { PROMOTIONAL_PROVIDERS } from './local/promotional-api.js';
 import { recommendedAdapters, scoutRetired } from './local/routing.js';
@@ -16,10 +16,13 @@ it('preserves the established vetted sources while allowing reviewed pool additi
   const established = ['opencode', 'kilo', 'zro', 'tokenharbor', 'runcrate', 'mistral-vibe', 'livekit', 'pollinations', 'beatapi', 'perch'];
   const ids = bundledRegistry.adapters.map(adapter => adapter.id);
   expect(ids.filter(id => established.includes(id))).toEqual(established);
-  for (const id of ids) {
-    expect(knownAdapters.has(id)).toBe(true);
-    expect(disabledAdapters.has(id)).toBe(false);
+  for (const adapter of bundledRegistry.adapters) {
+    expect(isSupportedAdapter(adapter)).toBe(true);
+    expect(disabledAdapters.has(adapter.id)).toBe(false);
   }
+  const omi = bundledRegistry.adapters.find(adapter => adapter.id === 'omi');
+  expect(isDeclarativeAppAdapter(omi)).toBe(true);
+  expect(omi?.declarativeApp?.installer).toEqual({ type: 'npm', package: '@builditomi/cli', bin: 'omi' });
   expect(validateRegistry(bundledRegistry)).toEqual(bundledRegistry);
   expect(bundledRegistry.adapters.some(a => /cloudflare|qwen|freebuff|apinex/.test(a.id))).toBe(false);
   expect(bundledRegistry.adapters.filter(a => a.tier === 'stable').map(a => a.id)).toEqual(['opencode', 'kilo', 'zro']);

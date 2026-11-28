@@ -12,7 +12,7 @@ import { createLocalApp } from './api.js';
 import { Sources, SourceError } from './source.js';
 import { bundledRegistry } from '../registry.js';
 import type { Source } from './source.js';
-import { approveDataSharing, dataSharingPolicies, readDataSharingConsent, recordDataSharingConsent } from './data-sharing.js';
+import { approveDataSharing, dataSharingPolicies, readDataSharingConsent, recordDataSharingConsent, registryDataSharingPolicies } from './data-sharing.js';
 
 vi.mock('@clack/prompts', () => ({
   text: vi.fn(async () => 'https://example.test/v1'), multiselect: vi.fn(async () => ['groq']), confirm: vi.fn(async () => false), isCancel: (value: unknown) => typeof value === 'symbol',
@@ -367,10 +367,12 @@ it('leaves explicit sources out of default setup and add with the data-sharing o
   try {
     const first = stubActions([], { approveDataSharing });
     await wizard(undefined, first);
-    const others = defaultIds().filter(id => !dataSharingPolicies([id]).some(entry => entry.approval === 'explicit' || entry.approval === 'material'));
+    const extraPolicies = registryDataSharingPolicies(bundledRegistry);
+    const others = defaultIds().filter(id => !dataSharingPolicies([id], extraPolicies).some(entry => entry.approval === 'explicit' || entry.approval === 'material'));
     expect(first.installService).toHaveBeenCalledWith(others, expect.anything());
     expect(first.setupFallbacks).toHaveBeenCalledWith(expect.objectContaining({ adapters: others }));
     expect(await readDataSharingConsent(consentDir, ['kilo'])).toEqual([]);
+    expect(await readDataSharingConsent(consentDir, ['omi'], extraPolicies)).toEqual([]);
 
     const add = stubActions([], { approveDataSharing });
     await wizard('kilo', add);
@@ -616,4 +618,14 @@ it('discloses required usage telemetry and queues setup_completed without waitin
     expect(lines.indexOf(TELEMETRY_NOTICE)).toBeLessThan(lines.findIndex(line => line.includes('data sharing')));
     expect(JSON.parse(await readFile(join(consentDir, 'telemetry-setup.json'), 'utf8'))).toMatchObject({ sources_configured: defaultIds().length });
   } finally { posthog.closeAllConnections(); await new Promise(resolve => posthog.close(resolve)); }
+});
+
+it('allows explicitly adding a bundled declarative:app provider and records its data-sharing consent', async () => {
+  const actions = stubActions([], { installedSources: async () => 'opencode,kilo', approveDataSharing });
+  await wizard('omi', actions);
+  expect(actions.setup).toHaveBeenCalledWith(expect.any(Function), ['omi'], expect.objectContaining({
+    dataSharingApproved: expect.arrayContaining(['omi'])
+  }));
+  expect(actions.installService).toHaveBeenCalledWith(['opencode', 'kilo', 'omi']);
+  expect(await readDataSharingConsent(consentDir, ['omi'], registryDataSharingPolicies(bundledRegistry))).toEqual(['omi']);
 });

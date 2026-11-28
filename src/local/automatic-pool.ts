@@ -4,14 +4,15 @@ import type { Stats } from 'node:fs';
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import { disabledAdapters, knownAdapters, localOptInAdapterIds } from '../registry.js';
+import { bundledRegistry, disabledAdapters, isSupportedAdapter, knownAdapters, localOptInAdapterIds } from '../registry.js';
 
 export const AUTOMATIC_POOL_FILE = 'automatic-pool.json';
 interface AutomaticPool { version: 1; mode: 'automatic'; serviceSources: string[]; selectedSources?: string[] }
 const ids = (value: unknown): value is string[] => Array.isArray(value) && value.length > 0 && value.length <= 100
   && value.every(id => typeof id === 'string' && /^[a-z][a-z0-9-]{0,63}$/.test(id)) && new Set(value).size === value.length;
 const same = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((id, i) => b[i] === id);
-const supported = (id: string) => (knownAdapters.has(id) || localOptInAdapterIds.has(id)) && !disabledAdapters.has(id);
+const supported = (id: string) => !disabledAdapters.has(id)
+  && (knownAdapters.has(id) || localOptInAdapterIds.has(id) || bundledRegistry.adapters.some(adapter => adapter.id === id && isSupportedAdapter(adapter)));
 const owned = (stat: Stats, mode: number) => !stat.isSymbolicLink() && hasOwnerMode(stat, mode);
 const serialized = (serviceSources: readonly string[], selectedSources: readonly string[] = serviceSources) => {
   if (!ids(serviceSources) || (selectedSources.length > 0 && !ids(selectedSources)) || selectedSources.some(id => !supported(id))) throw new Error('Invalid managed Grunt source selection');
