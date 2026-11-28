@@ -5,6 +5,7 @@ import { constants } from 'node:fs';
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { classifyHttpFailure } from './provider-error.js';
 import { lengthLimited, truncatedCompletion, withObservedEnding, SourceError } from './source.js';
 import type { ModelRequest, Source, ToolCall } from './source.js';
 import { readVaultGrant } from './vault.js';
@@ -82,8 +83,11 @@ export class Nvidia implements Source {
       const header = response.headers.get('retry-after');
       const seconds = header === null ? NaN : /^\d+(?:\.\d+)?$/.test(header) ? Number(header) : (Date.parse(header) - Date.now()) / 1000;
       await response.body?.cancel();
-      throw new SourceError(response.status === 401 ? 'logged_out' : [402, 429].includes(response.status) ? 'quota' : response.status === 403 ? 'refused' : 'upstream',
-        `NVIDIA returned HTTP ${response.status}`, Number.isFinite(seconds) ? Math.max(1, seconds) : undefined);
+      throw classifyHttpFailure({
+        source: 'NVIDIA',
+        status: response.status,
+        ...(Number.isFinite(seconds) ? { retryAfter: Math.max(1, seconds) } : {})
+      });
     }
     try {
       const result = await response.json() as { choices?: { finish_reason?: unknown; message?: { content?: string | null; tool_calls?: ToolCall[]; refusal?: string } }[]; usage?: { prompt_tokens?: number; completion_tokens?: number } };

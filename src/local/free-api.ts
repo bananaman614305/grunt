@@ -5,6 +5,7 @@ import { constants } from 'node:fs';
 import { join } from 'node:path';
 import { completionEnding, emitStreamText, endingOf, withEnding, lengthLimited, truncatedCompletion, SourceError } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
+import { classifyHttpFailure, observeAvailabilityFailure } from './provider-error.js';
 import { readPromotionalStream } from './promotional-api.js';
 import { nousQuotaDelay, quotaObject, quotaRetryAfter, readQuotaError } from './quota-timing.js';
 import { observeAttemptDispatch, diagnosticFetch } from './diagnostics.js';
@@ -87,7 +88,7 @@ export class FreeApi implements Source {
   private grant() { return (this.options.loadGrant?.() ?? readFreeApiGrant(this.id, this.options.directory)).then(validateGrant); }
   // Availability here means private access is configured. Only the live probe
   // establishes whether the provider will serve the requested free model.
-  async available() { try { await this.grant(); return true; } catch { return false; } }
+  async available() { try { await this.grant(); return true; } catch { observeAvailabilityFailure(new SourceError('not_installed', `${this.id} access is not configured`)); return false; } }
   complete(request: ModelRequest, caller: AbortSignal, output?: () => void) {
     return this.completeWithGrant(request, caller, undefined, output);
   }
@@ -128,9 +129,13 @@ export class FreeApi implements Source {
           if (code === 'rate_limited' || code === 'provider_overloaded') retry = 60;
         }
       } else await response.body?.cancel();
-      throw new SourceError(response.status === 401 ? 'logged_out' : [402, 429].includes(response.status) ? 'quota' : response.status === 403 ? 'refused' : 'upstream',
-        `${this.id} returned HTTP ${response.status}`, retry, undefined,
-        { httpStatus: response.status, transport: 'http', httpMethod: 'POST', endpointLabel: 'chat.completions' });
+      throw classifyHttpFailure({
+        source: this.id,
+        status: response.status,
+        ...(retry === undefined ? {} : { retryAfter: retry }),
+        httpMethod: 'POST',
+        endpointLabel: 'chat.completions'
+      });
     }
     const verifyModel = this.options.verifyModel;
     const verifyUsage = this.options.verifyUsage;

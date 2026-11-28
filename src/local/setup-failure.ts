@@ -16,7 +16,7 @@ export function setupFailureReason(error: unknown): string {
   if (!(error instanceof Error)) return 'setup failed';
   if (/\b(?:EPERM|EACCES|EROFS)\b|read.only file system/i.test(error.message)) return 'configuration write blocked';
   if (/no (?:eligible|tool-capable) adapter|model pool unavailable/i.test(error.message)) return 'model pool unavailable';
-  if (/quota|free usage limit|\b429\b/i.test(error.message)) return 'quota exhausted';
+  if (/quota|free usage limit|globally exhausted|\b429\b|\b402\b/i.test(error.message)) return 'quota exhausted';
   if (/\b(?:refused|denied)\b/i.test(error.message)) return 'provider refused';
   if (/Nous login needs you/.test(error.message)) return 'needs Nous login';
   if (/requires? .*approval/i.test(error.message)) return 'approval required';

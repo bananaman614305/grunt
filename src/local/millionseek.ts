@@ -2,6 +2,7 @@ import { compileToolSchemas } from './tool-schema.js';
 import { configRoot } from '../brand.js';
 import { readDataSharingConsent } from './data-sharing.js';
 import { observeAttemptDispatch, diagnosticFetch, diagnosticNetworks } from './diagnostics.js';
+import { classifyHttpFailure, observeAvailabilityFailure } from './provider-error.js';
 import type { SafeDiagnosticMetadata } from './diagnostics.js';
 import type { FreeApiGrant } from './free-api.js';
 import { JsonToolBridge } from './json-tool-bridge.js';
@@ -109,7 +110,7 @@ export class MillionSeek implements Source {
     if (!remaining) throw new SourceError('quota', '100milionseek daily free allowance exhausted', Math.max(1, Math.ceil((this.window!.resetAt - this.now) / 1000)));
     return grant;
   }
-  async available() { try { return !!await this.checked(); } catch (e) { if (e instanceof SourceError && e.code === 'quota') throw e; return false; } }
+  async available() { try { return !!await this.checked(); } catch (e) { if (e instanceof SourceError && e.code === 'quota') throw e; observeAvailabilityFailure(e); return false; } }
   async complete(request: ModelRequest, caller: AbortSignal, progress?: () => void): Promise<Completion> {
     caller.throwIfAborted();
     if (!['millionseek', 'grunt'].includes(request.model) || request.imageInput || request.tools.some(t => t.type !== 'function')) throw new SourceError('refused', '100milionseek requires its exact free text route');
@@ -134,8 +135,12 @@ export class MillionSeek implements Source {
         const raw = await json(response, signal).catch(() => ({} as Record<string, unknown>)), error = object(raw.error);
         if (response.status === 429 && error.code === 'daily_quota_exceeded') retry = Math.max(1, Math.ceil((new Date(this.now).setUTCHours(24, 0, 0, 0) - this.now) / 1000));
         else { const after = response.headers.get('retry-after'); if (after && /^\d+$/.test(after)) retry = Math.max(1, Number(after)); }
-        throw new SourceError(response.status === 401 ? 'logged_out' : response.status === 429 ? 'quota' : response.status === 403 ? 'refused' : 'upstream',
-          `100milionseek returned HTTP ${response.status}`, retry, undefined, { httpStatus: response.status, transport: 'http', endpointLabel: 'chat.completions' });
+        throw classifyHttpFailure({
+          source: '100milionseek',
+          status: response.status,
+          ...(retry === undefined ? {} : { retryAfter: retry }),
+          endpointLabel: 'chat.completions'
+        });
       }
       this.quota(response.headers);
       // A usage block, when the provider sends one, is held to the same checks as a whole reply's.

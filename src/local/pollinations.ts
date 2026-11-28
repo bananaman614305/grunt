@@ -18,6 +18,7 @@ import {
   validateVaultToken,
   writeVaultEntry
 } from './vault.js';
+import { classifyHttpFailure } from './provider-error.js';
 import { lengthLimited, SourceError, requestRefusal } from './source.js';
 import type { Completion, ModelRequest, Source } from './source.js';
 import type { ObservedQuota } from './quota-policy.js';
@@ -170,8 +171,11 @@ function status(response: Response) {
   const raw = response.headers.get('retry-after');
   const seconds = raw === null ? NaN : /^\d+(?:\.\d+)?$/.test(raw) ? Number(raw) : (Date.parse(raw) - Date.now()) / 1000;
   void response.body?.cancel().catch(() => {});
-  throw new SourceError(response.status === 401 ? 'logged_out' : [402, 429].includes(response.status) ? 'quota' : response.status === 403 ? 'refused' : 'upstream',
-    `Pollinations returned HTTP ${response.status}`, Number.isFinite(seconds) ? Math.max(1, seconds) : undefined, undefined, { httpStatus: response.status, transport: 'http' });
+  throw classifyHttpFailure({
+    source: 'Pollinations',
+    status: response.status,
+    ...(Number.isFinite(seconds) ? { retryAfter: Math.max(1, seconds) } : {})
+  });
 }
 // Nonbillable metadata only. The authoritative server's zero-budget rule
 // rejects every non-free model even when account funds exist. Quest-only keys

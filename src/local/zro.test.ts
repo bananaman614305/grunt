@@ -278,7 +278,10 @@ it('learns the weekly reset after an earlier short request cooldown expires', as
   try {
     expect((await send('First synthetic request')).headers.get('retry-after')).toBe('30');
     now += 30000;
-    expect((await send('Unrelated synthetic request')).headers.get('retry-after')).toBe('86370');
+    const weekly = await send('Unrelated synthetic request');
+    expect(weekly.status).toBe(402);
+    expect(weekly.headers.get('x-should-retry')).toBe('false');
+    expect(weekly.headers.get('retry-after')).toBeNull();
     expect(sources.status().sources[0]).toMatchObject({ state: 'limited', retryAt: now + 86370000 });
     expect(fetcher).toHaveBeenCalledTimes(4);
   } finally { await sources.close(); }

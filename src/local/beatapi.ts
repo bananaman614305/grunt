@@ -18,6 +18,7 @@ import {
 } from './vault.js';
 import { JsonToolBridge } from './json-tool-bridge.js';
 import { MetadataFlights } from './metadata-flight.js';
+import { classifyHttpFailure, observeAvailabilityFailure } from './provider-error.js';
 import { lengthLimited, truncatedCompletion, withObservedEnding, SourceError, requestRefusal } from './source.js';
 import type { Completion, ModelRequest, Source, ToolCall } from './source.js';
 
@@ -157,8 +158,12 @@ function status(response: Response): void {
   if (response.ok) return;
   const raw = response.headers.get('retry-after'), retry = raw === null ? NaN : /^\d+(?:\.\d+)?$/.test(raw) ? Number(raw) : (Date.parse(raw) - Date.now()) / 1000;
   void response.body?.cancel().catch(() => {});
-  throw new SourceError(response.status === 401 ? 'logged_out' : response.status === 429 ? 'quota' : [402, 403].includes(response.status) ? 'refused' : 'upstream',
-    `BeatAPI returned HTTP ${response.status}`, response.status === 429 ? Math.max(1, Number.isFinite(retry) ? Math.ceil(retry) : 60) : undefined, undefined, { httpStatus: response.status, transport: 'http' });
+  throw classifyHttpFailure({
+    source: 'BeatAPI',
+    status: response.status,
+    ...(response.status === 429 ? { retryAfter: Math.max(1, Number.isFinite(retry) ? Math.ceil(retry) : 60) } : {}),
+    paymentAsRefusal: true
+  });
 }
 export interface BeatAPIUsage { credit_balance: number; credits_settled: 0 }
 // Public nonbillable API metadata. The published -free contract sets the price
@@ -260,7 +265,7 @@ export class BeatAPI implements Source {
           requestId: context.requestId, kind: context.kind, source: this.id });
       } catch { /* Observation cannot change account eligibility. */ }
       return true;
-    } catch { return false; } })());
+    } catch (error) { observeAvailabilityFailure(error); return false; } })());
   }
   async healthCheck() { return this.available(); }
   async complete(request: ModelRequest, caller: AbortSignal): Promise<Completion> {
